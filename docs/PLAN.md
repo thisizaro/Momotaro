@@ -23,9 +23,11 @@ out too early and you get six different `Clock` implementations and six
 config loaders to reconcile. The one exception is `web/`, which can start
 immediately against `docs/API_GATEWAY.md` using mocked responses.
 
-- [ ] Repo init: rename to `Momotaro`, `git init`, remote set, root
+- [x] Repo init: rename to `Momotaro`, `git init`, remote set, root
       `.gitignore` (Go binaries, `.env`, `web/node_modules`; **not**
-      `proto/gen/`, that is committed) and root `.dockerignore`
+      `proto/gen/`, that is committed) and root `.dockerignore`.
+      Also `.gitattributes` with `merge=union` on `PLAN.md`/`DECISIONS.md`.
+      *(Not yet pushed to the remote.)*
 - [ ] Single root `go.mod`, module path fixed (e.g.
       `github.com/thisizaro/Momotaro`), Go version pinned
       → `ARCHITECTURE.md` §2a
@@ -51,8 +53,9 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       `RECORD_STATE.due_at`, and the `UNIQUE (record_id, attempt_number)`
       constraint on `INTERVENTION_ATTEMPT`, none of it bolted on later
       → `ARCHITECTURE.md` §10, §11, §12a
-- [ ] `docs/ENGINEERING.md` read and its Definition of Done adopted as the
-      gate for every checkbox in this file
+- [x] `docs/ENGINEERING.md` written and its Definition of Done adopted as
+      the gate for every checkbox in this file (referenced from this file's
+      header and from `AGENTS.md`). Each agent still has to actually read it.
 - [ ] Shared internal packages built once, before services need them, so
       seven agents don't write seven versions: `Clock` interface,
       structured logger, config loader with fail-fast validation, gRPC
@@ -66,7 +69,7 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
 - [ ] Basic CI: GitHub Actions, build + unit test on every push/PR,
       path-filtered per service once services exist → `AGENTS.md`
       "Branching and CI conventions"
-- [ ] `AGENTS.md` "Testing conventions" and "Secrets and config" sections
+- [x] `AGENTS.md` "Testing conventions" and "Secrets and config" sections
       in place before any service code lands
 - [ ] `web/` scaffolded (framework choice open) against the already-written
       `docs/API_GATEWAY.md` contract, can start in parallel with backend

@@ -9,8 +9,15 @@ agent, and the per-service `AGENTS.md` boilerplate.
 - **Design and planning: complete.** `docs/PRD.md`,
   `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/API_GATEWAY.md` are
   settled. `docs/DECISIONS.md` has the chronology and reasoning.
-- **Code: none yet.** `services/`, `demo/`, `scripts/` are empty.
-- **Next: Phase 0 in `docs/PLAN.md`**, which is deliberately sequential.
+- **Repo: initialised.** `main` branch, remote
+  `github.com/thisizaro/Momotaro`, `.gitignore` / `.dockerignore` /
+  `.gitattributes` in place. **Not yet pushed.**
+- **Code: none yet.** `services/`, `demo/`, `scripts/` are empty
+  directories. `internal/platform/`, `proto/`, and `migrations/` do not
+  exist yet.
+- **Next: the rest of Phase 0 in `docs/PLAN.md`** (3 of its items are
+  ticked), which is deliberately sequential. The immediate next items are
+  the root `go.mod`, the scaffold script, and then the protos.
 
 ## The one sequencing rule that matters
 
