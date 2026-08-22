@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+// Shared types used across more than one service. Anything used by exactly
+// one service belongs in that service's own proto, not here.
+//
+// Conventions (docs/ARCHITECTURE.md section 9):
+//   - money is always int64 paise, never a float or a formatted string
+//   - every enum has an _UNSPECIFIED = 0 so "unset" is distinguishable from
+//     a deliberately-set first value
+//   - field numbers are permanent; never renumber, never reuse
+package momotaro.common.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/common/v1;commonv1";
+
+// What kind of revenue-at-risk record this is.
+enum RecordType {
+  RECORD_TYPE_UNSPECIFIED = 0;
+  RECORD_TYPE_PAYMENT = 1;   // one-off payment that failed
+  RECORD_TYPE_MANDATE = 2;   // recurring/autopay debit that failed
+  RECORD_TYPE_CHECKOUT = 3;  // checkout abandoned before completion
+  RECORD_TYPE_INVOICE = 4;   // B2B invoice past due
+}
+
+// Why the record is failing. This is the classifier's output vocabulary and
+// it is deliberately closed: the model picks from this list, it never
+// invents a category. Drives both intervention choice and retry timing
+// (docs/ARCHITECTURE.md section 5a).
+enum RootCauseBucket {
+  ROOT_CAUSE_BUCKET_UNSPECIFIED = 0;
+  // Rail was busy / issuer timed out. Funds were likely there. Retry soon.
+  ROOT_CAUSE_BUCKET_TRANSIENT_BANK = 1;
+  // Account short at this moment. Retry timing should follow salary cycles,
+  // not a fixed backoff.
+  ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS = 2;
+  // Expired, blocked or invalid instrument. A retry cannot succeed; only a
+  // method update can.
+  ROOT_CAUSE_BUCKET_HARD_DECLINE = 3;
+  // Needs the customer to do something (re-auth, update mandate).
+  ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED = 4;
+  // Held for risk/fraud review. Never auto-retried, always escalated.
+  ROOT_CAUSE_BUCKET_RISK_HOLD = 5;
+  // Customer left checkout before completing.
+  ROOT_CAUSE_BUCKET_ABANDONMENT = 6;
+  // Invoice simply overdue, no technical failure.
+  ROOT_CAUSE_BUCKET_OVERDUE = 7;
+}
+
+// The closed menu of interventions. The classifier may recommend one and the
+// economics scorer picks the final one, but neither can invent an action
+// outside this list.
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_RETRY = 1;                // re-attempt the debit
+  ACTION_TYPE_NUDGE_METHOD_UPDATE = 2;  // ask them to fix the instrument
+  ACTION_TYPE_NUDGE_REMINDER = 3;       // remind them to complete/pay
+  ACTION_TYPE_ESCALATE = 4;             // hand to a human
+  ACTION_TYPE_NONE = 5;                 // deliberately do nothing
+}
+
+// Record lifecycle. Mirrors the state machine in docs/ARCHITECTURE.md
+// section 7 exactly; if you add a state there, add it here.
+enum RecordState {
+  RECORD_STATE_UNSPECIFIED = 0;
+  RECORD_STATE_NEW = 1;
+  RECORD_STATE_SCORING = 2;           // economics gate
+  RECORD_STATE_RETRY_SCHEDULED = 3;   // waiting, has due_at
+  RECORD_STATE_RETRYING = 4;
+  RECORD_STATE_NUDGE_SCHEDULED = 5;   // waiting, has due_at
+  RECORD_STATE_NUDGED = 6;
+  RECORD_STATE_RECOVERED = 7;             // terminal
+  RECORD_STATE_ESCALATED = 8;             // terminal, a human should decide
+  RECORD_STATE_CLOSED_UNECONOMIC = 9;    // terminal, not worth chasing
+}
+
+// Result of a single attempt.
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_SUCCESS = 1;
+  OUTCOME_FAILURE = 2;
+  // Accepted but not yet resolved; the answer arrives later via the
+  // delayed-outcome callback (docs/ARCHITECTURE.md section 6).
+  OUTCOME_PENDING = 3;
+}
+
+// How a classification or a composed message was actually produced. Recorded
+// on every call so the audit trail can always show whether a model or the
+// deterministic fallback answered.
+enum Source {
+  SOURCE_UNSPECIFIED = 0;
+  SOURCE_LLM = 1;
+  SOURCE_RULES_FALLBACK = 2;      // deterministic rules engine
+  SOURCE_TEMPLATE_FALLBACK = 3;   // static message template
+}
+
+// A revenue-at-risk record as it moves through the pipeline.
+message Record {
+  string id = 1;
+  string batch_id = 2;
+  RecordType type = 3;
+  // Amount at risk, in paise. Never a float.
+  int64 amount_paise = 4;
+  string currency = 5;  // ISO 4217, "INR" for this project
+  // Raw failure/decline code from the upstream rail, e.g. "BANK_TIMEOUT".
+  // The classifier's input, not its output.
+  string failure_code = 6;
+  google.protobuf.Timestamp created_at = 7;
+  // Opaque handle for the payment instrument, used to look up prior
+  // outcomes on the same card/mandate. Not the instrument itself.
+  string instrument_ref = 8;
+}
+
+// One past attempt on a record. Passed to the classifier as history so it
+// can reason about what has already been tried.
+message InterventionAttempt {
+  int32 attempt_number = 1;
+  ActionType action_type = 2;
+  Outcome outcome = 3;
+  google.protobuf.Timestamp executed_at = 4;
+  // What this attempt cost us, in paise. Feeds net-recovered reporting.
+  int64 cost_paise = 5;
+}
+
+// One rung of the classifier's provider chain, recorded so the audit trail
+// shows what was actually tried rather than only the final answer
+// (docs/ARCHITECTURE.md section 5).
+message ProviderHop {
+  string provider = 1;  // e.g. "claude", "openai", "rules"
+  string result = 2;    // e.g. "ok", "timeout", "schema_invalid", "circuit_open"
+}

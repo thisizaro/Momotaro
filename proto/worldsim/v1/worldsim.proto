@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+// RecoveryActionPort. DEMO ONLY.
+//
+// There is no real bank or real customer in a hackathon, so this stands in
+// for "how does reality respond to this intervention". It is the ONLY
+// component holding the sealed ground truth, and the decision path has no
+// query path to it: letting the agent see the answer key would make every
+// accuracy number meaningless (docs/ARCHITECTURE.md sections 5a, 6).
+//
+// In a real deployment this interface is implemented by a bank retry API and
+// a real notification webhook, with no change to services/executor.
+package momotaro.worldsim.v1;
+
+import "common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1;worldsimv1";
+
+service WorldSimulatorService {
+  // Roll the record's hidden recoverability profile for this action.
+  rpc SimulateOutcome(SimulateOutcomeRequest) returns (SimulateOutcomeResponse);
+}
+
+message SimulateOutcomeRequest {
+  string record_id = 1;
+  common.v1.ActionType action_type = 2;
+  int32 attempt_number = 3;
+}
+
+message SimulateOutcomeResponse {
+  // For a retry this is the real answer. For a nudge it is usually PENDING:
+  // a customer does not react inside an RPC deadline.
+  common.v1.Outcome outcome = 1;
+  // False when the answer was deferred onto the delayed-outcome queue and
+  // will arrive via DecisionEngine.ReportDelayedOutcome.
+  bool immediate = 2;
+  google.protobuf.Timestamp resolves_at = 3;
+  string failure_code = 4;
+}

@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+// NotificationPort. DEMO ONLY.
+//
+// Stands in for an SMS/WhatsApp provider by logging what it would have sent.
+// Real message text is composed upstream by the Classifier and passed in
+// here, so the demo can show the actual Hinglish wording in a record's audit
+// trail. Nothing is really delivered (docs/PRD.md non-goals).
+package momotaro.notifier.v1;
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/notifier/v1;notifierv1";
+
+service NotificationSimulatorService {
+  rpc SimulateSend(SimulateSendRequest) returns (SimulateSendResponse);
+}
+
+enum Channel {
+  CHANNEL_UNSPECIFIED = 0;
+  CHANNEL_SMS = 1;
+  CHANNEL_WHATSAPP = 2;
+  CHANNEL_EMAIL = 3;
+}
+
+message SimulateSendRequest {
+  string record_id = 1;
+  Channel channel = 2;
+  // Fully composed and interpolated. This service never edits the text.
+  string message = 3;
+}
+
+message SimulateSendResponse {
+  bool sent = 1;
+  // Per-message cost in paise, the direct term in the expected-value
+  // calculation (docs/ARCHITECTURE.md section 5a). Varies by channel:
+  // WhatsApp costs more than SMS.
+  int64 cost_paise = 2;
+}

@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+// The Audit Service does NOT write audit rows. Each state change is written
+// transactionally with its own audit entry by the service that owns it, so
+// Postgres is the single source of truth and no dual-write window exists
+// (docs/ARCHITECTURE.md section 10a).
+//
+// This service therefore does two things: serve a record's trail, and
+// continuously verify that the system's own promises held. That verification
+// is what turns "we claim zero violations" into "a service checks, here is
+// the metric".
+package momotaro.audit.v1;
+
+import "common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/audit/v1;auditv1";
+
+service AuditService {
+  // Full ordered history for one record. Backs GET /v1/records/{id}/audit.
+  rpc GetRecordAudit(GetRecordAuditRequest) returns (GetRecordAuditResponse);
+  // Current invariant status for a batch, or repo-wide if batch_id is empty.
+  rpc VerifyInvariants(VerifyInvariantsRequest) returns (VerifyInvariantsResponse);
+}
+
+message AuditEntry {
+  google.protobuf.Timestamp ts = 1;
+  common.v1.RecordState from_state = 2;
+  common.v1.RecordState to_state = 3;
+  // Short machine-ish reason for the transition, e.g. "retry_budget_exhausted".
+  string reason = 4;
+  // The classifier's verbatim rationale, when this transition followed a
+  // classification. Never paraphrased or truncated.
+  string rationale = 5;
+  common.v1.Source source = 6;
+  // "system" or a human identifier. Escalations resolved by a person are the
+  // only non-system entries.
+  string actor = 7;
+  // Set on transitions that executed an action.
+  int32 attempt_number = 8;
+  int64 cost_paise = 9;
+  // The actual message text sent, for nudge transitions. Lets the demo show
+  // real wording rather than describing it.
+  string message_text = 10;
+}
+
+message GetRecordAuditRequest {
+  string record_id = 1;
+}
+
+message GetRecordAuditResponse {
+  common.v1.Record record = 1;
+  common.v1.RecordState current_state = 2;
+  // Oldest first. A replay of the state machine for this record.
+  repeated AuditEntry entries = 3;
+  // False when the trail has a gap or an impossible transition. Should never
+  // be false; if it is, the transactional write rule was broken somewhere.
+  bool trail_complete = 4;
+}
+
+message VerifyInvariantsRequest {
+  // Empty checks everything rather than one batch.
+  string batch_id = 1;
+}
+
+// Every count here must be zero. Non-zero is a bug, not a business outcome,
+// and is alerted on at critical severity (docs/ARCHITECTURE.md section 13).
+message VerifyInvariantsResponse {
+  int64 stopping_rule_violations = 1;   // a cap was exceeded
+  int64 incomplete_audit_trails = 2;    // a state change without its entry
+  int64 impossible_transitions = 3;     // an edge the state machine forbids
+  int64 records_checked = 4;
+  // record_id -> what was wrong. Bounded sample for debugging, not the full
+  // set, so a broken invariant cannot produce an unbounded response.
+  map<string, string> examples = 5;
+}

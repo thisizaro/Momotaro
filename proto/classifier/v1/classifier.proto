@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+// The Classifier owns ALL LLM access in this system. Two RPCs, one provider
+// chain, one set of circuit breakers, one cost-safety switch. Putting a
+// model call anywhere else would duplicate all of that and create a second
+// place an outage has to be handled correctly.
+//
+// Trust model (docs/ARCHITECTURE.md sections 5, 5a, 5b): the model diagnoses
+// and recommends, and it writes message wording. It never decides whether an
+// action is allowed, how many times to try, or whom to contact. Those are
+// deterministic guardrails in the Decision Engine, applied after this
+// service answers.
+package momotaro.classifier.v1;
+
+import "common/v1/common.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/classifier/v1;classifierv1";
+
+service ClassifierService {
+  // Diagnose root cause and recommend one action from the closed menu.
+  rpc Classify(ClassifyRequest) returns (ClassifyResponse);
+  // Compose the customer-facing nudge text (Hinglish by default).
+  rpc ComposeNudge(ComposeNudgeRequest) returns (ComposeNudgeResponse);
+}
+
+message ClassifyRequest {
+  common.v1.Record record = 1;
+  // Prior attempts on this record, oldest first, so the model can reason
+  // about what has already been tried rather than starting cold.
+  repeated common.v1.InterventionAttempt history = 2;
+  // Prior outcomes on the same instrument across other records. Signal for
+  // distinguishing "this rail is flaky right now" from "this card is dead".
+  repeated common.v1.InterventionAttempt instrument_history = 3;
+  // Force the deterministic path, no provider calls. Used by the load
+  // generator so throughput runs cost nothing (ARCHITECTURE.md section 5).
+  bool force_rules_only = 4;
+}
+
+message ClassifyResponse {
+  common.v1.RootCauseBucket bucket = 1;
+  // A recommendation, not a decision. Guardrails and the economics scorer
+  // may override or discard it.
+  common.v1.ActionType recommended_action = 2;
+  // Human-readable justification, stored verbatim in the audit trail. This
+  // is the only freeform field and it is never executed as an instruction.
+  string rationale = 3;
+  // 0.0 to 1.0. Below the configured threshold the record is escalated
+  // rather than acted on.
+  double confidence = 4;
+  common.v1.Source source = 5;
+  // Every rung actually attempted, in order, so the trail shows what was
+  // tried and not just what answered.
+  repeated common.v1.ProviderHop hops = 6;
+}
+
+message ComposeNudgeRequest {
+  common.v1.Record record = 1;
+  common.v1.RootCauseBucket bucket = 2;
+  // Which nudge this is; wording differs between "fix your card" and
+  // "you left something in checkout".
+  common.v1.ActionType action_type = 3;
+  // BCP-47-ish. "en-IN-hinglish" is the default for this project.
+  string locale = 4;
+  // 1 for the first contact, 2 for the follow-up. Later nudges should read
+  // differently rather than repeating the first one verbatim.
+  int32 contact_number = 5;
+  // Hard character cap, SMS-realistic. The response must respect it.
+  int32 max_chars = 6;
+  bool force_template_only = 7;
+}
+
+message ComposeNudgeResponse {
+  // The message body. Amounts, dates and links are interpolated by the
+  // CALLER, not written by the model: a model inventing a figure in a
+  // message about money is a serious failure, not a cosmetic one. The model
+  // receives placeholders and must preserve them.
+  string message = 1;
+  common.v1.Source source = 2;
+  repeated common.v1.ProviderHop hops = 3;
+}

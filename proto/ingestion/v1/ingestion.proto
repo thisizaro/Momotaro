@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+// Ingestion is the front of the pipeline. Two entry points, both permanent:
+// SubmitEvent is the production shape (one webhook at a time, continuously),
+// SubmitBatch is the demo and backfill shape. Both converge on the same
+// raw.events publish path, so nothing downstream can tell them apart.
+// See docs/ARCHITECTURE.md section 0a.
+package momotaro.ingestion.v1;
+
+import "common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1;ingestionv1";
+
+service IngestionService {
+  // Production path: a single failure event, as it happens.
+  rpc SubmitEvent(SubmitEventRequest) returns (SubmitEventResponse);
+  // Demo and backfill path: many records at once, grouped under one batch.
+  rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
+}
+
+// A record as submitted from outside, before we assign it an id. Distinct
+// from common.Record, which always has an id and batch_id.
+message NewRecord {
+  common.v1.RecordType type = 1;
+  int64 amount_paise = 2;
+  string currency = 3;
+  string failure_code = 4;
+  string instrument_ref = 5;
+  // When the upstream failure happened. Defaults to receipt time if unset.
+  google.protobuf.Timestamp occurred_at = 6;
+}
+
+message SubmitEventRequest {
+  NewRecord record = 1;
+  // Optional caller-supplied key. Two submissions with the same key are the
+  // same event, so a webhook retry cannot create a duplicate record.
+  string idempotency_key = 2;
+}
+
+message SubmitEventResponse {
+  string record_id = 1;
+  // Single events are grouped into an implicit rolling batch so every record
+  // is reportable, per docs/ARCHITECTURE.md section 10.
+  string batch_id = 2;
+  // True when idempotency_key matched an existing record and nothing new
+  // was created.
+  bool deduplicated = 3;
+}
+
+message SubmitBatchRequest {
+  repeated NewRecord records = 1;
+  // Free-text provenance, e.g. "synthetic-demo" or "backfill-2026-08".
+  string source = 2;
+}
+
+message SubmitBatchResponse {
+  string batch_id = 1;
+  int32 accepted_count = 2;
+  // Records rejected at validation, by index in the request, with a reason.
+  // A partial accept is reported, never silently dropped.
+  map<int32, string> rejected = 3;
+}

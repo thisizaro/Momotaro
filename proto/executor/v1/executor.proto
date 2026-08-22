@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+// The Executor performs exactly one action, exactly once. Idempotency is
+// durable, not best-effort: it inserts the attempt row against a
+// UNIQUE(record_id, attempt_number) constraint BEFORE performing the side
+// effect, so a redelivered message or retried call cannot double-charge.
+// See docs/ARCHITECTURE.md section 11.
+//
+// It reaches the outside world only through two ports (section 3b), so
+// swapping the demo simulators for real providers is a config change.
+package momotaro.executor.v1;
+
+import "common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/executor/v1;executorv1";
+
+service ExecutorService {
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+}
+
+message ExecuteRequest {
+  string record_id = 1;
+  string batch_id = 2;
+  common.v1.ActionType action_type = 3;
+  // Together with record_id this forms the idempotency key. The caller owns
+  // the numbering; the same pair must never mean two different attempts.
+  int32 attempt_number = 4;
+  // Required for nudge actions, already composed and interpolated by the
+  // Decision Engine. The Executor does not call the Classifier itself.
+  string message = 5;
+  // Amount at risk, carried so the executor can record cost against value
+  // without a database round trip.
+  int64 amount_paise = 6;
+}
+
+message ExecuteResponse {
+  common.v1.Outcome outcome = 1;
+  // What this attempt actually cost, in paise. Persisted per attempt; this
+  // is what makes "net recovered" a measurement rather than an estimate.
+  int64 cost_paise = 2;
+  // Set when outcome is PENDING: when the real answer is expected. The
+  // resolution arrives later via DecisionEngine.ReportDelayedOutcome.
+  google.protobuf.Timestamp resolves_at = 3;
+  // True when the durable idempotency guard matched an existing attempt and
+  // this call performed no side effect. The returned outcome is the
+  // original one.
+  bool already_executed = 4;
+  // Populated on failure: the rail's decline/error code, which becomes the
+  // next classification's input.
+  string failure_code = 5;
+}

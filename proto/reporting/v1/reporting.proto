@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+// Reporting produces the numbers the demo is judged on, and streams live
+// updates to the dashboard via the Gateway.
+//
+// Aggregates are computed by reading Postgres, with Redis only as a
+// cache-aside layer. Kafka's audit.events is a cache-invalidation and
+// live-stream trigger, never a source of numbers, so a lost message costs a
+// stale cache rather than a wrong figure (docs/ARCHITECTURE.md section 10a).
+//
+// This is also the only service besides the World Simulator permitted to read
+// GROUND_TRUTH, and solely to score accuracy after the fact.
+package momotaro.reporting.v1;
+
+import "common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/reporting/v1;reportingv1";
+
+service ReportingService {
+  rpc GetBatchReport(GetBatchReportRequest) returns (GetBatchReportResponse);
+  rpc ListBatchRecords(ListBatchRecordsRequest) returns (ListBatchRecordsResponse);
+  // Server-streaming. The Gateway holds one of these per connected dashboard
+  // WebSocket and relays messages verbatim; the browser never learns gRPC or
+  // Kafka exist (docs/ARCHITECTURE.md section 6a).
+  rpc StreamBatchUpdates(StreamBatchUpdatesRequest) returns (stream StreamBatchUpdatesResponse);
+}
+
+message GetBatchReportRequest {
+  string batch_id = 1;
+}
+
+// Wrapper so fields can be added alongside the report later without
+// changing the RPC signature (docs/ARCHITECTURE.md section 9).
+message GetBatchReportResponse {
+  BatchReport report = 1;
+}
+
+// The headline numbers. Money is paise throughout.
+message BatchReport {
+  string batch_id = 1;
+  int32 total_records = 2;
+  int32 in_flight_count = 3;
+
+  int64 at_risk_paise = 4;
+  // Gross recovered, before what we spent chasing it.
+  int64 recovered_paise = 5;
+  // What every intervention in this batch cost, from logged per-attempt
+  // spend rather than an estimate.
+  int64 intervention_spend_paise = 6;
+  // recovered_paise - intervention_spend_paise. THE headline number: a CFO
+  // does not care about revenue recovered at a loss.
+  int64 net_recovered_paise = 7;
+  // Paise spent per rupee recovered. Efficiency, not just volume.
+  double cost_per_rupee_recovered = 8;
+
+  double recovery_rate = 9;
+
+  int32 escalated_count = 10;
+  // Deliberately not chased because no action had positive expected value.
+  // Reported separately from escalations: one is "a human should decide",
+  // the other is "we decided this was not worth it".
+  int32 closed_uneconomic_count = 11;
+  int64 closed_uneconomic_paise = 12;
+  // Records that could not be processed at all (poison messages). Never
+  // folded into a business metric; a crash is not an outcome.
+  int32 processing_failure_count = 13;
+
+  map<string, BucketStats> by_root_cause = 14;
+  map<string, InterventionStats> by_intervention = 15;
+
+  // Present only once ground truth exists for this batch, i.e. synthetic
+  // data. Absent for real traffic, where there is no answer key.
+  ClassificationAccuracy accuracy = 16;
+  google.protobuf.Timestamp generated_at = 17;
+}
+
+message BucketStats {
+  int32 record_count = 1;
+  int64 at_risk_paise = 2;
+  int64 recovered_paise = 3;
+  double recovery_rate = 4;
+}
+
+message InterventionStats {
+  int32 attempt_count = 1;
+  int32 success_count = 2;
+  int64 spend_paise = 3;
+  int64 recovered_paise = 4;
+  // Realised success rate, which is also what recalibrates the priors the
+  // economics scorer uses (docs/ARCHITECTURE.md section 5a).
+  double success_rate = 5;
+}
+
+// Scored against the sealed GROUND_TRUTH table. This is what makes the
+// accuracy claim a measurement rather than an assertion.
+message ClassificationAccuracy {
+  int32 scored_records = 1;
+  // Fraction whose predicted bucket matched the true bucket.
+  double overall_accuracy = 2;
+  // Per-bucket accuracy, keyed by RootCauseBucket name.
+  map<string, double> by_bucket = 3;
+  // Predicted bucket -> true bucket -> count. Shows WHERE it was wrong, not
+  // just how often.
+  map<string, BucketConfusion> confusion = 4;
+}
+
+message BucketConfusion {
+  map<string, int32> true_bucket_counts = 1;
+}
+
+message ListBatchRecordsRequest {
+  string batch_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  // Optional filters, empty means no filter.
+  common.v1.RecordState state_filter = 4;
+  common.v1.RootCauseBucket bucket_filter = 5;
+}
+
+message RecordSummary {
+  string record_id = 1;
+  common.v1.RecordType type = 2;
+  int64 amount_paise = 3;
+  common.v1.RecordState current_state = 4;
+  common.v1.RootCauseBucket bucket = 5;
+  int32 attempt_count = 6;
+  int64 spend_paise = 7;
+}
+
+message ListBatchRecordsResponse {
+  repeated RecordSummary records = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message StreamBatchUpdatesRequest {
+  string batch_id = 1;
+}
+
+message StreamBatchUpdatesResponse {
+  BatchUpdate update = 1;
+}
+
+// One record changed state. Deliberately small: the dashboard refetches the
+// report for aggregates rather than having them recomputed per event.
+message BatchUpdate {
+  string record_id = 1;
+  common.v1.RecordState from_state = 2;
+  common.v1.RecordState to_state = 3;
+  google.protobuf.Timestamp ts = 4;
+  // Set when this transition recovered money, so the dashboard can animate
+  // the running total without a refetch.
+  int64 recovered_delta_paise = 5;
+}

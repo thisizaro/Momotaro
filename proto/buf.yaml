@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # Our package paths are momotaro.<service>.v1 while directories are
+    # <service>/v1, which is the layout the rest of the repo assumes.
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - FILE

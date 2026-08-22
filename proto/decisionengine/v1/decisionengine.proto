@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+// The Decision Engine is primarily a Kafka consumer, not a gRPC server: work
+// arrives on raw.events. It exposes gRPC only for outcomes that arrive
+// asynchronously, after the request that started them has already returned.
+//
+// In this repo that caller is the World Simulator's delayed-outcome queue.
+// In a real deployment it would be a bank's async webhook landing on the same
+// RPC. See docs/ARCHITECTURE.md sections 6, 7a.
+package momotaro.decisionengine.v1;
+
+import "common/v1/common.proto";
+
+option go_package = "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1;decisionenginev1";
+
+service DecisionEngineService {
+  // Resume a record parked in a waiting state because its outcome resolved
+  // later (a customer acting on a nudge hours after receiving it).
+  rpc ReportDelayedOutcome(ReportDelayedOutcomeRequest) returns (ReportDelayedOutcomeResponse);
+}
+
+message ReportDelayedOutcomeRequest {
+  string record_id = 1;
+  // Identifies WHICH attempt resolved. Required: without it a late-arriving
+  // outcome could be applied to the wrong attempt after a re-score.
+  int32 attempt_number = 2;
+  common.v1.Outcome outcome = 3;
+  string failure_code = 4;
+}
+
+message ReportDelayedOutcomeResponse {
+  // False when the outcome was discarded, e.g. the record already reached a
+  // terminal state. Discarding is normal, not an error: this RPC is
+  // at-least-once like everything else here.
+  bool applied = 1;
+  common.v1.RecordState resulting_state = 2;
+}
