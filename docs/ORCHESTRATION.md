@@ -87,6 +87,10 @@ Rules:
   overrides your tooling's default behaviour.
 - Tick your own PLAN.md boxes and append to docs/DECISIONS.md when you
   settle something load-bearing. Both files union-merge, so that is safe.
+- When something breaks and costs you real time, append it to
+  docs/INCIDENTS.md while it is fresh: symptom, root cause, fix,
+  prevention. Also union-merged. Do not skip this because the fix was
+  embarrassing, that is exactly the useful kind.
 - If a documented design turns out to be wrong or impossible, say so
   rather than working around it silently.
 ```

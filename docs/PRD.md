@@ -60,10 +60,15 @@ production shape vs. demo shape is in `docs/ARCHITECTURE.md` section 0a.
    chasing it costs more than it can recover. Retry timing is
    cause-aware, not a fixed backoff. See section 2b.
 4. Hard stopping rules: retry caps, contact caps, cooldown windows.
-5. A batch-level recovery report: at-risk amount, **net** recovered amount
+5. **Hinglish nudge composition**: when the chosen action is a nudge, the
+   message itself is generated in natural code-mixed Hinglish rather than
+   pulled from a stilted template, with a template fallback if the model is
+   unavailable. Text only, not voice. See `docs/ARCHITECTURE.md` §5b.
+6. A batch-level recovery report: at-risk amount, **net** recovered amount
    (after intervention spend), recovery rate by root cause and by
    intervention type.
-6. A full, replayable audit trail per record.
+7. A full, replayable audit trail per record, including the actual message
+   text sent.
 
 ## 2. Why this fits me
 
@@ -169,7 +174,11 @@ See `docs/ARCHITECTURE.md` section 5a.
   equivalent for the hackathon).
 - No training of a custom ML classifier. Diagnosis uses an existing LLM API
   call plus deterministic rules (section 2a), not a trained model.
-- No real SMS/WhatsApp delivery. A logged, simulated send is enough for the demo.
+- No real SMS/WhatsApp delivery. The message text is genuinely composed
+  (section 1, feature 5) but the send itself is simulated and logged.
+- No voice. "Hinglish voice recovery" is a listed track direction, but
+  text-to-speech is real work for little added credit, so nudges are
+  composed as text only.
 - No real user/session authentication. The API Gateway checks a static
   shared API key, deliberately, so a judge can try the system with zero
   setup, see `docs/ARCHITECTURE.md` section 17. There is no concept of a
@@ -302,7 +311,8 @@ in `docs/ARCHITECTURE.md`, section "NFRs and observability."
    saved. This is the beat that separates a smart agent from an expensive
    one.
 4. Drill into one record's audit trail end to end, including the LLM's stored
-   rationale for that record's classification and chosen action.
+   rationale for that record's classification and chosen action, and the
+   actual Hinglish message text that was composed and sent.
 5. Show one record that hit a stopping rule and was escalated instead of
    retried forever, and one record where the LLM call failed and fell back to
    rules, both are the "graceful failure" the bar is looking for.

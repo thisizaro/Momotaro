@@ -197,7 +197,24 @@ A plan item is not done until all of these are true. Do not mark a
    action twice and asserts one effect.
 9. The doc updated if behaviour diverged from what was written down.
 
-## 12. When the design is wrong
+## 12. Record what breaks
+
+When something breaks and costs you real time, append it to
+`docs/INCIDENTS.md` while it is still fresh: symptom, root cause, fix, and
+what stops it recurring. A bug that cost an hour, a design assumption that
+turned out wrong, a test that was passing for the wrong reason, a merge that
+went sideways.
+
+Two reasons this is not optional. It stops the same mistake being made twice
+by a different agent in a different service. And "what broke, and what you
+did about it" is explicitly assessed on this project, where a specific
+honest account beats a claim that nothing went wrong. Across nine services,
+nothing going wrong means nobody pushed hard enough.
+
+Fixing a bug therefore has three parts, not two: the regression test
+(section 1), the fix, and the entry.
+
+## 13. When the design is wrong
 
 If a rule here or in `ARCHITECTURE.md` makes your task impossible or clearly
 wrong, **stop and say so** rather than quietly working around it. A

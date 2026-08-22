@@ -566,6 +566,55 @@ accuracy scorer hold a query path to it, and the Decision Engine holds none.
 The demo-time scale factor (section 17) compresses these windows so a live
 demo can show a salary-window retry firing without waiting until the 1st.
 
+## 5b. Nudge composition: the clearest right-tool-for-the-job LLM use
+
+When the chosen action is a nudge, something has to write the actual message
+the customer would receive. This is where an LLM is unambiguously the right
+tool, and it is worth being explicit about why, because the contrast with
+classification is the point.
+
+Classification can be done with a lookup table, and ours falls back to
+exactly that. Writing a short, natural, code-mixed Hinglish message that
+tells someone their autopay failed and what to do about it, in a register
+that does not read like a form letter, is something rules genuinely cannot
+do well. Templates produce stilted text; an LLM produces something a person
+would actually read. That is generation, which is what these models are
+best at, as opposed to classification, where they are merely adequate.
+
+**Where it lives**: as a second RPC on the Classifier,
+`ComposeNudge(record, bucket, locale) -> {message, source}`, **not** a new
+service and not inline in the Executor. The reason is that the Classifier
+already owns every piece of LLM plumbing in this system: the provider
+chain, the circuit breakers, the timeout budgets, the cost-safety switch
+for load tests. Putting a second LLM call anywhere else would mean
+duplicating all of it, and would give us two independent places where an
+LLM outage has to be handled correctly.
+
+**Constraints, same trust model as section 5:**
+
+- The LLM writes the *wording*. It never chooses whether to send, who to
+  send to, or how many times. Those are guardrail decisions (section 5a),
+  already made before this call happens.
+- **Fallback is a static Hinglish template per root-cause bucket.** If the
+  provider chain is exhausted, the nudge still goes out, just in
+  boilerplate. `source` records which it was, so the audit trail
+  distinguishes a generated message from a templated one.
+- Output is length-capped (SMS-realistic) and validated: no invented
+  amounts, no invented dates, no payment links beyond the one we pass in.
+  The record's real amount and due date are interpolated by us, not written
+  by the model, because a model inventing a figure in a message about money
+  is a serious failure mode rather than a cosmetic one.
+- The generated text is stored on `INTERVENTION_ATTEMPT.message_text`, so
+  the demo can show the actual message inside a record's audit trail rather
+  than describing it.
+- Counts toward the load-test cost-safety rule (section 5): synthetic mode
+  forces templates and makes no provider calls.
+
+Scope note: text only. The track lists "Hinglish voice recovery" as a
+direction, but text-to-speech adds real work for little additional credit,
+so the message is composed and logged, never spoken. The Notification
+Simulator logs what it would have sent (section 3b).
+
 ## 6. World simulator
 
 There is no real bank or real customer in a hackathon, something has to
@@ -930,6 +979,8 @@ erDiagram
         int cost_paise
         float ev_score_at_decision
         float p_recovery_at_decision
+        string message_text
+        string message_source
     }
     AUDIT_ENTRY {
         uuid id

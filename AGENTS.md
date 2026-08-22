@@ -2,8 +2,9 @@
 
 Notes for any AI agent (or human) working in this folder. If you are new to
 this project: read this file first, then `docs/PRD.md`, then
-`docs/ARCHITECTURE.md`. This file is the quick-reference and decision log,
-those two files have the full reasoning.
+`docs/ARCHITECTURE.md`. This file is the quick reference for *what* was
+decided; those two have the full reasoning, and `docs/DECISIONS.md` has the
+chronology of *why*.
 
 > **Before you write a single line of code, read `docs/ENGINEERING.md`.**
 > It is mandatory, not advisory. It covers TDD expectations, clock
@@ -109,6 +110,12 @@ measured recovered revenue against a hidden ground truth.
   hard declines). Headline metric is **net** recovered, after logged
   intervention spend. Order is fixed: classify, then guardrails filter,
   then economics decides. `docs/PRD.md` §2b, `docs/ARCHITECTURE.md` §5a.
+- **Nudge messages are LLM-composed in Hinglish**, via a second RPC on the
+  Classifier (`ComposeNudge`), so all LLM access stays behind one provider
+  chain and one set of circuit breakers. Static Hinglish templates per
+  bucket are the fallback. The model writes wording only, never whether or
+  whom to send to, and never interpolates amounts or dates itself. Text
+  only, no voice. `docs/ARCHITECTURE.md` §5b.
 - **Integrity rule**: the Decision Engine must never hold a query path to
   `GROUND_TRUTH`. Recovery probabilities come from a checked-in prior table
   blended with the agent's own observed outcomes, never from the sealed
@@ -179,6 +186,8 @@ scripts/  docs/
   standards and Definition of Done), `API_GATEWAY.md` (external contract,
   the only doc the `web/` agent needs), `PLAN.md` (living phase-by-phase
   build plan), `DECISIONS.md` (append-only decision log with reasoning),
+  `DECISIONS.md` (append-only decision log), `INCIDENTS.md` (append-only
+  log of what broke and what we did about it),
   `ORCHESTRATION.md` (for whoever is coordinating agents: sequencing,
   allocation, and prompt/service templates).
 
@@ -206,12 +215,13 @@ concurrently:
 - A proto change (section 9 in Architecture) is always its own PR, merged
   before any service PR that depends on the new shape. Same for a
   migration (§12a).
-- **`docs/PLAN.md` and `docs/DECISIONS.md` are yours to update directly.**
-  Tick your own checkboxes, append your own decisions. Both files use git's
-  `merge=union` driver (see `.gitattributes`), so concurrent edits merge
-  instead of conflicting. Only tick a box when it meets the Definition of
-  Done in `docs/ENGINEERING.md` §11. Do not restructure or reorder either
-  file, union merge handles additions cleanly but not rewrites.
+- **`docs/PLAN.md`, `docs/DECISIONS.md` and `docs/INCIDENTS.md` are yours to
+  update directly.** Tick your own checkboxes, append your own decisions,
+  and log what broke. All three use git's `merge=union` driver (see
+  `.gitattributes`), so concurrent edits merge instead of conflicting. Only
+  tick a box when it meets the Definition of Done in
+  `docs/ENGINEERING.md` §11. Do not restructure or reorder these files,
+  union merge handles additions cleanly but not rewrites.
 - **Stay inside your service.** Do not modify another service's directory,
   `proto/`, `migrations/`, or `internal/platform/` unless that is
   explicitly your assigned task. If you need a change in any of them, stop

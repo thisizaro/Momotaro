@@ -129,3 +129,24 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `docs/ENGINEERING.md` §10, `AGENTS.md` branching conventions, and the
   agent prompt template in `docs/ORCHESTRATION.md` so it reaches every
   agent at the point it matters.
+- 2026-08-22: Added `docs/INCIDENTS.md` (union-merged, agents append
+  directly) recording what broke and what we did about it. Reason: the
+  hackathon judging criteria explicitly assess "Failure recovery: what
+  broke, and what you did about it", and that story cannot be reconstructed
+  credibly the night before. Distinct from this file, which records what we
+  chose rather than what we got wrong. Wired into `ENGINEERING.md` §12
+  (fixing a bug is now three parts: regression test, fix, entry) and the
+  agent prompt template.
+- 2026-08-22: Hinglish nudge composition added as a feature
+  (`ARCHITECTURE.md` §5b), implemented as a second RPC on the Classifier
+  (`ComposeNudge`) rather than a new service or inline in the Executor, so
+  every LLM call in the system stays behind one provider chain, one set of
+  circuit breakers, and one cost-safety switch. Reason for adding it at all:
+  it is a listed track direction, it had silently dropped out of the docs,
+  and generation is a far cleaner "right tool in the right place"
+  justification than classification, which our own rules fallback can do
+  nearly as well. Guardrails unchanged: the model writes wording only, never
+  whether or whom to contact, and amounts/dates are interpolated by us so a
+  model cannot invent a figure in a message about money. Static Hinglish
+  templates per bucket are the fallback. Text only, no TTS: "voice" is a
+  listed direction but is real work for little added credit.

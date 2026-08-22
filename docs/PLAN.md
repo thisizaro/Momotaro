@@ -216,6 +216,13 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 - [ ] Dashboard: recovered amount/rate, record table, one record's audit
       drill-down, live feed via the WebSocket above, built only against
       `docs/API_GATEWAY.md` → `PRD.md` §1, `web/AGENTS.md`
+- [ ] Hinglish nudge composition: `Classifier.ComposeNudge` reusing the
+      existing provider chain and circuit breakers, static Hinglish
+      template per bucket as fallback, output length-capped and validated
+      (no model-invented amounts or dates), text stored on
+      `INTERVENTION_ATTEMPT.message_text` and surfaced in the audit trail.
+      Needs a small additive migration for the two new columns
+      → `ARCHITECTURE.md` §5b, `PRD.md` §1 feature 5
 - [ ] Demo-time scale factor (config knob, `ARCHITECTURE.md` §17) wired
       through cooldowns and World Simulator's delay/tick timing, so a live
       demo run finishes in minutes, not hours

@@ -16,6 +16,7 @@
 
 docs/PLAN.md      merge=union
 docs/DECISIONS.md merge=union
+docs/INCIDENTS.md merge=union
 
 # Generated protobuf code is committed but should not clutter diffs or
 # count toward language stats.
