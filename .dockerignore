@@ -1,0 +1,26 @@
+# Docker build context is the REPO ROOT for every service
+# (see docs/ARCHITECTURE.md section 2a), so keeping this tight
+# matters for build speed across 9 images.
+
+.git/
+.github/
+docs/
+web/
+scripts/
+*.md
+
+# Build output and local state
+bin/
+dist/
+tmp/
+*.log
+vendor/
+
+# Secrets never enter an image
+.env
+.env.local
+*.pem
+*.key
+
+# Node
+node_modules/

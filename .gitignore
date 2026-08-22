@@ -1,0 +1,38 @@
+# Binaries and build output
+bin/
+dist/
+*.exe
+*.so
+*.dylib
+*.test
+*.out
+
+# Go
+vendor/
+go.work
+go.work.sum
+
+# Secrets and local config
+.env
+.env.local
+*.pem
+*.key
+
+# Node (web/)
+node_modules/
+.next/
+build/
+.vite/
+
+# Editor and OS
+.DS_Store
+.idea/
+*.swp
+
+# Local infra state
+tmp/
+*.log
+
+# NOTE: proto/gen/ is deliberately NOT ignored.
+# Generated Go code is committed so every agent builds without a
+# matching protoc/buf toolchain. See docs/ARCHITECTURE.md section 9.

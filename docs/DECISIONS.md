@@ -1,0 +1,104 @@
+# Decision log (Momotaro)
+
+Append-only. Newest entries at the bottom. **Agents may append directly**,
+this file uses git's `merge=union` driver (see `.gitattributes`) so
+concurrent appends merge cleanly instead of conflicting.
+
+Log a decision here when it is load-bearing: something a future agent could
+reasonably contradict if they did not know it had been settled. Include the
+*why*, not just the what. Do not log routine implementation choices.
+
+Quick reference for what was decided lives in `AGENTS.md` "Locked
+decisions"; the full reasoning lives in `docs/PRD.md` and
+`docs/ARCHITECTURE.md`. This file is the chronology.
+
+- 2026-08-22: Track 4 scrapped, building Track 3 only.
+- 2026-08-22: Backend language is Go.
+- 2026-08-22: Diagnosis is hybrid rules+LLM, not pure rules and not pure LLM.
+- 2026-08-22: Inter-service comms inside the cluster is gRPC-only; Kafka
+  narrowed to two pub/sub topics (`raw.events`, `audit.events`); everything
+  else that used to be modeled as a Kafka round trip (classify, execute)
+  became a direct gRPC call.
+- 2026-08-22: Kubernetes/minikube deployment is a final-phase deliverable,
+  not a starting point.
+- 2026-08-22: NFR targets and observability/alerting requirements added to
+  PRD and Architecture (latency, throughput, correctness invariants,
+  metrics/tracing/logging/alerting).
+- 2026-08-22: LLM provider decision deferred (cost/rate-limits need
+  evaluation first). Classifier design changed from "one LLM + rules
+  fallback" to a priority-ordered multi-provider chain ending in rules
+  fallback, decided behind a swappable interface so this doesn't block
+  building the rest of the pipeline.
+- 2026-08-22: Branching/CI confirmed as trunk-based: short-lived branch per
+  service/agent, PR into main, CI runs build+tests scoped to touched
+  services via path filters.
+- 2026-08-22: `docs/PLAN.md` added as the living, freely-reorderable
+  phase-by-phase build plan (Phase 0 through Phase 8). Testing conventions
+  and secrets/config handling added to this file since Phase 0 depends on
+  both being settled before service code lands.
+- 2026-08-22: Project named **Momotaro**.
+- 2026-08-22: Clarified that the product runs continuously off webhooks in
+  production, with batch submit as the demo/backfill path, both permanent
+  and converging on the same pipeline (`ARCHITECTURE.md` §0a added). Also
+  pinned down that the user is a Razorpay *merchant*, not Razorpay staff.
+  Architecture diagram redrawn to put the simulators outside the cluster
+  boundary, where the third parties they stand in for actually live.
+- 2026-08-22: Intervention economics added as a **core** feature (PRD §2b,
+  Architecture §5a): expected-value action selection, `Scoring` state and
+  `ClosedUneconomic` terminal state in the state machine, cause-aware retry
+  timing, per-attempt cost logging, and net-recovered as the headline
+  metric. Built in Phase 2. Carries an explicit integrity rule that the
+  decision path never reads the sealed ground truth.
+- 2026-08-22: All em dashes removed from docs per standing style rule.
+- 2026-08-22: Distributed-systems hardening pass, eight fixes, all in
+  Architecture: (A) added the Decision Engine scheduler worker, §7a, without
+  which no time-based work ever fired; (B) keyed parallel consumption with
+  contiguous-prefix offset commits, §8a, the previous design capped
+  throughput ~50x under the NFR; (C) circuit breakers per LLM provider, §5;
+  (D) fixed the dual-write problem, §10a, audit entries now written
+  transactionally with state changes, Postgres is the sole source of truth,
+  Kafka demoted to notification, and the Audit Service repurposed to
+  continuous invariant verification; (E) DLQ for poison messages, §8b;
+  (F) durable two-layer idempotency, §11; (G) migrations discipline and
+  explicit table ownership, §12a and §10a; (H) clock injection, mandated in
+  the new `docs/ENGINEERING.md`. Also documented that Decision Engine
+  scaling is partition-bound so the HPA demo targets Classifier/Executor.
+- 2026-08-22: Repo structure decided (`ARCHITECTURE.md` §2a): single root
+  `go.mod`, each service self-contained under `services/<name>/` with its
+  own `cmd/`, `internal/`, and `Dockerfile`, one image and one Deployment
+  per service, shared code confined to `internal/platform/`. Service
+  isolation is enforced by Go's `internal/` visibility rule (cross-service
+  import = compile error) rather than by module boundaries, which are a
+  distribution concern and would have cost a committed `go.work` kept in
+  sync across six machines plus multi-module Docker build contexts. Docker
+  build context is the repo root. Extracting a service to its own module
+  later remains mechanical.
+- 2026-08-22: gRPC/proto toolchain standardised on pinned `buf` with
+  `buf lint` + `buf breaking` in CI, plus naming/versioning/field-number
+  conventions (`ARCHITECTURE.md` §9), so the proto-PR-first rule is
+  mechanically enforced instead of remembered.
+- 2026-08-22: Operational rules for concurrent agents: `docs/PLAN.md` and
+  this decision log are orchestrator-only (they would otherwise conflict on
+  every PR), agents stay inside their assigned service, and a **walking
+  skeleton** (one record through all 7 services, everything hardcoded) is
+  now a Phase 0 gate before any agent builds depth.
+- 2026-08-22: Added `docs/ENGINEERING.md` as mandatory reading before any
+  code, covering TDD, clock injection, context deadlines, error handling,
+  fail-fast config, graceful shutdown and probes, concurrency bounds, money
+  handling (integer paise, never floats), logging, PR hygiene, and a
+  Definition of Done that gates every PLAN.md checkbox.
+- 2026-08-22: Final gap-closing pass before build start: API Gateway
+  confirmed as a real service (`services/api-gateway`), added to Phase 1.
+  Main app (`services/`, 7 services) structurally separated from
+  hackathon-only stand-ins (`demo/`: world-simulator, notification-simulator)
+  wired through a port/interface. `web/` added for the dashboard, which
+  talks only to the Gateway, contract captured in new `docs/API_GATEWAY.md`.
+  `BATCH`/`batch_id` added to the schema so reports scope to one demo run.
+  Delayed nudge outcomes get a concrete mechanism: a Redis-backed delayed
+  queue inside World Simulator that calls back into Decision Engine via
+  gRPC when due. Live dashboard updates decided as WebSocket-via-Gateway,
+  relaying a new Reporting server-streaming gRPC method, not polling.
+  Gateway auth decided as a static shared API key, not real user/session
+  auth, deliberately, documented alongside other real-world-vs-hackathon
+  simplifications in `docs/ARCHITECTURE.md` §17.
+

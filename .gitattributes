@@ -1,0 +1,25 @@
+# Append-only / independently-ticked files use git's union merge driver.
+#
+# Why: several agents work concurrently, and both of these files get touched
+# by nearly every PR (checkboxes in PLAN.md, entries in DECISIONS.md).
+# With the default merge driver that guarantees a conflict on every merge.
+# `merge=union` keeps BOTH sides' added lines instead of conflicting, which
+# is exactly the right semantics for a checklist and an append-only log.
+#
+# Caveat worth knowing: if two agents edit the SAME line, union keeps both
+# versions of it, so you may occasionally see a duplicated line. That is
+# trivially spotted and deleted, and is a far better failure mode than a
+# merge conflict on every single PR.
+#
+# Agents may therefore tick their own PLAN.md boxes and append their own
+# DECISIONS.md entries directly. No orchestrator bottleneck.
+
+docs/PLAN.md      merge=union
+docs/DECISIONS.md merge=union
+
+# Generated protobuf code is committed but should not clutter diffs or
+# count toward language stats.
+proto/gen/** linguist-generated=true
+
+# Normalise line endings so agents on different machines don't fight
+* text=auto eol=lf
