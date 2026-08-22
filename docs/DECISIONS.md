@@ -102,3 +102,20 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   auth, deliberately, documented alongside other real-world-vs-hackathon
   simplifications in `docs/ARCHITECTURE.md` §17.
 
+- 2026-08-22: Repo initialised as `Momotaro`, single `main` branch, remote
+  `github.com/thisizaro/Momotaro`. Decision log split out of `AGENTS.md`
+  into this file, and both this file and `docs/PLAN.md` given git's
+  `merge=union` driver via `.gitattributes`. Reason: with several agents
+  working concurrently, both files are touched by nearly every PR, which
+  would guarantee a merge conflict every time under the default driver.
+  Union merge keeps both sides' added lines, so agents can tick their own
+  checkboxes and append their own decisions with no orchestrator
+  bottleneck. Tradeoff accepted: two agents editing the *same* line yields
+  a duplicated line, which is trivial to delete and far better than
+  constant conflicts. Consequence: agents must add to these files, never
+  reorder or restructure them.
+- 2026-08-22: Added `docs/ORCHESTRATION.md` holding the multi-agent
+  sequencing rule (Phase 0 is sequential and must merge before fan-out,
+  `web/` and `scripts/` excepted), the suggested service allocation, and
+  reusable templates for the per-agent prompt and the per-service
+  `AGENTS.md` boundary contract.

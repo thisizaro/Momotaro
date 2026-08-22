@@ -178,7 +178,9 @@ scripts/  docs/
   (system design, the how), `ENGINEERING.md` (**mandatory** coding
   standards and Definition of Done), `API_GATEWAY.md` (external contract,
   the only doc the `web/` agent needs), `PLAN.md` (living phase-by-phase
-  build plan).
+  build plan), `DECISIONS.md` (append-only decision log with reasoning),
+  `ORCHESTRATION.md` (for whoever is coordinating agents: sequencing,
+  allocation, and prompt/service templates).
 
 ## Branching and CI conventions
 
