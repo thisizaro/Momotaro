@@ -242,6 +242,7 @@ function App() {
 
       {/* Record detail drawer */}
       <RecordDrawer
+        open={drawerRecordId !== null}
         detail={drawerDetail}
         loading={drawerLoading}
         onClose={() => {

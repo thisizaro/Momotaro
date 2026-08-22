@@ -13,6 +13,9 @@ import {
 import type { InterventionType, RecordDetail } from '@/types';
 
 interface Props {
+  /** Whether the drawer is showing. Without this the backdrop and panel
+   *  render on first paint, blurring the page behind an empty white panel. */
+  open: boolean;
   detail: RecordDetail | null;
   loading: boolean;
   onClose: () => void;
@@ -38,14 +41,19 @@ const OUTCOME_COLORS: Record<string, string> = {
   pending: 'text-amber-600 bg-amber-50',
 };
 
-export function RecordDrawer({ detail, loading, onClose }: Props) {
+export function RecordDrawer({ open, detail, loading, onClose }: Props) {
   useEffect(() => {
+    if (!open) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
+  }, [open, onClose]);
+
+  // Nothing rendered when closed. Declared after the hook so hook order
+  // stays stable across renders.
+  if (!open) return null;
 
   return (
     <>

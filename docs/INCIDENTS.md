@@ -127,3 +127,24 @@ and `esbuild --version` worked, so no action was needed. If it had not,
 **Prevention:** Read npm's warnings rather than only its exit code. Same
 lesson as the migration incident above: a zero exit status is not proof the
 thing you wanted actually happened.
+
+### 2026-08-22, dashboard rendered blurred behind an empty white panel
+**What happened:** On first load the dashboard content appeared blurred, with
+a blank white panel pinned to the right of the viewport showing a loading
+spinner. Initially misread as a layout or data problem.
+**Root cause:** `RecordDrawer` returned its markup unconditionally. It renders
+a `fixed inset-0 backdrop-blur-sm` backdrop and a right-pinned `max-w-lg`
+white panel, so both were present on first paint with no record selected. The
+backdrop caused the blur, the panel caused the white area, and the spinner was
+the drawer's own `loading || !detail` branch. `App.tsx` tracked
+`drawerRecordId` but never passed it, so the component had no way to know it
+was closed.
+**Fix:** Added an explicit `open` prop, passed as `drawerRecordId !== null`,
+with an early `return null` when closed. The early return sits after the
+`useEffect` so hook order stays stable, and the Escape listener is now only
+attached while open.
+**Prevention:** A component that renders a fixed-position overlay needs an
+explicit open/closed prop; inferring visibility from whether data happens to
+be loaded is how you get an overlay with nothing behind it. Worth checking
+the other components for the same shape, though `RecordDrawer` was the only
+one using `fixed inset-0`.
