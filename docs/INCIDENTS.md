@@ -98,3 +98,32 @@ it is given, and a nil context made it hang instead of returning an error.
 IO-doing call takes a real context with a deadline. The bounded timeout also
 means a migration wedged on a table lock now fails loudly rather than
 blocking CI indefinitely.
+
+### 2026-08-22, dashboard rendered a blank white page
+**What happened:** The Bolt-generated dashboard showed nothing but a white
+page in the browser.
+**Root cause:** `npm install` had never been run, so there was no
+`node_modules` and the module graph could not resolve. Nothing to do with the
+missing backend, which had been the initial suspicion: the app defaults to its
+own mock engine and renders fully with no API at all.
+**Fix:** `npm install`. Confirmed with `tsc --noEmit` (clean), `vite build`
+(clean), and checking that `/src/main.tsx`, `/src/App.tsx` and
+`/src/lib/mockEngine.ts` each returned HTTP 200 from the dev server.
+**Prevention:** `npm install` is now the first line of `web/AGENTS.md`'s
+running instructions, with the blank-page symptom named explicitly. Also
+worth generalising: a white page means the bundle never executed, so suspect
+the build or module resolution before suspecting data.
+
+### 2026-08-22, npm 11 silently skipped esbuild's install script
+**What happened:** After `npm install`, npm warned
+`1 package has install scripts not yet covered by allowScripts: esbuild`.
+Vite cannot run without esbuild's platform binary.
+**Root cause:** npm 11 blocks lifecycle install scripts by default, a
+supply-chain hardening change. The warning is easy to scroll past because the
+install otherwise reports success.
+**Fix:** In this case the `@esbuild/linux-x64` binary had been placed anyway
+and `esbuild --version` worked, so no action was needed. If it had not,
+`npm install --foreground-scripts` or approving the script is the fix.
+**Prevention:** Read npm's warnings rather than only its exit code. Same
+lesson as the migration incident above: a zero exit status is not proof the
+thing you wanted actually happened.

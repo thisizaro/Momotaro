@@ -36,3 +36,7 @@ tmp/
 # NOTE: proto/gen/ is deliberately NOT ignored.
 # Generated Go code is committed so every agent builds without a
 # matching protoc/buf toolchain. See docs/ARCHITECTURE.md section 9.
+
+# Vite local env overrides
+.env.local
+.env.*.local

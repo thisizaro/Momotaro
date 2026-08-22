@@ -76,7 +76,7 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       "Branching and CI conventions"
 - [x] `AGENTS.md` "Testing conventions" and "Secrets and config" sections
       in place before any service code lands
-- [ ] `web/` scaffolded (framework choice open) against the already-written
+- [x] `web/` scaffolded (Vite + React + TS + Tailwind) against the already-written
       `docs/API_GATEWAY.md` contract, can start in parallel with backend
       work using mocked responses → `web/AGENTS.md`
 - [x] One `Dockerfile` per service, multi-stage, build context = repo root,
