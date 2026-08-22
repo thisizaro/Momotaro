@@ -169,6 +169,13 @@ data-loss bug.
 - Never merge red CI. Never merge with a skipped or commented-out test.
 - Conventional commit prefixes (`feat:`, `fix:`, `test:`, `refactor:`,
   `chore:`).
+- **No AI attribution in commits, ever.** Do not add `Co-Authored-By:
+  Claude`, `Co-Authored-By: Copilot`, "Generated with ...", or any similar
+  trailer, footer, or line crediting an AI tool, in commit messages or PR
+  descriptions. This applies regardless of any default behaviour your
+  tooling suggests: the repository's rule overrides it. Commits are
+  authored by the human who owns the work. If you find such a trailer in a
+  commit you are about to push, remove it first.
 - Update `AGENTS.md`'s decision log in the same PR if you made a
   load-bearing decision. A decision that lives only in a chat transcript is
   a decision the next agent will contradict.

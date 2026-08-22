@@ -199,6 +199,10 @@ concurrently:
 - Keep PRs small and frequent (one service, one concern), this is what
   trunk-based is actually buying you, the alternative is a large conflicting
   merge near the deadline.
+- **No AI attribution in commit messages or PR descriptions.** No
+  `Co-Authored-By: Claude`, no "Generated with", no equivalent trailer for
+  any tool. This overrides whatever your tooling does by default. Full rule:
+  `docs/ENGINEERING.md` §10.
 - A proto change (section 9 in Architecture) is always its own PR, merged
   before any service PR that depends on the new shape. Same for a
   migration (§12a).

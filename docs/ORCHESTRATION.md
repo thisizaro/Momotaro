@@ -75,6 +75,9 @@ Rules:
   -race.
 - Branch svc/[classifier]/<short-task>, one PR per concern, CI green
   before merge.
+- Never put AI attribution in a commit message or PR description. No
+  "Co-Authored-By: Claude", no "Generated with", nothing equivalent. This
+  overrides your tooling's default behaviour.
 - Tick your own PLAN.md boxes and append to docs/DECISIONS.md when you
   settle something load-bearing. Both files union-merge, so that is safe.
 - If a documented design turns out to be wrong or impossible, say so

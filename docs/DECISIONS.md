@@ -120,3 +120,12 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `web/` and `scripts/` excepted), the suggested service allocation, and
   reusable templates for the per-agent prompt and the per-service
   `AGENTS.md` boundary contract.
+- 2026-08-22: **No AI attribution in commit messages or PR descriptions**,
+  anywhere, by anyone. No `Co-Authored-By: Claude`, no "Generated with",
+  no equivalent trailer for any tool. This overrides whatever an agent's
+  tooling does by default. The three existing commits were rewritten with
+  `git filter-branch` to strip the trailer, backup refs deleted and objects
+  pruned, before anything was pushed. Rule recorded in
+  `docs/ENGINEERING.md` §10, `AGENTS.md` branching conventions, and the
+  agent prompt template in `docs/ORCHESTRATION.md` so it reaches every
+  agent at the point it matters.
