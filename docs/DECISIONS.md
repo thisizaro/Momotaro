@@ -150,3 +150,19 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   model cannot invent a figure in a message about money. Static Hinglish
   templates per bucket are the fallback. Text only, no TTS: "voice" is a
   listed direction but is real work for little added credit.
+- 2026-08-22: Infrastructure library choices pinned in the platform package
+  docs so nine services cannot diverge: **franz-go** for Kafka (pure Go, no
+  cgo so distroless runtime images keep working, and it exposes the
+  per-partition fetch control the keyed worker pool needs; sarama makes that
+  awkward and confluent-kafka-go needs cgo), **pgx v5 with pgxpool** for
+  Postgres (binary protocol, real access to `FOR UPDATE SKIP LOCKED` which
+  the scheduler worker depends on), **go-redis v9** for Redis, and **goose**
+  for migrations, used as a pinned library via `scripts/migrate` rather than
+  a separately installed binary so every agent runs the identical migrator.
+- 2026-08-22: Kafka topics are created explicitly by a `kafka-init` container
+  with `auto.create.topics.enable=false`. Auto-creation would turn a
+  topic-name typo into an empty topic that silently never receives anything,
+  which is a miserable bug to find. `raw.events` gets 12 partitions,
+  deliberately above expected pod count, so the Decision Engine's consumer
+  parallelism is never capped by the partition ceiling during the scaling
+  demo (`ARCHITECTURE.md` §12).

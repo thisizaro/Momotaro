@@ -1,0 +1,108 @@
+# Local development infrastructure only. No application services here: those
+# run from your IDE against this stack, or as images built per service
+# (docs/ARCHITECTURE.md section 2a).
+#
+#   make up      start
+#   make down    stop, keep data
+#   make down-clean  stop and wipe data
+
+name: momotaro
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: momotaro
+      POSTGRES_PASSWORD: momotaro
+      POSTGRES_DB: momotaro
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U momotaro -d momotaro"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # Persistence on: Redis holds the World Simulator's delayed-outcome queue,
+    # and losing it mid-demo would silently drop pending nudge outcomes.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Single-broker KRaft. No ZooKeeper, which is one less container and the
+  # direction Kafka is going anyway.
+  #
+  # Official apache/kafka image, not bitnami/kafka: Bitnami moved their
+  # catalog in 2025 and the free tags were withdrawn. See docs/INCIDENTS.md.
+  kafka:
+    image: apache/kafka:3.9.0
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_NODE_ID: "0"
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      # Two listeners, and this split is load-bearing. A single listener
+      # advertising localhost:9092 breaks in-network clients: kafka-init
+      # connects to kafka:9092, the broker replies "reconnect to
+      # localhost:9092", and inside that container localhost is itself.
+      #   in-network clients (kafka-init, kafka-ui):  kafka:29092
+      #   host clients (services run from your IDE):  localhost:9092
+      KAFKA_LISTENERS: "INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:29092,EXTERNAL://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      # Explicit: auto-creation would mask a topic-name typo as an empty
+      # topic that never receives anything, a miserable bug to find.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+
+  # Creates the three topics once Kafka is healthy, then exits.
+  #
+  # 12 partitions on raw.events, deliberately above expected pod count: a
+  # consumer group assigns each partition to at most one consumer, so a low
+  # partition count would cap Decision Engine parallelism and make the
+  # scaling demo look broken. See ARCHITECTURE.md section 12.
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        K="/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092"
+        $$K --create --if-not-exists --topic raw.events     --partitions 12 --replication-factor 1
+        $$K --create --if-not-exists --topic audit.events   --partitions 12 --replication-factor 1
+        $$K --create --if-not-exists --topic raw.events.dlq --partitions 1  --replication-factor 1
+        echo "topics:"; $$K --list
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      kafka: {condition: service_healthy}
+    ports: ["8080:8080"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: momotaro
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+volumes:
+  pgdata:
+  redisdata:
