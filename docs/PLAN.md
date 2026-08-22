@@ -86,11 +86,18 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       service owns, which tables it may write vs. only read (§10a), its
       proto as interface source of truth, what it must not touch, and how
       to request a change from another service
-- [ ] **Walking skeleton**: one record end to end through all 7 services
+- [x] **Walking skeleton**: one record end to end through all 7 services
       with everything hardcoded (fixed classification, stub outcome, no
       worker pool, no scheduler, no economics) reaching `Recovered` with an
       audit row. This proves integration *before* any agent builds depth,
-      and is the single biggest de-risking step in the plan
+      and is the single biggest de-risking step in the plan. Proven by
+      `test/e2e/walking_skeleton_test.go` (`go test -tags e2e ./test/e2e/...`
+      against `make up` + `make migrate-up`): api-gateway, ingestion,
+      decision-engine, classifier, executor and audit run as real built
+      binaries, one record posted via `POST /v1/batches` reaches
+      `RECORD_STATE_RECOVERED`, verified both in Postgres and via a live
+      `Audit.GetRecordAudit` call. Reporting and the World Simulator/webhook
+      path are still open, see Phase 1.
 
 ## Phase 1: Core pipeline skeleton (prove the loop end to end)
 

@@ -148,3 +148,44 @@ explicit open/closed prop; inferring visibility from whether data happens to
 be loaded is how you get an overlay with nothing behind it. Worth checking
 the other components for the same shape, though `RecordDrawer` was the only
 one using `fixed inset-0`.
+
+### 2026-08-22, walking-skeleton integration test would have replayed stale Kafka messages into a foreign-key error
+
+**What happened:** Caught while writing the walking-skeleton integration
+test, before it ever ran red in CI. Ingestion's own unit tests
+(`services/ingestion/internal/server/server_test.go`) publish to the real
+`raw.events` topic (auto-create is disabled cluster-wide, so there is no
+"scratch" topic without asking for one) to prove the publish-on-submit path,
+then clean up their `batch`/`record` rows afterward. Kafka does not support
+deleting individual messages, so those published messages stay in the topic
+forever, referencing record ids that no longer exist in Postgres.
+
+**Root cause:** A brand-new Kafka consumer group with no committed offsets
+starts from the earliest message in the topic (by design: `kafkax.Consumer`
+defaults to `AtStart`, precisely so a fresh Decision Engine deployment never
+skips a real record). Had the integration test pointed the Decision Engine
+at the shared `raw.events` topic with its real `decision-engine` consumer
+group, it would have replayed every one of those historical test messages
+first. `Engine.HandleMessage` would try to `INSERT INTO record_state` for a
+`record_id` that no longer exists, hit the foreign-key constraint, return an
+error, and `kafkax.Consumer.Consume` stops the whole loop on the first
+handler error (there is no DLQ yet, deliberately out of scope for the
+skeleton) — so the consumer would die before ever reaching the test's actual
+message, and the failure would look like "the pipeline doesn't work" rather
+than "the test fixture was polluted."
+
+**Fix:** Made the raw.events topic name and the Decision Engine's consumer
+group name overridable via `RAW_EVENTS_TOPIC` / `RAW_EVENTS_CONSUMER_GROUP`
+env vars (both default to the production names, so normal operation is
+unaffected). The integration test provisions a fresh, uniquely-named topic
+via a new `kafkax.EnsureTopic` helper and a fresh consumer group per run, so
+it can never see another test's leftovers. See `docs/DECISIONS.md`.
+
+**Prevention:** Any test that publishes to a topic with auto-create disabled
+and no way to delete individual messages should use an isolated topic, not
+the production one, the same way a DB test uses its own rows and cleans them
+up. A fresh consumer group defaulting to `AtStart` is the right choice for
+Decision Engine in production (never skip a real record on first deploy);
+that same default is exactly what makes topic-sharing across test runs
+dangerous, so keep the two environments' topics separate rather than trying
+to make one default safe for both.

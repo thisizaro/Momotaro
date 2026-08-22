@@ -176,3 +176,54 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   and a check that regenerating protos produces no diff, which catches both a
   stale `proto/gen/` and a service PR that quietly edited protos. The
   integration job runs on merge only, since it needs the full stack up.
+- 2026-08-22: Walking skeleton implementation decisions (`PLAN.md` Phase 0's
+  last item), scoped deliberately to the smallest thing that proves the
+  pipeline shape:
+  - **`raw.events` payload is a hand-written JSON struct (`RawEvent`), not a
+    proto.** The topic sits entirely inside the cluster, between Ingestion
+    (producer) and Decision Engine (consumer); `ARCHITECTURE.md` section 9's
+    proto discipline governs gRPC contracts, and nothing there requires an
+    internal Kafka payload to be one too. The type is duplicated by hand in
+    both services' `internal/` trees (Go's `internal/` rule means neither can
+    import the other's copy) with a doc comment pointing at its mirror. If
+    this schema grows past a handful of fields, promote it to a real proto
+    under `proto/` rather than hand-syncing further.
+  - **Decision Engine's walking-skeleton flow collapses `New` straight to
+    `Recovered` or `Escalated`**, skipping `Scoring`/`RetryScheduled`/
+    `Retrying` (`ARCHITECTURE.md` section 7). Those states exist for the
+    economics scorer and the scheduler worker, both explicitly out of scope
+    here (`PLAN.md`); collapsing them is not a shortcut on the real state
+    machine, it is the correct shape for a build that has neither component
+    yet. The audit entry still records the logical `New -> {Recovered,
+    Escalated}` transition so the trail reads correctly once those states are
+    reintroduced.
+  - **Executor's idempotency guard is insert-then-update, not insert-with-
+    final-outcome.** `intervention_attempt.outcome` is NOT NULL, so the
+    walking skeleton inserts the row as `OUTCOME_PENDING` (claiming the
+    `UNIQUE(record_id, attempt_number)` slot) before calling the outcome
+    stub, then updates it. A redelivered request that loses the insert race
+    polls briefly for the row to leave `PENDING` rather than assuming
+    success, so a genuine concurrent duplicate cannot observe a torn read.
+    Proven under `-race` with concurrent duplicate delivery
+    (`services/executor/internal/server/server_test.go`).
+  - **`raw.events` topic and the Decision Engine's consumer group are
+    overridable via `RAW_EVENTS_TOPIC`/`RAW_EVENTS_CONSUMER_GROUP` env vars**,
+    defaulting to the production names. Added specifically so the
+    integration test can run against an isolated scratch topic instead of
+    the shared one; see `INCIDENTS.md` for why that matters in practice, not
+    just in theory.
+  - **`POST /v1/batches`'s request body uses short record-type names**
+    (`PAYMENT`/`MANDATE`/`CHECKOUT`/`INVOICE`) rather than the internal proto
+    enum spelling (`RECORD_TYPE_PAYMENT`, ...), since this is the one shape
+    an external caller (the demo load generator, a judge with curl) actually
+    types. `docs/API_GATEWAY.md` updated to match, this was previously
+    unspecified ("array of synthetic records").
+  - Proven end to end by `test/e2e/walking_skeleton_test.go`
+    (`go test -tags e2e ./test/e2e/...`), which builds and runs the six real
+    service binaries as subprocesses against the docker-compose infra rather
+    than wiring their `internal/` packages together in one test process: no
+    single directory has import access to more than one service's
+    `internal/` tree by construction (`ARCHITECTURE.md` section 2a), so an
+    in-process wiring test was never an option here, and the subprocess
+    shape is closer to how the system actually runs (`make up` + one
+    binary per service) besides.

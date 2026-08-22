@@ -38,10 +38,31 @@ made to wait on our whole recovery pipeline.
 Submit a batch for the agent to process. Used by the demo, and in production
 for backfill/replay. Converges onto the same pipeline as the webhook above.
 
-Request body: array of synthetic records (or a reference to a pre-generated
-batch file produced by `scripts/`).
+Request body:
+```json
+{
+  "source": "synthetic-demo",
+  "records": [
+    {
+      "type": "PAYMENT",
+      "amount_paise": 50000,
+      "currency": "INR",
+      "failure_code": "BANK_TIMEOUT",
+      "instrument_ref": "card_ref_1"
+    }
+  ]
+}
+```
+`type` is one of `PAYMENT`, `MANDATE`, `CHECKOUT`, `INVOICE`. `currency`
+defaults to `INR` if omitted.
 
-Response: `{ "batch_id": "<uuid>" }`. Every subsequent call scopes to this
+Response:
+```json
+{ "batch_id": "<uuid>", "accepted_count": 1, "rejected": {} }
+```
+`rejected` maps the string index of any record that failed validation (e.g.
+`amount_paise` not positive) to a human-readable reason; a partial accept is
+reported, never silently dropped. Every subsequent call scopes to
 `batch_id`.
 
 ### `GET /v1/batches/{batch_id}/report`
