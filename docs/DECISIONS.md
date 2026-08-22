@@ -77,11 +77,13 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `buf lint` + `buf breaking` in CI, plus naming/versioning/field-number
   conventions (`ARCHITECTURE.md` §9), so the proto-PR-first rule is
   mechanically enforced instead of remembered.
-- 2026-08-22: Operational rules for concurrent agents: `docs/PLAN.md` and
-  this decision log are orchestrator-only (they would otherwise conflict on
-  every PR), agents stay inside their assigned service, and a **walking
-  skeleton** (one record through all 7 services, everything hardcoded) is
-  now a Phase 0 gate before any agent builds depth.
+- 2026-08-22: Operational rules for concurrent agents: agents stay inside
+  their assigned service, and a **walking skeleton** (one record through
+  all 7 services, everything hardcoded) is now a Phase 0 gate before any
+  agent builds depth. (This entry originally also made `docs/PLAN.md` and
+  the decision log orchestrator-only; **superseded** later the same day by
+  the union-merge decision below, which removed the need for that
+  bottleneck.)
 - 2026-08-22: Added `docs/ENGINEERING.md` as mandatory reading before any
   code, covering TDD, clock injection, context deadlines, error handling,
   fail-fast config, graceful shutdown and probes, concurrency bounds, money
@@ -101,7 +103,6 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Gateway auth decided as a static shared API key, not real user/session
   auth, deliberately, documented alongside other real-world-vs-hackathon
   simplifications in `docs/ARCHITECTURE.md` §17.
-
 - 2026-08-22: Repo initialised as `Momotaro`, single `main` branch, remote
   `github.com/thisizaro/Momotaro`. Decision log split out of `AGENTS.md`
   into this file, and both this file and `docs/PLAN.md` given git's
