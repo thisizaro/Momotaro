@@ -166,3 +166,13 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   deliberately above expected pod count, so the Decision Engine's consumer
   parallelism is never capped by the partition ceiling during the scaling
   demo (`ARCHITECTURE.md` §12).
+- 2026-08-22: CI split by concern (lint, build+test, proto, docker matrix,
+  integration) rather than one monolithic job, so concurrent small PRs from
+  several agents do not queue behind each other's compile time. Three
+  enforcement gates worth naming: `go test -race` is mandatory (a suite that
+  only passes serially hides a real bug in a system with a keyed worker pool
+  and a concurrent scheduler); `buf breaking` runs on PRs so an incompatible
+  proto change fails in CI instead of surprising another agent mid-branch;
+  and a check that regenerating protos produces no diff, which catches both a
+  stale `proto/gen/` and a service PR that quietly edited protos. The
+  integration job runs on merge only, since it needs the full stack up.

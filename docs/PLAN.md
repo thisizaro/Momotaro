@@ -27,17 +27,17 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       `.gitignore` (Go binaries, `.env`, `web/node_modules`; **not**
       `proto/gen/`, that is committed) and root `.dockerignore`.
       Also `.gitattributes` with `merge=union` on `PLAN.md`/`DECISIONS.md`.
-      *(Not yet pushed to the remote.)*
-- [ ] Single root `go.mod`, module path fixed (e.g.
+      Pushed to origin.
+- [x] Single root `go.mod`, module path fixed (e.g.
       `github.com/thisizaro/Momotaro`), Go version pinned
       → `ARCHITECTURE.md` §2a
-- [ ] Top-level layout created: `services/` (7 product services, each with
+- [x] Top-level layout created: `services/` (7 product services, each with
       `cmd/`, `internal/`, `Dockerfile`, `AGENTS.md`), `demo/` (same shape,
       hackathon-only stand-ins), `internal/platform/`, `proto/`,
       `migrations/`, `web/` → `AGENTS.md` "Layout", `ARCHITECTURE.md` §2a, §3b
-- [ ] Scaffold script in `scripts/` that generates that structure. Run
+- [x] Scaffold script in `scripts/` that generates that structure. Run
       **once** by the orchestrator and committed, not run per agent
-- [ ] **Contracts first, before any service code.** `buf` pinned,
+- [x] **Contracts first, before any service code.** `buf` pinned,
       `buf.yaml` + `buf.gen.yaml` committed, `.proto` for API Gateway,
       Ingestion, Classifier, Executor, World Simulator
       (`RecoveryActionPort`), Notification Simulator (`NotificationPort`),
@@ -46,9 +46,9 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       versioned package, dedicated Request/Response per RPC, enum zero
       values, `int64` paise for money
       → `ARCHITECTURE.md` §9, §2a, §3b, §6a
-- [ ] `proto/gen/` generated and committed; `buf lint` + `buf breaking`
+- [x] `proto/gen/` generated and committed; `buf lint` + `buf breaking`
       wired into CI → `ARCHITECTURE.md` §9
-- [ ] `migrations/` set up with a pinned tool (goose or golang-migrate),
+- [x] `migrations/` set up with a pinned tool (goose or golang-migrate),
       first migration includes `BATCH`, `RECORD.batch_id`,
       `RECORD_STATE.due_at`, and the `UNIQUE (record_id, attempt_number)`
       constraint on `INTERVENTION_ATTEMPT`, none of it bolted on later
@@ -56,17 +56,22 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
 - [x] `docs/ENGINEERING.md` written and its Definition of Done adopted as
       the gate for every checkbox in this file (referenced from this file's
       header and from `AGENTS.md`). Each agent still has to actually read it.
-- [ ] Shared internal packages built once, before services need them, so
-      seven agents don't write seven versions: `Clock` interface,
-      structured logger, config loader with fail-fast validation, gRPC
-      interceptors (metrics/tracing/recovery), graceful-shutdown helper
-      → `ENGINEERING.md` §2, §3, §5, §6, §9
-- [ ] `docker-compose.yml` for local dev: Postgres, Redis, Kafka
+- [x] Shared internal packages, part 1: `Clock` (with controllable Fake),
+      structured logger with fixed correlation keys, fail-fast config
+      loader. All tested under `-race`
+      → `ENGINEERING.md` §2, §5, §9
+- [ ] Shared internal packages, part 2: gRPC interceptors
+      (metrics/tracing/recovery/deadline), graceful-shutdown helper, and the
+      `kafkax`/`pgx` helpers. Library choices are already pinned in each
+      package's doc.go; recovery + deadline interceptors and the shutdown
+      helper should land with the first service, the rest in Phase 4
+      → `ENGINEERING.md` §3, §6, `ARCHITECTURE.md` §8a, §13
+- [x] `docker-compose.yml` for local dev: Postgres, Redis, Kafka
       (single-broker/KRaft is fine), plus a Kafka UI (redpanda console or
       kafdrop) for inspecting topics by hand → `ARCHITECTURE.md` §3, §8
-- [ ] `.env.example` checked in, real `.env` gitignored, includes the static
+- [x] `.env.example` checked in, real `.env` gitignored, includes the static
       demo API key → `AGENTS.md` "Secrets and config", `ARCHITECTURE.md` §17
-- [ ] Basic CI: GitHub Actions, build + unit test on every push/PR,
+- [x] Basic CI: GitHub Actions, build + unit test on every push/PR,
       path-filtered per service once services exist → `AGENTS.md`
       "Branching and CI conventions"
 - [x] `AGENTS.md` "Testing conventions" and "Secrets and config" sections
@@ -74,10 +79,10 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
 - [ ] `web/` scaffolded (framework choice open) against the already-written
       `docs/API_GATEWAY.md` contract, can start in parallel with backend
       work using mocked responses → `web/AGENTS.md`
-- [ ] One `Dockerfile` per service, multi-stage, build context = repo root,
+- [x] One `Dockerfile` per service, multi-stage, build context = repo root,
       one binary per image. Verify each image builds before fan-out
       → `ARCHITECTURE.md` §2a
-- [ ] Per-service `AGENTS.md` written from a shared template: what this
+- [x] Per-service `AGENTS.md` written from a shared template: what this
       service owns, which tables it may write vs. only read (§10a), its
       proto as interface source of truth, what it must not touch, and how
       to request a change from another service

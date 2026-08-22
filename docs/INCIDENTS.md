@@ -37,8 +37,8 @@ Keep each one to a few lines. A dozen short honest entries beat two essays.
 
 ## Entries
 
-<!-- Append below. Nothing has broken yet, because nothing has been built
-     yet. That will change. -->
+<!-- Append new entries at the bottom. -->
+
 ### 2026-08-22, bitnami/kafka:3.9 does not exist
 **What happened:** `docker compose up` failed with `failed to resolve
 reference "docker.io/bitnami/kafka:3.9": not found`.

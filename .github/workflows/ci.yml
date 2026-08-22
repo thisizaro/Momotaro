@@ -1,0 +1,127 @@
+# CI. Mirrors `make check` so a green local run means a green PR.
+#
+# Jobs are split by concern rather than by service: with several agents
+# merging small PRs concurrently, a single monolithic job means everyone waits
+# on everyone else's compile time.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  # Fast feedback: formatting and vet before anyone waits on tests.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+      - run: go vet ./...
+
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - run: go build ./...
+      # -race is mandatory: this system runs a keyed worker pool and a
+      # scheduler polling concurrently, so a suite that only passes serially
+      # is hiding a real bug (docs/ENGINEERING.md section 1).
+      - run: go test -race ./...
+
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}   # buf breaking needs history to compare
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - name: install pinned proto tooling
+        run: make tools
+      - name: lint
+        run: make proto-lint
+      # Mechanically enforces the proto-PR-first rule: a backwards
+      # incompatible change fails here rather than surprising another agent
+      # mid-branch (docs/ARCHITECTURE.md section 9).
+      - name: breaking-change check
+        if: github.event_name == 'pull_request'
+        run: cd proto && buf breaking --against "https://github.com/${{ github.repository }}.git#branch=main,subdir=proto"
+      # A service PR must never carry generated-code changes. If regenerating
+      # produces a diff, either gen/ is stale or this PR edited protos without
+      # being a proto PR. Both need splitting.
+      - name: generated code is up to date
+        run: |
+          cd proto && buf generate && cd ..
+          if ! git diff --quiet -- proto/gen; then
+            echo "::error::proto/gen is stale or this PR mixes proto and service changes."
+            git diff --stat -- proto/gen; exit 1
+          fi
+
+  # Proves each service image actually builds, and that its Dockerfile
+  # respects the repo-root build context (docs/ARCHITECTURE.md section 2a).
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - services/api-gateway
+          - services/ingestion
+          - services/decision-engine
+          - services/classifier
+          - services/executor
+          - services/audit
+          - services/reporting
+          - demo/world-simulator
+          - demo/notification-simulator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .                                  # repo root, by design
+          file: ${{ matrix.service }}/Dockerfile
+          push: false
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # The end-to-end test needs the full stack up, so it runs on merge rather
+  # than on every PR (docs/AGENTS.md testing conventions).
+  integration:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - name: start infra
+        run: docker compose up -d --wait
+      - name: migrate
+        env:
+          POSTGRES_DSN: postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable
+        run: make migrate-up
+      - name: integration tests
+        env:
+          POSTGRES_DSN: postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable
+          REDIS_ADDR: localhost:6379
+          KAFKA_BROKERS: localhost:9092
+        run: go test -race -tags=integration ./... 
+      - name: infra logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
