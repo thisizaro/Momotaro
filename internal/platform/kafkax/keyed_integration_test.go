@@ -13,6 +13,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// keysOnDistinctWorkers returns two keys that ConsumeKeyed's own dispatch
+// routes to *different* workers in a pool of poolSize, found by asking
+// workerFor rather than by hoping.
+//
+// This exists because the obvious version of this test, two random UUIDs,
+// is flaky by construction: dispatch is hash(key) % poolSize, so two
+// unrelated keys share a worker with probability 1/poolSize, and a sharing
+// pair serialises exactly the thing the test is trying to observe running
+// in parallel. See docs/INCIDENTS.md.
+func keysOnDistinctWorkers(t *testing.T, poolSize int) (blocked, free string) {
+	t.Helper()
+	blocked = "keyed-concurrency-blocked"
+	for i := 0; i < 256; i++ {
+		free = fmt.Sprintf("keyed-concurrency-free-%d", i)
+		if workerFor(free, poolSize) != workerFor(blocked, poolSize) {
+			return blocked, free
+		}
+	}
+	t.Fatalf("found no key routing to a different worker than %q in a pool of %d", blocked, poolSize)
+	return "", ""
+}
+
 func TestConsumeKeyedProcessesDifferentKeysConcurrently(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -28,7 +50,11 @@ func TestConsumeKeyedProcessesDifferentKeysConcurrently(t *testing.T) {
 	}
 	defer producer.Close()
 
-	blockedKey, freeKey := uuid.NewString(), uuid.NewString()
+	// One constant for both the key choice and ConsumeKeyed below: picking
+	// keys for one pool size and then consuming with another is precisely
+	// how this test came to be flaky in the first place.
+	const poolSize = 4
+	blockedKey, freeKey := keysOnDistinctWorkers(t, poolSize)
 	if err := producer.Publish(ctx, topic, blockedKey, []byte("blocked")); err != nil {
 		t.Fatalf("publish blocked: %v", err)
 	}
@@ -48,7 +74,7 @@ func TestConsumeKeyedProcessesDifferentKeysConcurrently(t *testing.T) {
 	consumeCtx, consumeCancel := context.WithCancel(ctx)
 	defer consumeCancel()
 	go func() {
-		_ = consumer.ConsumeKeyed(consumeCtx, 4, func(ctx context.Context, m Message) error {
+		_ = consumer.ConsumeKeyed(consumeCtx, poolSize, func(ctx context.Context, m Message) error {
 			switch m.Key {
 			case blockedKey:
 				<-release // held open until the test explicitly frees it
