@@ -358,3 +358,51 @@ correct system, so a phase-gated state machine needs its temporary edges
 added at the same time the phase's code lands, not after. And a response
 field that is hardcoded `true` is not an assertion, it is a comment: an e2e
 test checking it proves nothing. Compute it or do not claim it.
+
+### 2026-08-23, a 1-in-4 flaky test failed CI on a docs-only merge
+**What happened:** The `integration` job failed on the push run for the
+merge of PR #12, a documentation-only change that touched no Go code at all.
+The same commit's own PR check had passed minutes earlier, and every one of
+the previous eleven CI runs was green. The failure was
+`TestConsumeKeyedProcessesDifferentKeysConcurrently`: "the free key's
+handler never ran while the blocked key's handler was stuck; pool did not
+run concurrently".
+**Root cause:** The test was flaky by construction, and had been since it
+was written. It published two messages under `uuid.NewString()` keys, then
+asserted that blocking one key's handler did not block the other's. But
+`ConsumeKeyed` dispatches with `workerFor(key, poolSize)`, which is
+`fnv(key) % poolSize`, and the test used a pool of 4. Two unrelated random
+keys therefore land on the same worker with probability 1/4, and when they
+do the blocked handler parks that worker while the second message sits in
+its queue, so the free handler genuinely never runs. The test then fails,
+correctly reporting an absence of concurrency that its own key choice
+caused. Measured by running it 14 times in a loop: 4 failures, 29%, against
+a predicted 25%.
+**Why it took a docs PR to surface:** nothing about the failure depended on
+the diff, so it was pure luck which run drew the short straw. It also means
+the earlier "verified green, ran it multiple times" reports on the
+ConsumeKeyed and Decision Engine work were weaker evidence than they
+sounded: roughly a 1-in-4 coin was being flipped each run and kept landing
+the right way.
+**Fix:** The test now picks its two keys by asking `workerFor` for a pair
+that routes to different workers, instead of hoping two random ones do, and
+takes the pool size from a single constant shared with the `ConsumeKeyed`
+call so the two can never drift apart. Also added the unit tests
+`workerFor` never had: stability for a repeated key (which is what the
+whole per-key ordering guarantee rests on), staying inside `[0, poolSize)`,
+and actually spreading across the pool rather than collapsing onto worker 0.
+That absence of coverage on a load-bearing four-line function is the reason
+the flaw reached CI at all. Verified with 20 consecutive passes of the
+previously-flaky test, where the old version would have failed about five
+times.
+**Prevention:** Two things. A test that asserts *parallelism* must control
+the thing that determines parallelism; if work is distributed by
+`hash(key) % n`, then the keys are not incidental test fixtures, they are
+the fixture that decides whether the test is testing anything. Random
+identifiers are the right default for isolation (topics, consumer groups,
+record ids) and the wrong default the moment a value feeds a routing or
+sharding decision. And when a test fails on a diff that could not possibly
+have caused it, the failure is evidence about the *test*, not about the
+environment: the first instinct here was to suspect the slower CI runner,
+which would have wasted the afternoon tuning timeouts that were never the
+problem.
