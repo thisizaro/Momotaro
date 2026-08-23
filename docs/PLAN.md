@@ -188,6 +188,20 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       `RecoveryActionPort`/`NotificationPort` interfaces, not the full
       `demo/world-simulator` yet, just enough to prove the state machine
       reaches a terminal state → `ARCHITECTURE.md` §11, upgraded in Phase 5
+- [x] (scope decision, recorded before the Executor work started) the
+      Executor item above says "Redis `SETNX` as the fast path only". That
+      one clause is deliberately deferred out of Phase 1, so the item's
+      checkbox must not be read as covering it. `ARCHITECTURE.md` §11 is
+      explicit that Redis here is "an optimisation only" and that the
+      `UNIQUE (record_id, attempt_number)` constraint is "the actual
+      guarantee", which is already built and tested, so nothing about
+      correctness waits on this. Deferred because
+      `github.com/redis/go-redis/v9` is not in `go.mod` and no
+      `internal/platform/redisx` exists, and the package's other two
+      consumers (Phase 2's cooldowns, Phase 5's delayed-outcome queue) make
+      it a shared-platform concern rather than an Executor-local one. Now
+      tracked as its own items in Phase 2 (the package) and Phase 6 (the
+      fast path) → `DECISIONS.md`, `services/executor/SPEC.md` §4.4, §10
 - [x] Audit Service: serves a record's audit trail, and runs the continuous
       invariant verifier exporting `stopping_rule_violation_total` and
       `incomplete_audit_trail_total`. It does **not** write audit rows, the
@@ -227,6 +241,14 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 
 - [ ] Idempotency proven end-to-end (duplicate Kafka delivery and duplicate
       gRPC retry both handled safely) → `ARCHITECTURE.md` §11
+- [ ] `internal/platform/redisx`: the shared Redis client helper, pinned to
+      `github.com/redis/go-redis/v9` (already named as the choice in
+      `internal/platform/pgx/doc.go`, never actually added to `go.mod`).
+      Needed here first by the cooldown/retry-budget keys below, then by
+      Phase 5's delayed-outcome queue and Phase 6's Executor fast path, so
+      it belongs in `internal/platform/` rather than inside whichever
+      service happens to need it first. Its three key namespaces and TTL
+      policies are already specified → `ARCHITECTURE.md` §10a
 - [ ] Retry budgets, cooldowns, contact caps enforced with automated tests
       → `PRD.md` §11
 - [ ] `configs/intervention_costs.yaml` and the `P(recovery)` prior table
@@ -327,6 +349,17 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       `raw.events` partition count set above expected pod count so the
       demo never hits the partition ceiling
       → `ARCHITECTURE.md` §8a, §12
+- [ ] Executor's Redis `SETNX` fast path, deferred out of Phase 1 (see the
+      scope-decision note there). Depends on `internal/platform/redisx`
+      (Phase 2). Lands here because its only benefit is the saved Postgres
+      round trip on an obvious duplicate, which is a throughput claim, so it
+      belongs with the load run that can actually measure it. Two rules from
+      `ARCHITECTURE.md` §11 are non-negotiable when it is built: Postgres
+      wins any disagreement, and an unreachable Redis must fall through to
+      the durable path rather than fail the request. Prove the second with a
+      test that runs every existing Executor idempotency test against a
+      deliberately broken Redis client
+      → `ARCHITECTURE.md` §11, `services/executor/SPEC.md` §4.4
 
 ## Phase 7: Kubernetes / minikube deployment
 
