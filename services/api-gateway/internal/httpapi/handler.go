@@ -13,6 +13,8 @@ import (
 
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
+	"golang.org/x/time/rate"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Handler serves the Gateway's HTTP routes.
@@ -20,20 +22,44 @@ type Handler struct {
 	ingestion   ingestionv1.IngestionServiceClient
 	apiKey      string
 	callTimeout time.Duration
+	limiter     *rate.Limiter // nil means rate limiting is disabled
 }
 
 // New returns a Handler. apiKey is the static shared key every request must
 // present in X-API-Key (docs/ARCHITECTURE.md section 17: deliberately not
 // real user auth, so a judge can try the API with zero setup).
-func New(ingestion ingestionv1.IngestionServiceClient, apiKey string, callTimeout time.Duration) *Handler {
-	return &Handler{ingestion: ingestion, apiKey: apiKey, callTimeout: callTimeout}
+//
+// rateLimitRPS/rateLimitBurst configure a single token bucket shared across
+// every request the Gateway receives (there is no per-caller identity to key
+// on, section 17 again: this system has no concept of a "user"). Either
+// value <= 0 disables rate limiting entirely, useful for tests and for local
+// development against a single caller.
+func New(ingestion ingestionv1.IngestionServiceClient, apiKey string, callTimeout time.Duration, rateLimitRPS float64, rateLimitBurst int) *Handler {
+	h := &Handler{ingestion: ingestion, apiKey: apiKey, callTimeout: callTimeout}
+	if rateLimitRPS > 0 && rateLimitBurst > 0 {
+		h.limiter = rate.NewLimiter(rate.Limit(rateLimitRPS), rateLimitBurst)
+	}
+	return h
 }
 
-// Routes returns the Gateway's HTTP handler, auth applied to every route.
+// Routes returns the Gateway's HTTP handler. Rate limiting applies first, so
+// an over-limit caller cannot even reach the auth check, then auth, on every
+// route.
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/batches", h.submitBatch)
-	return h.withAuth(mux)
+	mux.HandleFunc("POST /v1/webhooks/payment-failed", h.submitEvent)
+	return h.withRateLimit(h.withAuth(mux))
+}
+
+func (h *Handler) withRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.limiter != nil && !h.limiter.Allow() {
+			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) withAuth(next http.Handler) http.Handler {
@@ -130,6 +156,77 @@ func (h *Handler) submitBatch(w http.ResponseWriter, r *http.Request) {
 		BatchID:       resp.GetBatchId(),
 		AcceptedCount: resp.GetAcceptedCount(),
 		Rejected:      rejected,
+	})
+}
+
+// submitEventRequest is the wire shape for the production webhook entry
+// point: one failure event, as it happens (docs/ARCHITECTURE.md section 0a).
+// occurred_at is optional RFC3339; left unset it defaults to receipt time,
+// same as the underlying NewRecord field.
+type submitEventRequest struct {
+	Type           string `json:"type"`
+	AmountPaise    int64  `json:"amount_paise"`
+	Currency       string `json:"currency"`
+	FailureCode    string `json:"failure_code"`
+	InstrumentRef  string `json:"instrument_ref"`
+	OccurredAt     string `json:"occurred_at"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type submitEventResponse struct {
+	RecordID     string `json:"record_id"`
+	BatchID      string `json:"batch_id"`
+	Deduplicated bool   `json:"deduplicated"`
+}
+
+// submitEvent handles the production entry point. A webhook sender must
+// never be made to wait on the recovery pipeline, so this returns as soon as
+// Ingestion has durably accepted the record (docs/API_GATEWAY.md).
+func (h *Handler) submitEvent(w http.ResponseWriter, r *http.Request) {
+	var req submitEventRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "malformed JSON body")
+		return
+	}
+	if req.FailureCode == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "failure_code is required")
+		return
+	}
+
+	record := &ingestionv1.NewRecord{
+		Type:          recordTypeNames[req.Type],
+		AmountPaise:   req.AmountPaise,
+		Currency:      req.Currency,
+		FailureCode:   req.FailureCode,
+		InstrumentRef: req.InstrumentRef,
+	}
+	if req.OccurredAt != "" {
+		if ts, err := time.Parse(time.RFC3339, req.OccurredAt); err == nil {
+			record.OccurredAt = timestamppb.New(ts)
+		} else {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "occurred_at must be RFC3339")
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), h.callTimeout)
+	defer cancel()
+
+	resp, err := h.ingestion.SubmitEvent(ctx, &ingestionv1.SubmitEventRequest{
+		Record:         record,
+		IdempotencyKey: req.IdempotencyKey,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "INGESTION_UNAVAILABLE", err.Error())
+		return
+	}
+
+	// 202: accepted for asynchronous processing, never made to wait on the
+	// pipeline (docs/API_GATEWAY.md).
+	writeJSON(w, http.StatusAccepted, submitEventResponse{
+		RecordID:     resp.GetRecordId(),
+		BatchID:      resp.GetBatchId(),
+		Deduplicated: resp.GetDeduplicated(),
 	})
 }
 

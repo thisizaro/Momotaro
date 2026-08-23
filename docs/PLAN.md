@@ -106,11 +106,15 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
 
 ## Phase 1: Core pipeline skeleton (prove the loop end to end)
 
-- [ ] API Gateway: real Go service, static API key check, basic rate
+- [x] API Gateway: real Go service, static API key check, basic rate
       limiting, and both entry points routed to Ingestion over gRPC:
       `POST /v1/batches` (demo/backfill) and
       `POST /v1/webhooks/payment-failed` (production shape, one event at a
-      time) → `ARCHITECTURE.md` §0a, §3a, `docs/API_GATEWAY.md`
+      time) → `ARCHITECTURE.md` §0a, §3a, `docs/API_GATEWAY.md`.
+      Rate limiting is a single token-bucket middleware
+      (`RATE_LIMIT_RPS`/`RATE_LIMIT_BURST`, disabled when either is <= 0),
+      applied before auth so an over-limit caller cannot even reach the key
+      check.
 - [ ] Ingestion: gRPC `SubmitBatch(records[]) -> {batch_id}` and
       `SubmitEvent(record) -> {record_id}`, both converging on the same
       `raw.events` publish path so nothing downstream can tell them apart.

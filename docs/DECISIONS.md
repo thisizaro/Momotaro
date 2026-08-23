@@ -253,3 +253,14 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   clients (api-gateway→ingestion, decision-engine→classifier/executor); the
   full test suite including `test/e2e` still passes, since every existing
   call site already set an explicit deadline before this landed.
+- 2026-08-23: API Gateway's "basic rate limiting" (`docs/PLAN.md` Phase 1) is
+  a single global token bucket (`golang.org/x/time/rate`), not per-key or
+  per-IP. Reason: this system has no concept of a per-caller identity to key
+  on, the API key is one static shared secret by design
+  (`ARCHITECTURE.md` §17), so a per-key bucket would just be the global
+  bucket with extra bookkeeping. Configured via `RATE_LIMIT_RPS`/
+  `RATE_LIMIT_BURST`, either <= 0 disables it. Applied before the auth check
+  in the middleware chain, so an over-limit caller is rejected without even
+  reaching the key comparison. Also added `POST /v1/webhooks/payment-failed`
+  → `Ingestion.SubmitEvent`, completing the Phase 1 API Gateway item; the
+  walking skeleton had only wired `POST /v1/batches`.
