@@ -1,6 +1,7 @@
 package kafkax
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -83,5 +84,46 @@ func TestCommitTrackerDuplicateCompleteIsSafe(t *testing.T) {
 	// must not panic or wrongly re-advance.
 	if got, ok := tr.complete(rec(0, 1)); ok {
 		t.Errorf("duplicate complete(1) advanced again: got %v", got)
+	}
+}
+
+// workerFor is the whole basis of ConsumeKeyed's ordering guarantee: same
+// key means same worker means per-key order preserved. It had no unit test
+// until a flaky integration test made its absence obvious
+// (docs/INCIDENTS.md).
+
+func TestWorkerForIsStableForTheSameKey(t *testing.T) {
+	const poolSize = 8
+	first := workerFor("record-abc", poolSize)
+	for i := 0; i < 100; i++ {
+		if got := workerFor("record-abc", poolSize); got != first {
+			t.Fatalf("workerFor drifted on call %d: got %d, want %d; per-key ordering depends on this never varying", i, got, first)
+		}
+	}
+}
+
+func TestWorkerForStaysInRange(t *testing.T) {
+	for _, poolSize := range []int{1, 2, 4, 8, 32} {
+		for i := 0; i < 500; i++ {
+			key := fmt.Sprintf("record-%d", i)
+			got := workerFor(key, poolSize)
+			if got < 0 || got >= poolSize {
+				t.Fatalf("workerFor(%q, %d) = %d, outside [0,%d): a negative or oversized index would panic on the worker slice", key, poolSize, got, poolSize)
+			}
+		}
+	}
+}
+
+// Guards against a degenerate hash that routes everything to worker 0, which
+// would still pass the two tests above while silently serialising the entire
+// pool.
+func TestWorkerForSpreadsAcrossThePool(t *testing.T) {
+	const poolSize = 4
+	seen := make(map[int]bool)
+	for i := 0; i < 200; i++ {
+		seen[workerFor(fmt.Sprintf("record-%d", i), poolSize)] = true
+	}
+	if len(seen) != poolSize {
+		t.Errorf("200 distinct keys reached only %d of %d workers: %v", len(seen), poolSize, seen)
 	}
 }
