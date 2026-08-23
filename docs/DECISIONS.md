@@ -264,6 +264,17 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   reaching the key comparison. Also added `POST /v1/webhooks/payment-failed`
   → `Ingestion.SubmitEvent`, completing the Phase 1 API Gateway item; the
   walking skeleton had only wired `POST /v1/batches`.
+- 2026-08-23: Added migration `00002_record_idempotency_key.sql`: a nullable
+  `record.idempotency_key` column plus a partial unique index (`WHERE
+  idempotency_key IS NOT NULL`). Reason: `proto/ingestion/v1/ingestion.proto`
+  already specifies `SubmitEventRequest.idempotency_key` and
+  `SubmitEventResponse.deduplicated` ("two submissions with the same key are
+  the same event, so a webhook retry cannot create a duplicate record"), but
+  the initial schema had nothing to check that against. Nullable and
+  partial-unique because `SubmitBatch` records never carry one, batch
+  submission has no webhook redelivery to guard against, and NULLs must not
+  collide with each other. Additive only, own migration, ahead of the
+  Ingestion service PR that depends on it, per `ARCHITECTURE.md` §12a.
 - 2026-08-23: Added `ENGINEERING.md` section 14, "one job per file, one job
   per function", and a matching Definition of Done item (section 11, #10).
   Reason: the walking-skeleton gRPC handlers (e.g. Ingestion's `SubmitBatch`)
