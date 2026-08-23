@@ -299,14 +299,18 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   nothing in this file said otherwise. Applies to every service, not just
   the one that prompted it, so it landed here rather than as an unwritten
   convention one agent applies and the rest don't know about.
-- 2026-08-23: Added migration `00003_record_state_pending_action.sql`: a
-  nullable `record_state.pending_action` column. Reason: the Decision
-  Engine's scheduler worker (`ARCHITECTURE.md` §7a) resumes a record when
-  `due_at` passes, but `RECORD_STATE_NUDGE_SCHEDULED` alone does not say
-  whether the scheduled action was `ACTION_TYPE_NUDGE_METHOD_UPDATE` or
-  `ACTION_TYPE_NUDGE_REMINDER`. Rejected deriving it from
-  `root_cause_bucket` instead: that would work today but creates an implicit
-  bucket-to-action coupling that silently breaks if the classifier's mapping
-  ever changes, versus a column that says exactly what was scheduled.
-  Additive only, own migration ahead of the Decision Engine PR that depends
-  on it, per `ARCHITECTURE.md` §12a.
+- 2026-08-23: Added `kafkax.Consumer.ConsumeKeyed`, the keyed worker pool
+  `ARCHITECTURE.md` §8a specifies, ahead of the Decision Engine depth work
+  that needs it. Built in `internal/platform/kafkax` rather than inside
+  `services/decision-engine`, since dispatch-by-key-hash with
+  contiguous-prefix offset commits is generic Kafka consumption
+  infrastructure, not Decision Engine business logic, and `kafkax.go`'s own
+  doc comment already anticipated this landing here ("deliberately not the
+  keyed worker pool... that lands with the Decision Engine's depth work").
+  `Consume` (one-at-a-time) is unchanged and still used by any consumer that
+  doesn't need the pool. Contract: `handler` must resolve every record's
+  fate itself (success or routed to a DLQ) and return nil; a non-nil error
+  is treated as an infrastructure failure and stops the whole loop, mirroring
+  `Consume`'s existing contract. See `docs/INCIDENTS.md`
+  2026-08-23 for a real race this surfaced during testing (commits must run
+  on a context that outlives the shutdown signal that triggers them).
