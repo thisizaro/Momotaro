@@ -20,6 +20,10 @@ type fakeIngestion struct {
 	resp *ingestionv1.SubmitBatchResponse
 	err  error
 	got  *ingestionv1.SubmitBatchRequest
+
+	eventResp *ingestionv1.SubmitEventResponse
+	eventErr  error
+	gotEvent  *ingestionv1.SubmitEventRequest
 }
 
 func (f *fakeIngestion) SubmitBatch(ctx context.Context, in *ingestionv1.SubmitBatchRequest, opts ...grpc.CallOption) (*ingestionv1.SubmitBatchResponse, error) {
@@ -27,11 +31,12 @@ func (f *fakeIngestion) SubmitBatch(ctx context.Context, in *ingestionv1.SubmitB
 	return f.resp, f.err
 }
 func (f *fakeIngestion) SubmitEvent(ctx context.Context, in *ingestionv1.SubmitEventRequest, opts ...grpc.CallOption) (*ingestionv1.SubmitEventResponse, error) {
-	return nil, nil
+	f.gotEvent = in
+	return f.eventResp, f.eventErr
 }
 
 func newHandler(f *fakeIngestion) http.Handler {
-	return New(f, testAPIKey, 2*time.Second).Routes()
+	return New(f, testAPIKey, 2*time.Second, 0, 0).Routes()
 }
 
 func doRequest(h http.Handler, method, path, apiKey, body string) *httptest.ResponseRecorder {
@@ -147,5 +152,139 @@ func TestSubmitBatchPropagatesRejectedRecords(t *testing.T) {
 	}
 	if resp.Rejected["0"] != "amount_paise must be positive" {
 		t.Errorf("Rejected = %v, want index 0 populated", resp.Rejected)
+	}
+}
+
+func TestWebhookRequiresAPIKey(t *testing.T) {
+	h := newHandler(&fakeIngestion{})
+	body := `{"type":"PAYMENT","amount_paise":1000,"failure_code":"BANK_TIMEOUT"}`
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", "", body)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestWebhookSuccess(t *testing.T) {
+	fake := &fakeIngestion{eventResp: &ingestionv1.SubmitEventResponse{RecordId: "rec-1", BatchId: "batch-1"}}
+	h := newHandler(fake)
+
+	body := `{"type":"MANDATE","amount_paise":250000,"currency":"INR","failure_code":"INSUFFICIENT_FUNDS","instrument_ref":"mandate_1","idempotency_key":"evt-abc"}`
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", testAPIKey, body)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp submitEventResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RecordID != "rec-1" {
+		t.Errorf("RecordID = %q, want rec-1", resp.RecordID)
+	}
+
+	if fake.gotEvent == nil {
+		t.Fatal("ingestion.SubmitEvent was not called")
+	}
+	if fake.gotEvent.IdempotencyKey != "evt-abc" {
+		t.Errorf("IdempotencyKey = %q, want evt-abc", fake.gotEvent.IdempotencyKey)
+	}
+	rc := fake.gotEvent.Record
+	if rc.Type != commonv1.RecordType_RECORD_TYPE_MANDATE {
+		t.Errorf("Type = %v, want RECORD_TYPE_MANDATE", rc.Type)
+	}
+	if rc.AmountPaise != 250000 {
+		t.Errorf("AmountPaise = %d, want 250000", rc.AmountPaise)
+	}
+	if rc.InstrumentRef != "mandate_1" {
+		t.Errorf("InstrumentRef = %q, want mandate_1", rc.InstrumentRef)
+	}
+}
+
+func TestWebhookRejectsMalformedJSON(t *testing.T) {
+	h := newHandler(&fakeIngestion{})
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", testAPIKey, `not json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestWebhookRejectsMissingFailureCode(t *testing.T) {
+	h := newHandler(&fakeIngestion{})
+	body := `{"type":"PAYMENT","amount_paise":1000}`
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", testAPIKey, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestWebhookPropagatesIngestionError(t *testing.T) {
+	fake := &fakeIngestion{eventErr: context.DeadlineExceeded}
+	h := newHandler(fake)
+	body := `{"type":"PAYMENT","amount_paise":1000,"failure_code":"BANK_TIMEOUT"}`
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", testAPIKey, body)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestWebhookDeduplicated(t *testing.T) {
+	fake := &fakeIngestion{eventResp: &ingestionv1.SubmitEventResponse{RecordId: "rec-1", Deduplicated: true}}
+	h := newHandler(fake)
+	body := `{"type":"PAYMENT","amount_paise":1000,"failure_code":"BANK_TIMEOUT","idempotency_key":"evt-abc"}`
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", testAPIKey, body)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 even when deduplicated, body=%s", rec.Code, rec.Body.String())
+	}
+	var resp submitEventResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.RecordID != "rec-1" {
+		t.Errorf("RecordID = %q, want rec-1", resp.RecordID)
+	}
+}
+
+func TestRateLimitAllowsWithinBurst(t *testing.T) {
+	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "b1", AcceptedCount: 1}}
+	h := New(fake, testAPIKey, 2*time.Second, 100, 2).Routes()
+
+	body := `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`
+	for i := 0; i < 2; i++ {
+		rec := doRequest(h, http.MethodPost, "/v1/batches", testAPIKey, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200, body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestRateLimitRejectsOverBurst(t *testing.T) {
+	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "b1", AcceptedCount: 1}}
+	// A tiny sustained rate with a burst of 1: the first request consumes the
+	// only token, the second must be rejected before the bucket refills.
+	h := New(fake, testAPIKey, 2*time.Second, 1, 1).Routes()
+
+	body := `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`
+	rec1 := doRequest(h, http.MethodPost, "/v1/batches", testAPIKey, body)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request: status = %d, want 200, body=%s", rec1.Code, rec1.Body.String())
+	}
+	rec2 := doRequest(h, http.MethodPost, "/v1/batches", testAPIKey, body)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request: status = %d, want 429, body=%s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestRateLimitZeroDisables(t *testing.T) {
+	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "b1", AcceptedCount: 1}}
+	h := newHandler(fake) // rps=0, burst=0 means disabled
+
+	body := `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`
+	for i := 0; i < 5; i++ {
+		rec := doRequest(h, http.MethodPost, "/v1/batches", testAPIKey, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200 (limiter disabled), body=%s", i, rec.Code, rec.Body.String())
+		}
 	}
 }

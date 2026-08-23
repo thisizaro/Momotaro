@@ -32,10 +32,12 @@ const serviceName = "api-gateway"
 // serviceConfig adds this service's own settings to the shared ones.
 type serviceConfig struct {
 	config.Common
-	IngestionAddr string
-	APIKey        string
-	HTTPPort      int
-	CallTimeout   time.Duration
+	IngestionAddr  string
+	APIKey         string
+	HTTPPort       int
+	CallTimeout    time.Duration
+	RateLimitRPS   float64
+	RateLimitBurst int
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -46,6 +48,12 @@ func loadConfig() (serviceConfig, error) {
 		APIKey:        l.Str("API_KEY"),
 		HTTPPort:      l.Port("HTTP_PORT", 8090),
 		CallTimeout:   l.Duration("CALL_TIMEOUT", 5*time.Second),
+		// Basic protection against a runaway caller, not per-tenant fairness:
+		// this system has no concept of a "user" to key on (ARCHITECTURE.md
+		// section 17). Defaults comfortably clear the 50 records/sec NFR
+		// (PRD.md section 10) with headroom for bursts.
+		RateLimitRPS:   l.Float("RATE_LIMIT_RPS", 100),
+		RateLimitBurst: l.Int("RATE_LIMIT_BURST", 200),
 	}
 	return cfg, l.Err()
 }
@@ -84,7 +92,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	defer ingestionConn.Close()
 
-	handler := httpapi.New(ingestionv1.NewIngestionServiceClient(ingestionConn), cfg.APIKey, cfg.CallTimeout)
+	handler := httpapi.New(ingestionv1.NewIngestionServiceClient(ingestionConn), cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
 
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
