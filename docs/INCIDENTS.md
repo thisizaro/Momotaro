@@ -346,12 +346,26 @@ rather than computing it, so `test/e2e/walking_skeleton_test.go`'s
 Audit's own `VerifyInvariants` tests seed their own records using transitions
 that are already in the allowed map, so they never exercise what the real
 pipeline emits.
-**Fix:** Not yet applied; recorded here and in `services/executor/SPEC.md`
-section 10 so the next agent in either service does not rediscover it or
-assume they caused it. Belongs to whoever owns the Audit service: add the two
-missing edges carrying the same `TEMPORARY` comment style the existing
-`NEW -> RECOVERED` edge already uses (they stop being produced once `Scoring`
-lands), and make `TrailComplete` an actual computation over the trail.
+**Fix:** Added the two missing edges, carrying the same `TEMPORARY` comment
+style the existing `NEW -> RECOVERED` edge already uses, to be removed
+together with it once `Scoring` lands. Made `trail_complete` an actual
+computation, running the same `incompleteTrail`/`impossibleTransition` checks
+`VerifyInvariants` aggregates rather than a second implementation that could
+drift from them. Verified against the live database: all four edges the
+pipeline has actually written are now accepted.
+**A second problem found while fixing the first:** the pre-existing
+`TestGetRecordAuditReturnsRecordStateAndEntries` fixture opened with a
+fabricated `UNSPECIFIED -> NEW` "ingested" audit entry. Nothing in the system
+writes that. Ingestion writes no audit rows at all (section 10a), the
+Decision Engine's first entry is always `NEW -> <state>`, and the state
+machine explicitly forbids `UNSPECIFIED` as a from-state, which
+`statemachine_test.go` even asserts. So that test had been asserting
+`TrailComplete == true` over a trail the system considers invalid, and passed
+only because the field was hardcoded. Making the field real turned it red
+immediately, which is the textbook "test that was passing for the wrong
+reason" from `ENGINEERING.md` section 12. Its fixture now uses the three
+transitions the pipeline genuinely produces (classify, claim, outcome), the
+same correction already applied to the end-to-end test.
 **Prevention:** Two lessons. A verifier whose expectations come from the
 target design rather than the current phase's behaviour will disagree with a
 correct system, so a phase-gated state machine needs its temporary edges

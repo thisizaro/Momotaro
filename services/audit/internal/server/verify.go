@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
+	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 )
 
 // maxExamples bounds VerifyInvariantsResponse.examples so a systemic bug
@@ -51,6 +52,49 @@ func verifyInvariants(snapshots []recordSnapshot) *auditv1.VerifyInvariantsRespo
 		// (docs/ENGINEERING.md section 13).
 	}
 	return resp
+}
+
+// trailComplete reports whether snap's history is a sound account of how it
+// reached its current state: every state change has an entry, the entries
+// chain, and every edge is legal.
+//
+// This is exactly what GetRecordAuditResponse.trail_complete claims, so it
+// runs the same two checks VerifyInvariants aggregates rather than a second
+// implementation that could drift. It previously did not exist at all and
+// the field was hardcoded true, which made the end-to-end test's assertion
+// on it vacuous (docs/INCIDENTS.md 2026-08-23).
+func trailComplete(snap recordSnapshot) bool {
+	if !snap.HasState {
+		// Ingested but not yet picked up by Decision Engine. No state change
+		// has happened, so there is no trail that could be missing one.
+		return true
+	}
+	if _, bad := incompleteTrail(snap); bad {
+		return false
+	}
+	if _, bad := impossibleTransition(snap); bad {
+		return false
+	}
+	return true
+}
+
+// snapshotFor builds the verifier's view of one record out of what
+// GetRecordAudit has already loaded, so that RPC can answer trail_complete
+// without a second trip to Postgres and without its own notion of what
+// "complete" means.
+func snapshotFor(recordID string, currentState commonv1.RecordState, entries []*auditv1.AuditEntry) recordSnapshot {
+	snap := recordSnapshot{
+		RecordID: recordID,
+		// store.go's loadCurrentState reports UNSPECIFIED for a record with
+		// no RECORD_STATE row yet, which is the same fact HasState=false
+		// carries to the verifier.
+		HasState:     currentState != commonv1.RecordState_RECORD_STATE_UNSPECIFIED,
+		CurrentState: currentState,
+	}
+	for _, e := range entries {
+		snap.Entries = append(snap.Entries, transition{From: e.GetFromState(), To: e.GetToState()})
+	}
+	return snap
 }
 
 // incompleteTrail reports a record whose RECORD_STATE and AUDIT_ENTRY trail
