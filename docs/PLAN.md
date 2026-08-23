@@ -242,6 +242,15 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       interceptor work across every service, not Audit-only. Refactored the
       existing `GetRecordAudit` into the same `store`/`statemachine`/
       `verify`/`watch` split per `ENGINEERING.md` §14.
+- [x] (unplanned, the Phase 0 CI box claimed this but it was never built)
+      the Docker matrix had no path filtering, so every PR rebuilt all nine
+      service images even when it changed only documentation. Now a `changed`
+      job computes the matrix from the diff
+      (`.github/scripts/changed-services.sh`) and `docker` is skipped
+      entirely when nothing that reaches an image changed. Fails safe: shared
+      inputs every image embeds (`go.mod`, `internal/platform/`, `proto/`,
+      `.github/`) rebuild everything, and so does an undeterminable diff
+      base → `AGENTS.md` "Branching and CI conventions"
 - [x] (unplanned, found while writing `services/executor/SPEC.md`) the
       invariant verifier above rejected every record the Phase 1 pipeline
       produces. Its state machine had no `NEW -> RETRY_SCHEDULED` or
