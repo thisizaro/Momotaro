@@ -24,6 +24,8 @@ import (
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
+	"github.com/thisizaro/Momotaro/services/executor/internal/attempt"
+	"github.com/thisizaro/Momotaro/services/executor/internal/ports"
 	"github.com/thisizaro/Momotaro/services/executor/internal/server"
 	"google.golang.org/grpc"
 )
@@ -38,6 +40,12 @@ func main() {
 
 	l := config.NewLoader()
 	cfg := config.LoadCommon(l, serviceName)
+	// How long after a nudge goes out the customer's answer is expected.
+	// Scaled like every other wall-clock wait so DEMO_TIME_SCALE actually
+	// compresses it (docs/ARCHITECTURE.md section 17); without the Scale call
+	// a demo would run with nudges resolving on a real clock while everything
+	// else was compressed.
+	nudgeResolveDelay := cfg.Scale(l.Duration("NUDGE_RESOLVE_DELAY", 2*time.Minute))
 	if err := l.Err(); err != nil {
 		slogFallback().Error("fatal", "err", err)
 		os.Exit(1)
@@ -45,7 +53,7 @@ func main() {
 
 	log := logger.New(cfg.ServiceName, cfg.LogLevel)
 
-	if err := run(ctx, cfg, log); err != nil {
+	if err := run(ctx, cfg, nudgeResolveDelay, log); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
@@ -56,7 +64,7 @@ func slogFallback() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
 }
 
-func run(ctx context.Context, cfg config.Common, log *slog.Logger) error {
+func run(ctx context.Context, cfg config.Common, nudgeResolveDelay time.Duration, log *slog.Logger) error {
 	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	pool, err := pgxpkg.NewPool(connectCtx, cfg.PostgresDSN)
 	cancel()
@@ -74,7 +82,14 @@ func run(ctx context.Context, cfg config.Common, log *slog.Logger) error {
 		interceptors.UnaryServerRecovery(),
 		interceptors.UnaryServerRequireDeadline(),
 	))
-	executorv1.RegisterExecutorServiceServer(grpcServer, server.New(pool, clock.New(), server.StubOutcome))
+	// The two ports from docs/ARCHITECTURE.md section 3b, backed by Phase 1's
+	// scripted stubs. Phase 5 swaps these for gRPC clients dialling
+	// demo/world-simulator and demo/notification-simulator, with no change to
+	// internal/server.
+	clk := clock.New()
+	router := ports.NewRouter(ports.StubRecovery{}, ports.StubNotification{}, clk, nudgeResolveDelay)
+	executorv1.RegisterExecutorServiceServer(grpcServer,
+		server.New(attempt.NewStore(pool), router, clk))
 
 	serveErr := make(chan error, 1)
 	go func() {

@@ -216,13 +216,36 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       them yet. Deleted `TestClassifyIsHardcodedRegardlessOfInput`
       (walking skeleton only, asserted the exact property this task
       removes).
-- [ ] Executor: **insert-before-execute** idempotency against the
+- [x] Executor: **insert-before-execute** idempotency against the
       `UNIQUE (record_id, attempt_number)` constraint (the durable
       guarantee), Redis `SETNX` as the fast path only, calls a minimal
       **stub** outcome source (fixed/scripted responses) via the
       `RecoveryActionPort`/`NotificationPort` interfaces, not the full
       `demo/world-simulator` yet, just enough to prove the state machine
-      reaches a terminal state → `ARCHITECTURE.md` §11, upgraded in Phase 5
+      reaches a terminal state → `ARCHITECTURE.md` §11, upgraded in Phase 5.
+      The two ports are now real Go interfaces (`internal/ports`) shaped to
+      mirror `worldsim`/`notifier` protos, so Phase 5's adapter is a thin
+      translation; routing by action type lives in one place, and `ESCALATE`
+      reports failure rather than a false success since handing a record to a
+      human is not something the Executor can do. The stub is **scripted, not
+      random** (retry attempt 1 succeeds, 2+ fail, nudges go out and return
+      `PENDING`), so both branches of the post-execute state machine are
+      reachable and Phase 2's re-run safety test stays possible. Real
+      per-action costs land on the attempt row, which is what makes "net
+      recovered" a measurement. `resolves_at` is produced but not yet
+      consumed: its caller (`ReportDelayedOutcome`) is Phase 5. Redis fast
+      path deferred, see the scope-decision note below. Split into
+      `ports/`, `attempt/` and `server/` per `ENGINEERING.md` §14, with the
+      ports layer database-free so its tests need no stack.
+- [x] (unplanned, found while writing the Executor's scripted stub) reusing
+      `OUTCOME_PENDING` as the "claim taken, still working" marker on
+      `INTERVENTION_ATTEMPT` became ambiguous the moment a nudge legitimately
+      resolved to `PENDING`: a redelivered nudge would poll for an answer not
+      arriving until Phase 5, blow its deadline and be dead-lettered despite
+      having executed perfectly. Now claimed with `OUTCOME_UNSPECIFIED`
+      (the enum's "unset", per `common.proto`'s own convention) and the wait
+      is bounded, so an abandoned claim is reported rather than guessed at.
+      No migration needed → `ARCHITECTURE.md` §11, `docs/INCIDENTS.md`
 - [x] Audit Service: serves a record's audit trail, and runs the continuous
       invariant verifier exporting `stopping_rule_violation_total` and
       `incomplete_audit_trail_total`. It does **not** write audit rows, the

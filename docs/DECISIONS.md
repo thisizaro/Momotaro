@@ -472,3 +472,47 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   They are the correctness gates, they are a small fraction of the wall
   clock, and narrowing them on the same day two real bugs were caught only by
   `integration` would be trading the wrong thing for a minute.
+- 2026-08-23: Executor Phase 1 decisions. (1) The claim marker on
+  `INTERVENTION_ATTEMPT.outcome` is now `OUTCOME_UNSPECIFIED` rather than
+  `OUTCOME_PENDING`. The column is `NOT NULL` so the row cannot be claimed
+  without some value, and the previous choice was safe only while no real
+  outcome was ever `PENDING`. A nudge legitimately resolves to `PENDING`
+  (Phase 5 answers it via `ReportDelayedOutcome`), so reusing it as the
+  marker made "still working" and "sent, awaiting the customer"
+  indistinguishable, and a redelivered nudge would have polled for an answer
+  that was not coming, timed out, and been dead-lettered despite executing
+  perfectly. The enum's zero value is the honest marker per `common.proto`'s
+  own stated convention that `_UNSPECIFIED` means unset. No migration needed:
+  the column is unconstrained `TEXT` and nothing else reads it yet.
+  (2) The wait for a concurrently-in-flight original is **bounded** (500ms,
+  a window that only ever covers one in-process port call) and an unresolved
+  claim past that returns `Aborted` rather than waiting out the caller's
+  deadline. A slot claimed but never resolved means the holder died
+  mid-attempt, and the two tempting recoveries are both wrong: re-running
+  could double-charge a real payment rail, and inventing an outcome would put
+  a fiction in the audit trail. Reporting it is the only honest option.
+  (3) `ESCALATE` reports `OUTCOME_FAILURE` with a failure code rather than
+  success, because handing a record to a human is not something the Executor
+  can accomplish and claiming otherwise would put a false success in the
+  trail. `ACTION_TYPE_NONE` succeeds at zero cost, since deliberately doing
+  nothing is a decision that was reached rather than a failure. Neither calls
+  a port. In practice `ESCALATE` is unreachable today (`decideAfterClassify`
+  escalates without scheduling), and it is handled because `Execute` is a
+  public RPC, not because a caller exists.
+  (4) The stub is **scripted, never random**: retry attempt 1 succeeds and
+  2+ fail, nudges always send and return `PENDING`. Determinism is not
+  fastidiousness here, it is what makes Phase 2's re-run safety test possible
+  at all and what keeps the end-to-end test from flaking, and the script is
+  chosen so both branches of the post-execute state machine are reachable
+  without dice. Nothing in it reads the clock either, since a time-dependent
+  stub is a time-dependent test.
+  (5) The Executor still writes **no** `AUDIT_ENTRY` rows. §10a's ownership
+  table lists it as a writer, but `audit_entry.from_state`/`to_state` are
+  `NOT NULL` and the Executor neither owns nor knows `RECORD_STATE`, so it has
+  nothing truthful to put there; the Decision Engine's `recordOutcome`
+  already writes that transition transactionally, including the attempt
+  number and cost. The Executor's honest contribution to history is the
+  `INTERVENTION_ATTEMPT` row. That reading is consistent with §10a's actual
+  rule, "the service that owns a state change writes both", since the
+  Executor owns no state change. Worth a clarifying edit to that table by
+  whoever owns the docs.

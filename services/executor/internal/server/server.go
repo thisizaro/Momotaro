@@ -1,155 +1,143 @@
 // Package server implements the ExecutorService gRPC handler.
 //
-// Idempotency here is durable, not best-effort (docs/ARCHITECTURE.md
-// section 11): Execute inserts the intervention_attempt row BEFORE
-// performing the side effect, against the UNIQUE(record_id, attempt_number)
-// constraint. A redelivered request loses the insert race and is answered
-// from the row that already exists, never by re-running the action.
+// The handler orchestrates and nothing else (docs/ENGINEERING.md section 14):
+// validation lives in validate.go, the durable idempotency guard and all SQL
+// in internal/attempt, and every outside-world call behind the two ports in
+// internal/ports. Execute below should read as a list of steps.
 package server
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
+	"log/slog"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
-	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
+	"github.com/thisizaro/Momotaro/services/executor/internal/attempt"
+	"github.com/thisizaro/Momotaro/services/executor/internal/ports"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-// uniqueViolation is Postgres's SQLSTATE for a unique constraint violation.
-const uniqueViolation = "23505"
-
-// pollInterval bounds how long a redelivered request waits for a
-// concurrently in-flight original attempt to finish recording its outcome.
-// The stub outcome source is synchronous and fast, so this window is tiny
-// in practice; it exists so a genuine race never sees a torn PENDING read.
-const pollInterval = 5 * time.Millisecond
-
-// OutcomeFunc performs the actual recovery action and reports what happened.
-//
-// This stands in for docs/ARCHITECTURE.md section 3b's RecoveryActionPort
-// (demo/world-simulator in this repo, a real bank/notification provider in
-// production). The walking skeleton (docs/PLAN.md) wires a stub that always
-// succeeds; wiring the real port is later, non-skeleton work.
-type OutcomeFunc func(ctx context.Context) (outcome commonv1.Outcome, costPaise int64, err error)
-
-// StubOutcome always succeeds at zero cost. The walking skeleton's
-// placeholder for RecoveryActionPort.
-func StubOutcome(ctx context.Context) (commonv1.Outcome, int64, error) {
-	return commonv1.Outcome_OUTCOME_SUCCESS, 0, nil
-}
 
 // Server implements executorv1.ExecutorServiceServer.
 type Server struct {
 	executorv1.UnimplementedExecutorServiceServer
 
-	pool    *pgxpkg.Pool
-	clock   clock.Clock
-	outcome OutcomeFunc
+	attempts *attempt.Store
+	router   *ports.Router
+	clock    clock.Clock
 }
 
-// New returns a Server. outcome is injected so tests can assert exactly how
-// many times the action ran (docs/ENGINEERING.md section 8: idempotency
-// must be proven by a test that delivers the same action twice).
-func New(pool *pgxpkg.Pool, clk clock.Clock, outcome OutcomeFunc) *Server {
-	return &Server{pool: pool, clock: clk, outcome: outcome}
+// New returns a Server. router is injected rather than constructed here so a
+// test can count exactly how many times an action really ran, which is what
+// docs/ENGINEERING.md section 8 requires of anything touching money.
+func New(attempts *attempt.Store, router *ports.Router, clk clock.Clock) *Server {
+	return &Server{attempts: attempts, router: router, clock: clk}
 }
 
 // Execute performs one action exactly once for a given (record_id,
-// attempt_number), regardless of how many times it is called with that
-// pair.
+// attempt_number), however many times it is called with that pair.
 func (s *Server) Execute(ctx context.Context, req *executorv1.ExecuteRequest) (*executorv1.ExecuteResponse, error) {
-	if req.GetRecordId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "record_id is required")
-	}
-	if req.GetAttemptNumber() <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "attempt_number must be positive")
-	}
-	if req.GetActionType() == commonv1.ActionType_ACTION_TYPE_UNSPECIFIED {
-		return nil, status.Error(codes.InvalidArgument, "action_type is required")
+	if err := validateExecute(req); err != nil {
+		return nil, err
 	}
 
 	log := logger.ForRecord(logger.From(ctx), req.GetRecordId(), req.GetBatchId())
+	if isNudge(req.GetActionType()) && req.GetMessage() == "" {
+		// Expected until Phase 5 composes nudge text: the Decision Engine
+		// sends no message today. Logged rather than rejected, because the
+		// gap is real but it is not this service's to fix.
+		log.Warn("nudge has no composed message text", logger.KeyAction, req.GetActionType().String())
+	}
 
-	attemptID := uuid.NewString()
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO intervention_attempt
-			(id, record_id, attempt_number, action_type, outcome, executed_at, cost_paise, message_text, failure_code)
-		VALUES ($1, $2, $3, $4, $5, $6, 0, $7, '')`,
-		attemptID, req.GetRecordId(), req.GetAttemptNumber(), req.GetActionType().String(),
-		commonv1.Outcome_OUTCOME_PENDING.String(), s.clock.Now(), req.GetMessage())
-
+	// Claim the slot BEFORE the side effect. This, not the Redis fast path
+	// deferred to Phase 6, is the actual guarantee (docs/ARCHITECTURE.md
+	// section 11).
+	attemptID, claimed, err := s.attempts.Claim(ctx, req.GetRecordId(), req.GetAttemptNumber(),
+		req.GetActionType(), req.GetMessage(), s.clock.Now())
 	if err != nil {
-		if isUniqueViolation(err) {
-			log.Info("attempt already claimed, replaying recorded outcome",
-				logger.KeyAttempt, req.GetAttemptNumber(), logger.KeyAction, req.GetActionType().String())
-			return s.awaitExistingAttempt(ctx, req.GetRecordId(), req.GetAttemptNumber())
+		if errors.Is(err, attempt.ErrUnknownRecord) {
+			return nil, status.Errorf(codes.NotFound, "record %s does not exist", req.GetRecordId())
 		}
-		return nil, fmt.Errorf("insert intervention_attempt: %w", err)
+		return nil, err
+	}
+	if !claimed {
+		return s.replay(ctx, req, log)
 	}
 
 	log.Info("attempt claimed, executing action",
 		logger.KeyAttempt, req.GetAttemptNumber(), logger.KeyAction, req.GetActionType().String())
 
-	outcome, costPaise, err := s.outcome(ctx)
+	result, err := s.router.Execute(ctx, req.GetRecordId(), req.GetActionType(), req.GetAttemptNumber(), req.GetMessage())
 	if err != nil {
-		return nil, fmt.Errorf("execute action for record %s attempt %d: %w", req.GetRecordId(), req.GetAttemptNumber(), err)
+		// The slot stays claimed. Releasing it would let a retry re-run an
+		// action that may well have reached the outside world already, which
+		// for a payment retry means a double charge.
+		return nil, fmt.Errorf("execute %s for record %s attempt %d: %w",
+			req.GetActionType(), req.GetRecordId(), req.GetAttemptNumber(), err)
 	}
 
-	if _, err := s.pool.Exec(ctx, `UPDATE intervention_attempt SET outcome=$1, cost_paise=$2 WHERE id=$3`,
-		outcome.String(), costPaise, attemptID); err != nil {
-		return nil, fmt.Errorf("record attempt outcome: %w", err)
+	if err := s.attempts.RecordOutcome(ctx, attemptID, result.Outcome, result.CostPaise, result.FailureCode); err != nil {
+		return nil, err
 	}
 
 	log.Info("attempt executed",
-		logger.KeyAttempt, req.GetAttemptNumber(), logger.KeyOutcome, outcome.String(), logger.KeyCostPaise, costPaise)
+		logger.KeyAttempt, req.GetAttemptNumber(),
+		logger.KeyOutcome, result.Outcome.String(),
+		logger.KeyCostPaise, result.CostPaise)
 
 	return &executorv1.ExecuteResponse{
-		Outcome:         outcome,
-		CostPaise:       costPaise,
+		Outcome:         result.Outcome,
+		CostPaise:       result.CostPaise,
+		FailureCode:     result.FailureCode,
+		ResolvesAt:      resolvesAtOrNil(result),
 		AlreadyExecuted: false,
 	}, nil
 }
 
-// awaitExistingAttempt answers a redelivered request from the row the
-// original request already claimed. It polls briefly in case the original
-// request is still between its insert and its outcome update.
-func (s *Server) awaitExistingAttempt(ctx context.Context, recordID string, attemptNumber int32) (*executorv1.ExecuteResponse, error) {
-	for {
-		var outcomeStr string
-		var costPaise int64
-		err := s.pool.QueryRow(ctx,
-			`SELECT outcome, cost_paise FROM intervention_attempt WHERE record_id=$1 AND attempt_number=$2`,
-			recordID, attemptNumber).Scan(&outcomeStr, &costPaise)
-		if err != nil {
-			return nil, fmt.Errorf("read existing attempt: %w", err)
-		}
+// replay answers a duplicate request from the attempt the original already
+// recorded, without performing any side effect.
+func (s *Server) replay(ctx context.Context, req *executorv1.ExecuteRequest, log *slog.Logger) (*executorv1.ExecuteResponse, error) {
+	log.Info("attempt already claimed, replaying the recorded outcome",
+		logger.KeyAttempt, req.GetAttemptNumber(), logger.KeyAction, req.GetActionType().String())
 
-		if outcomeStr != commonv1.Outcome_OUTCOME_PENDING.String() {
-			return &executorv1.ExecuteResponse{
-				Outcome:         commonv1.Outcome(commonv1.Outcome_value[outcomeStr]),
-				CostPaise:       costPaise,
-				AlreadyExecuted: true,
-			}, nil
+	rec, err := s.attempts.Await(ctx, s.clock, req.GetRecordId(), req.GetAttemptNumber())
+	if err != nil {
+		if errors.Is(err, attempt.ErrAbandonedClaim) {
+			// Claimed but never resolved, so the process holding it died
+			// mid-attempt. Aborted rather than guessed: re-running could
+			// double-charge, and inventing an outcome would put a fiction in
+			// the audit trail. Deliberately retryable at the gRPC level.
+			log.Error("attempt slot claimed but never resolved", logger.KeyError, err.Error())
+			return nil, status.Errorf(codes.Aborted,
+				"record %s attempt %d was claimed but never completed; it needs manual resolution",
+				req.GetRecordId(), req.GetAttemptNumber())
 		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.clock.After(pollInterval):
-		}
+		return nil, err
 	}
+
+	return &executorv1.ExecuteResponse{
+		Outcome:         rec.Outcome,
+		CostPaise:       rec.CostPaise,
+		FailureCode:     rec.FailureCode,
+		AlreadyExecuted: true,
+	}, nil
 }
 
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation
+// resolvesAtOrNil sets resolves_at only for a genuinely pending outcome, so
+// the field is never a meaningless timestamp on a settled attempt.
+func resolvesAtOrNil(result ports.Result) *timestamppb.Timestamp {
+	if result.Outcome != commonv1.Outcome_OUTCOME_PENDING || result.ResolvesAt.IsZero() {
+		return nil
+	}
+	return timestamppb.New(result.ResolvesAt)
+}
+
+func isNudge(action commonv1.ActionType) bool {
+	return action == commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER ||
+		action == commonv1.ActionType_ACTION_TYPE_NUDGE_METHOD_UPDATE
 }
