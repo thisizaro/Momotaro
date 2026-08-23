@@ -115,6 +115,15 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       (`RATE_LIMIT_RPS`/`RATE_LIMIT_BURST`, disabled when either is <= 0),
       applied before auth so an over-limit caller cannot even reach the key
       check.
+- [x] (unplanned, found while starting Ingestion depth) `ENGINEERING.md`
+      had no guidance on file/function modularity, and the walking-skeleton
+      handlers show why that matters: added §14 ("one job per file, one job
+      per function") and Definition of Done item 10 → `ENGINEERING.md` §14
+- [x] (unplanned, found while implementing `SubmitEvent`) the initial
+      schema had no column for the `idempotency_key` dedup that
+      `SubmitEvent`'s proto contract already documented. Added migration
+      `00002_record_idempotency_key.sql`: nullable `record.idempotency_key`
+      plus a partial unique index → `ARCHITECTURE.md` §11, §12a
 - [x] Ingestion: gRPC `SubmitBatch(records[]) -> {batch_id}` and
       `SubmitEvent(record) -> {record_id}`, both converging on the same
       `raw.events` publish path so nothing downstream can tell them apart.
