@@ -340,3 +340,63 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Scheduler tests now assert only state scoped to the record_id they
   seeded, never a shared fake's global call count. See `docs/INCIDENTS.md`
   2026-08-23.
+- 2026-08-23: Classifier's Phase 1 failure-code-to-bucket table
+  (`services/classifier/internal/rules/buckets.go`) is taken directly from
+  `SPEC.md` section 4.2, kept as a `map[string]commonv1.RootCauseBucket`
+  literal rather than a switch so it can be audited at a glance and
+  iterated by a test. `INSUFFICIENT_FUNDS` keeps its own bucket rather than
+  being folded into a coarse "transient" one the way
+  `web/src/lib/mockEngine.ts`'s three-bucket display mock does:
+  `ARCHITECTURE.md` §5a gives it a distinct salary-window retry policy,
+  which only works if the bucket stays distinct. The web mock is a display
+  simplification, not the system's model; do not "correct" the classifier
+  to match it.
+- 2026-08-23: Classifier's unknown-failure-code fallback
+  (`rules.fallbackBucket`, `SPEC.md` section 4.3) orders on `record.type`
+  before giving up: `RECORD_TYPE_CHECKOUT` → `ABANDONMENT`,
+  `RECORD_TYPE_INVOICE` → `OVERDUE`, anything else (including an empty
+  `failure_code`) → `ROOT_CAUSE_BUCKET_UNSPECIFIED` + `ACTION_TYPE_ESCALATE`
+  + confidence 0. This is a recommendation, not a locked decision (SPEC.md
+  leaves it open for a later agent to improve once real rail-code data from
+  the demo generator shows which unrecognised codes actually appear). An
+  unrecognised or empty code is never `InvalidArgument`: `SPEC.md` section 5
+  is explicit that turning an unclassifiable record into a failed RPC sends
+  it to the DLQ after three retries, for a record that was never actually
+  malformed.
+- 2026-08-23: `ClassifyResponse.source` is the coarse answer, which kind of
+  thing answered (`SOURCE_LLM` or `SOURCE_RULES_FALLBACK`); `hops` is the
+  detail, which named rung answered and what every attempted rung returned.
+  `ARCHITECTURE.md` §5's prose (`llm:claude`, `rules_fallback`) predates the
+  `Source` enum and does not mean `Source` needs provider-name string
+  values; provider identity lives entirely in `ProviderHop.provider`. The
+  chain (`internal/provider/chain.go`), not each rung, decides `Source`,
+  from whether the winning rung's name equals `provider.RulesName`: this
+  keeps individual `Provider` implementations from needing to know about
+  the coarse/fine split at all. With `LLM_PROVIDER_CHAIN=rules` the only
+  configured rung in Phase 1, `source` is always `SOURCE_RULES_FALLBACK`,
+  which is what `test/e2e`'s walking-skeleton test asserts.
+- 2026-08-23: The Classifier stays entirely stateless in Phase 1: no
+  Postgres connection, no clock, and the `ANTHROPIC_API_KEY`/
+  `OPENAI_API_KEY` env vars are read by nobody. Reasons, per `SPEC.md`
+  sections 2 and 8: it has no query path to `GROUND_TRUTH`, non-negotiable
+  per `ARCHITECTURE.md` §5a and easiest to guarantee by simply holding no
+  database handle at all; the Phase 1 rules engine is a pure function of
+  its input with no time-based behaviour, the salary-window/backoff timing
+  `ARCHITECTURE.md` §5a describes becomes `due_at`, computed by the
+  Decision Engine, not here; and a service that requires a credential it
+  never calls is a startup failure waiting to happen, so the keys stay
+  unread until Phase 3 actually wires a provider that uses one.
+- 2026-08-23: Classifier's provider chain skeleton (`internal/provider`)
+  validates a rung's response (bucket/action outside their enum's defined
+  values, confidence outside `[0,1]`) against the generated `_name` maps
+  rather than a hand-written allow-list, so a bucket or action added to the
+  proto later is covered automatically instead of silently passing.
+  `force_rules_only` filters the configured chain down to whichever rung is
+  named `provider.RulesName` ("rules") rather than special-casing index 0
+  or "the last rung": in Phase 1 that is the same rung either way, but it
+  stays correct once Phase 3 inserts real LLM rungs ahead of it. Confidence
+  values (`rules/actions.go`) are named Go constants with a one-line
+  comment each, not the checked-in `configs/intervention_costs.yaml`
+  `ARCHITECTURE.md` §5a describes for Phase 2 costs/probabilities:
+  classification confidence and economics cost data are different things
+  that happen to both be numbers, and do not belong in the same file.

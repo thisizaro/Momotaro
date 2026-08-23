@@ -178,9 +178,44 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       dead-lettering. Not written as a `RecordState` value (none exists for
       it); left in whatever state it was claimed into, since a DLQ'd record
       is a processing failure, not a considered decision like `Escalated`.
-- [ ] Classifier: rules-only for now (`source=rules_fallback` always), the
-      LLM provider-chain interface stubbed but not wired to a real provider
-      yet → `ARCHITECTURE.md` §5, `PRD.md` §2a
+- [x] Classifier: real deterministic rules engine
+      (`services/classifier/internal/rules`) replacing the walking-skeleton
+      hardcoded response. Normalises `failure_code` (trim, uppercase,
+      collapse `-`/spaces to `_`), maps it to one of the seven
+      `RootCauseBucket` values via a checked-in table, and derives a
+      recommended action, an honest confidence and a rationale naming the
+      actual input from the bucket. An unrecognised or empty code falls
+      back to `record.type` (`CHECKOUT` → `ABANDONMENT`, `INVOICE` →
+      `OVERDUE`, otherwise `UNSPECIFIED` + `ESCALATE` + confidence 0),
+      never guessed at, and is not an `InvalidArgument` (an unclassifiable
+      record is still a valid one). Provider chain **skeleton** built
+      (`internal/provider`): an ordered list of rungs resolved from
+      `LLM_PROVIDER_CHAIN` at startup, an unknown name failing fast rather
+      than at request time, per-rung hop recording, and inter-rung
+      response validation (a bucket/action outside the enum or a
+      confidence outside `[0,1]` is a rung failure, `schema_invalid`, not
+      an answer). The rules engine is always the last rung and cannot
+      fail, so the chain always terminates in a valid answer.
+      `force_rules_only` skips every non-rules rung (the load generator's
+      cost-safety switch). `source` stays `SOURCE_RULES_FALLBACK` always in
+      Phase 1, since the rules engine is always what answers; provider
+      identity lives in `hops`, not a new proto field →
+      `ARCHITECTURE.md` §5, §5a, `PRD.md` §2a. Explicitly deferred: any
+      real LLM provider and circuit breakers (Phase 3); `ComposeNudge`
+      (Phase 5, no caller exists yet); Prometheus metrics (Phase 4's
+      shared gRPC interceptor work, not hand-wired per service — logs a
+      `Warn` per failed rung and per unknown-code classification instead);
+      economics/EV scoring and cause-aware retry timing (Decision Engine,
+      Phase 2). Restructured per `ENGINEERING.md` §14: `internal/rules`
+      (the failure-code table, the action/confidence table, rationale
+      composition, the rules `Provider`), `internal/provider` (the
+      `Provider` interface, the chain walk, hop recording, response
+      validation), `internal/server` (handler only: validate, delegate,
+      log). Stays entirely stateless: no Postgres connection, no clock,
+      `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` stay unread since nothing calls
+      them yet. Deleted `TestClassifyIsHardcodedRegardlessOfInput`
+      (walking skeleton only, asserted the exact property this task
+      removes).
 - [ ] Executor: **insert-before-execute** idempotency against the
       `UNIQUE (record_id, attempt_number)` constraint (the durable
       guarantee), Redis `SETNX` as the fast path only, calls a minimal

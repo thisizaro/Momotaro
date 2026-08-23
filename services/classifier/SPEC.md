@@ -649,3 +649,17 @@ Branch `svc/classifier/rules-engine` per the root `AGENTS.md` convention.
 Small PR, no AI attribution in the commit message or PR description, and
 `grep -i "claude\|co-authored\|generated with"` your commit message before
 pushing.
+
+---
+
+## 14. Note from the agent who built this (would have saved an hour)
+
+`make test-integration` run more than once (as this section already tells
+you to) can fail intermittently with `net/http: HTTP/1.x transport
+connection broken: malformed HTTP response`. That is not a Classifier bug:
+it is a pre-existing port-allocation race in `test/e2e/walking_skeleton_test.go`'s
+`freePort()`, which frees a port before the subprocess that is supposed to
+bind it actually does, and can occasionally hand the same number to two
+different services. See `docs/INCIDENTS.md` 2026-08-23 ("an e2e flake from
+ephemeral port reuse"). If you hit it, just rerun; do not spend time
+suspecting your own change first.
