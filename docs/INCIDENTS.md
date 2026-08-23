@@ -234,3 +234,38 @@ started printing `Makefile:test` instead of `test` for every line.
 **Prevention:** Harmless cosmetically, but a good reminder that `include`
 changes `MAKEFILE_LIST` for every target that reads it, not just the include
 site.
+
+### 2026-08-23, `ci / proto` failed on every PR regardless of diff
+
+**What happened:** The `proto` job's breaking-change-check step failed with
+`could not read Username for 'https://github.com': No such device or
+address` on pull requests that never touched `proto/` at all, including one
+that only touched `internal/platform/interceptors`.
+
+**Root cause:** The workflow step ran
+`buf breaking --against "https://github.com/<repo>.git#branch=main,subdir=proto"`,
+which tells `buf` to make a **fresh anonymous HTTPS clone** of the repo to
+get the comparison history. This repo is private, so that clone has no
+credentials and fails immediately, on every PR, independent of what changed.
+The step's own `fetch-depth: 0` checkout had already fetched full history
+for every branch (including `origin/main`) into the local working copy
+specifically so this comparison would not need a network clone at all, but
+the `run:` command never used it, it duplicated the check with a broken
+remote-clone variant instead of calling the already-correct
+`make proto-breaking` target (`buf breaking --against
+'../.git#branch=origin/main,subdir=proto'`, a local git reference, no clone,
+no credentials needed).
+
+**Fix:** Changed the step to `run: make proto-breaking`, reusing the
+Makefile target every contributor already runs locally before pushing.
+Verified by running `make proto-lint`, `make proto-breaking`, and `buf
+generate` (checking for a `proto/gen` diff) locally in sequence, exactly as
+the CI job does, immediately before and after the fix.
+
+**Prevention:** When a CI step needs the same check a Makefile target already
+performs, call the target rather than re-deriving the command inline, the
+Makefile version is the one that actually gets exercised and fixed when it
+breaks locally. More generally: a check that fails identically regardless of
+the diff under review is a broken check, not a broken PR, first move should
+be reproducing it locally against a diff-free branch before suspecting the
+change in front of you.
