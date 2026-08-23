@@ -138,6 +138,11 @@ func (c *Consumer) ConsumeKeyed(ctx context.Context, poolSize int, handler func(
 		cancelWork()
 	}
 
+	// completed carries finished records to the single committer goroutine.
+	// Buffered so a worker hands off and goes straight back to processing
+	// rather than waiting on the commit's network round trip.
+	completed := make(chan *kgo.Record, poolSize)
+
 	for i := 0; i < poolSize; i++ {
 		wg.Add(1)
 		go func(ch <-chan dispatched) {
@@ -147,36 +152,80 @@ func (c *Consumer) ConsumeKeyed(ctx context.Context, poolSize int, handler func(
 					fail(fmt.Errorf("handle %s[%d]@%d: %w", d.rec.Topic, d.rec.Partition, d.rec.Offset, err))
 					continue
 				}
-				commitRec, ok := tracker.complete(d.rec)
-				if !ok {
-					continue
-				}
-				// Deliberately not ctx or workCtx: a shutdown cancels both
-				// the instant it's requested, which would abort this exact
-				// commit for the record that just finished. commitCtx
-				// outlives that cancellation so already-finished work is
-				// never lost to the shutdown signal that triggered it.
-				commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
-				err := c.cl.CommitRecords(commitCtx, commitRec)
-				cancel()
-				if err != nil {
-					fail(fmt.Errorf("commit %s[%d]@%d: %w", d.rec.Topic, d.rec.Partition, commitRec.Offset, err))
-				}
+				completed <- d.rec
 			}
 		}(channels[i])
 	}
+
+	var committer sync.WaitGroup
+	committer.Add(1)
+	go func() {
+		defer committer.Done()
+		runCommitter(ctx, tracker, completed, func(ctx context.Context, rec *kgo.Record) error {
+			return c.cl.CommitRecords(ctx, rec)
+		}, fail)
+	}()
 
 	fetchErr := c.fetchAndDispatch(workCtx, tracker, channels)
 
 	for _, ch := range channels {
 		close(ch)
 	}
+	// Order matters: every worker must be finished before completed is
+	// closed, or a worker still holding a record would send on a closed
+	// channel. Then the committer drains what is left and exits, which is
+	// what makes every commit for already-finished work land before this
+	// function returns.
 	wg.Wait()
+	close(completed)
+	committer.Wait()
 
 	if failErr != nil {
 		return failErr
 	}
 	return fetchErr
+}
+
+// commitFunc issues one offset commit. Named so runCommitter's ordering
+// contract can be tested without a broker.
+type commitFunc func(ctx context.Context, rec *kgo.Record) error
+
+// runCommitter folds finished records into offset commits, strictly one at a
+// time, and returns once completed is closed and drained.
+//
+// One committer rather than a commit per worker is load-bearing, not tidiness.
+// Kafka offset commits are last-write-wins per partition, so two workers
+// committing concurrently can land a lower offset after a higher one, which
+// moves the group's committed offset BACKWARDS and redelivers everything in
+// between. commitTracker already hands out strictly increasing offsets, but
+// that guarantee is worth nothing if the commits it hands out are then issued
+// in parallel, which is exactly the bug this replaced
+// (docs/INCIDENTS.md 2026-08-23).
+func runCommitter(ctx context.Context, tracker *commitTracker, completed <-chan *kgo.Record, commit commitFunc, fail func(error)) {
+	broken := false
+	for rec := range completed {
+		// Folded in even after a failure, so the tracker stays a truthful
+		// account of what actually finished.
+		commitRec, ok := tracker.complete(rec)
+		if !ok || broken {
+			continue
+		}
+		// Deliberately not ctx: a shutdown cancels it the instant it is
+		// requested, which would abort this exact commit for work that has
+		// already finished. commitCtx outlives that cancellation so
+		// completed work is never lost to the signal that triggered the
+		// shutdown.
+		commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
+		err := commit(commitCtx, commitRec)
+		cancel()
+		if err != nil {
+			fail(fmt.Errorf("commit %s[%d]@%d: %w", commitRec.Topic, commitRec.Partition, commitRec.Offset, err))
+			// Keep draining rather than returning: a worker blocked sending
+			// to a channel nobody reads would never finish, and ConsumeKeyed's
+			// wg.Wait would deadlock behind it.
+			broken = true
+		}
+	}
 }
 
 // fetchAndDispatch is ConsumeKeyed's main loop: poll, register each record
