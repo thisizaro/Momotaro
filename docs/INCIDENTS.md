@@ -320,3 +320,41 @@ once anything else with write access to the same tables can run
 concurrently. Assert on the specific row you seeded, not on a shared
 collaborator's total call count, whenever the code under test shares
 mutable state with other tests by design.
+
+### 2026-08-23, the invariant verifier rejects every record the pipeline produces
+**What happened:** Found by inspection, not by a failing test, while writing
+the Executor's Phase 1 spec. `services/audit/internal/server/statemachine.go`'s
+`allowedTransitions` map has no `NEW -> RETRY_SCHEDULED` or
+`NEW -> NUDGE_SCHEDULED` edge, but the Decision Engine's Phase 1 code writes
+`NEW -> RETRY_SCHEDULED` on every classified record. So `VerifyInvariants`
+reports a non-zero `impossible_transitions` for the entire normal pipeline
+output, an invariant `docs/ARCHITECTURE.md` section 13 says must stay at zero
+and alerts on at critical severity. Confirmed against the live database:
+6 `NEW -> RECORD_STATE_RETRY_SCHEDULED` rows in `audit_entry`.
+**Root cause:** Two things at once. The state machine was written against
+`docs/ARCHITECTURE.md` section 7's diagram, where every record passes through
+`Scoring` before being scheduled, so `NEW` only ever leads to `SCORING`,
+`ESCALATED`, or (temporarily) `RECOVERED`. But `Scoring` is the Phase 2
+economics gate and does not exist yet, so Phase 1's Decision Engine schedules
+straight out of `NEW`. The Audit verifier and the Decision Engine state
+machine were built by different agents and merged within minutes of each
+other (PRs #9 and #11), so neither run of `make test-integration` had both
+halves present.
+**Why no test caught it:** `GetRecordAudit` hardcodes `TrailComplete: true`
+rather than computing it, so `test/e2e/walking_skeleton_test.go`'s
+`TrailComplete` assertion passes regardless of the trail's actual validity. And
+Audit's own `VerifyInvariants` tests seed their own records using transitions
+that are already in the allowed map, so they never exercise what the real
+pipeline emits.
+**Fix:** Not yet applied; recorded here and in `services/executor/SPEC.md`
+section 10 so the next agent in either service does not rediscover it or
+assume they caused it. Belongs to whoever owns the Audit service: add the two
+missing edges carrying the same `TEMPORARY` comment style the existing
+`NEW -> RECOVERED` edge already uses (they stop being produced once `Scoring`
+lands), and make `TrailComplete` an actual computation over the trail.
+**Prevention:** Two lessons. A verifier whose expectations come from the
+target design rather than the current phase's behaviour will disagree with a
+correct system, so a phase-gated state machine needs its temporary edges
+added at the same time the phase's code lands, not after. And a response
+field that is hardcoded `true` is not an assertion, it is a comment: an e2e
+test checking it proves nothing. Compute it or do not claim it.
