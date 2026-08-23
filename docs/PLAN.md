@@ -115,11 +115,28 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       (`RATE_LIMIT_RPS`/`RATE_LIMIT_BURST`, disabled when either is <= 0),
       applied before auth so an over-limit caller cannot even reach the key
       check.
-- [ ] Ingestion: gRPC `SubmitBatch(records[]) -> {batch_id}` and
+- [x] (unplanned, found while starting Ingestion depth) `ENGINEERING.md`
+      had no guidance on file/function modularity, and the walking-skeleton
+      handlers show why that matters: added §14 ("one job per file, one job
+      per function") and Definition of Done item 10 → `ENGINEERING.md` §14
+- [x] (unplanned, found while implementing `SubmitEvent`) the initial
+      schema had no column for the `idempotency_key` dedup that
+      `SubmitEvent`'s proto contract already documented. Added migration
+      `00002_record_idempotency_key.sql`: nullable `record.idempotency_key`
+      plus a partial unique index → `ARCHITECTURE.md` §11, §12a
+- [x] Ingestion: gRPC `SubmitBatch(records[]) -> {batch_id}` and
       `SubmitEvent(record) -> {record_id}`, both converging on the same
       `raw.events` publish path so nothing downstream can tell them apart.
       Creates the `BATCH` row, stamps `batch_id` on every message
-      → `ARCHITECTURE.md` §0a, §3, §4, §10
+      → `ARCHITECTURE.md` §0a, §3, §4, §10.
+      `SubmitEvent` attaches to a shared "rolling" batch
+      (`ROLLING_BATCH_SOURCE`, found-or-created) rather than a batch per
+      event, and deduplicates on `idempotency_key` against the new
+      `record.idempotency_key` column (migration `00002`), returning the
+      original record instead of creating a duplicate on a webhook retry.
+      Split into `validate.go`/`record.go`/`store.go`/`events.go`/`server.go`
+      per `ENGINEERING.md` §14 (one job per file); `server.go` is
+      orchestration only.
 - [ ] Decision Engine: consumes `raw.events` via a **keyed worker pool**
       (not one-at-a-time) with contiguous-prefix offset commits, calls
       Classifier + Executor via gRPC, owns the state machine, writes

@@ -1,92 +1,27 @@
 //go:build integration
 
-// Ingestion's tests exercise real Postgres rather than a mock, per
-// docs/ENGINEERING.md section 1 ("do not mock what you own"). They therefore
-// need the docker-compose stack up, so they sit behind the `integration`
-// build tag: `go test ./...` on a bare checkout must not dial a database that
-// is not running. Run with `make test-integration`.
-
 package server
 
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
-	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func dsn(t *testing.T) string {
-	t.Helper()
-	if v := os.Getenv("POSTGRES_DSN"); v != "" {
-		return v
-	}
-	return "postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable"
-}
-
-func brokers(t *testing.T) []string {
-	t.Helper()
-	if v := os.Getenv("KAFKA_BROKERS"); v != "" {
-		return strings.Split(v, ",")
-	}
-	return []string{"localhost:9092"}
-}
-
-func testPool(t *testing.T) *pgxpkg.Pool {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	pool, err := pgxpkg.NewPool(ctx, dsn(t))
-	if err != nil {
-		t.Fatalf("NewPool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func testProducer(t *testing.T) *kafkax.Producer {
-	t.Helper()
-	p, err := kafkax.NewProducer(brokers(t))
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
-	t.Cleanup(p.Close)
-	return p
-}
-
-func cleanupBatch(t *testing.T, pool *pgxpkg.Pool, batchID string) {
-	t.Cleanup(func() {
-		bg := context.Background()
-		_, _ = pool.Exec(bg, `DELETE FROM record WHERE batch_id = $1`, batchID)
-		_, _ = pool.Exec(bg, `DELETE FROM batch WHERE id = $1`, batchID)
-	})
-}
-
-func validRecord() *ingestionv1.NewRecord {
-	return &ingestionv1.NewRecord{
-		Type:          commonv1.RecordType_RECORD_TYPE_PAYMENT,
-		AmountPaise:   50000,
-		Currency:      "INR",
-		FailureCode:   "BANK_TIMEOUT",
-		InstrumentRef: "card_ref_1",
-	}
-}
-
 func TestSubmitBatchCreatesBatchAndRecordAndPublishes(t *testing.T) {
 	pool := testPool(t)
 	producer := testProducer(t)
 	fake := clock.NewFake(time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC))
-	s := New(pool, producer, fake, "raw.events")
+	s := New(pool, producer, fake, "raw.events", "webhook")
 
 	consumer, err := kafkax.NewConsumer(brokers(t), "ingestion-test-"+uuid.NewString(), []string{"raw.events"})
 	if err != nil {
@@ -124,9 +59,10 @@ func TestSubmitBatchCreatesBatchAndRecordAndPublishes(t *testing.T) {
 		t.Errorf("batch row = (total=%d, source=%q), want (1, test-suite)", totalRecords, source)
 	}
 
-	// RECORD row.
+	// RECORD row. A SubmitBatch record never carries an idempotency key.
 	var count int
 	var amountPaise int64
+	var idemKey *string
 	if err := pool.QueryRow(ctx, `SELECT count(*), max(amount_paise) FROM record WHERE batch_id=$1`, resp.BatchId).Scan(&count, &amountPaise); err != nil {
 		t.Fatalf("query record: %v", err)
 	}
@@ -135,6 +71,12 @@ func TestSubmitBatchCreatesBatchAndRecordAndPublishes(t *testing.T) {
 	}
 	if amountPaise != 50000 {
 		t.Errorf("amount_paise = %d, want 50000", amountPaise)
+	}
+	if err := pool.QueryRow(ctx, `SELECT idempotency_key FROM record WHERE batch_id=$1`, resp.BatchId).Scan(&idemKey); err != nil {
+		t.Fatalf("query idempotency_key: %v", err)
+	}
+	if idemKey != nil {
+		t.Errorf("idempotency_key = %q, want NULL for a batch-submitted record", *idemKey)
 	}
 
 	// raw.events publish, key = record_id.
@@ -174,7 +116,7 @@ func TestSubmitBatchCreatesBatchAndRecordAndPublishes(t *testing.T) {
 func TestSubmitBatchRejectsInvalidRecordsButAcceptsTheRest(t *testing.T) {
 	pool := testPool(t)
 	producer := testProducer(t)
-	s := New(pool, producer, clock.New(), "raw.events")
+	s := New(pool, producer, clock.New(), "raw.events", "webhook")
 
 	ctx := context.Background()
 	resp, err := s.SubmitBatch(ctx, &ingestionv1.SubmitBatchRequest{
@@ -207,7 +149,7 @@ func TestSubmitBatchRejectsInvalidRecordsButAcceptsTheRest(t *testing.T) {
 func TestSubmitBatchRejectsEmptyRequest(t *testing.T) {
 	pool := testPool(t)
 	producer := testProducer(t)
-	s := New(pool, producer, clock.New(), "raw.events")
+	s := New(pool, producer, clock.New(), "raw.events", "webhook")
 
 	_, err := s.SubmitBatch(context.Background(), &ingestionv1.SubmitBatchRequest{Source: "test"})
 	if status.Code(err) != codes.InvalidArgument {
@@ -218,7 +160,7 @@ func TestSubmitBatchRejectsEmptyRequest(t *testing.T) {
 func TestSubmitBatchDefaultsCurrencyToINR(t *testing.T) {
 	pool := testPool(t)
 	producer := testProducer(t)
-	s := New(pool, producer, clock.New(), "raw.events")
+	s := New(pool, producer, clock.New(), "raw.events", "webhook")
 
 	rec := validRecord()
 	rec.Currency = ""
@@ -236,16 +178,5 @@ func TestSubmitBatchDefaultsCurrencyToINR(t *testing.T) {
 	}
 	if currency != "INR" {
 		t.Errorf("currency = %q, want INR", currency)
-	}
-}
-
-func TestSubmitEventIsUnimplemented(t *testing.T) {
-	pool := testPool(t)
-	producer := testProducer(t)
-	s := New(pool, producer, clock.New(), "raw.events")
-
-	_, err := s.SubmitEvent(context.Background(), &ingestionv1.SubmitEventRequest{})
-	if status.Code(err) != codes.Unimplemented {
-		t.Fatalf("SubmitEvent: err = %v, want Unimplemented", err)
 	}
 }

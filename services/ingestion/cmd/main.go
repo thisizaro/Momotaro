@@ -37,6 +37,13 @@ const serviceName = "ingestion"
 // can run against an isolated topic instead of the shared one.
 const defaultRawEventsTopic = "raw.events"
 
+// defaultRollingBatchSource names the shared BATCH row that ungrouped
+// SubmitEvent calls attach to (proto/ingestion/v1/ingestion.proto:
+// "grouped into an implicit rolling batch so every record is reportable").
+// Overridable via ROLLING_BATCH_SOURCE for the same reason RAW_EVENTS_TOPIC
+// is: so tests don't share, and pollute, the production rolling batch.
+const defaultRollingBatchSource = "webhook"
+
 func main() {
 	// Root context cancelled on SIGTERM/SIGINT so shutdown is graceful.
 	// ENGINEERING.md section 6: drain in-flight work, commit offsets, exit.
@@ -46,6 +53,7 @@ func main() {
 	l := config.NewLoader()
 	cfg := config.LoadCommon(l, serviceName)
 	topic := l.StrDefault("RAW_EVENTS_TOPIC", defaultRawEventsTopic)
+	rollingBatchSource := l.StrDefault("ROLLING_BATCH_SOURCE", defaultRollingBatchSource)
 	if err := l.Err(); err != nil {
 		slogFallback().Error("fatal", "err", err)
 		os.Exit(1)
@@ -53,7 +61,7 @@ func main() {
 
 	log := logger.New(cfg.ServiceName, cfg.LogLevel)
 
-	if err := run(ctx, cfg, topic, log); err != nil {
+	if err := run(ctx, cfg, topic, rollingBatchSource, log); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
@@ -64,7 +72,7 @@ func slogFallback() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
 }
 
-func run(ctx context.Context, cfg config.Common, topic string, log *slog.Logger) error {
+func run(ctx context.Context, cfg config.Common, topic, rollingBatchSource string, log *slog.Logger) error {
 	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	pool, err := pgxpkg.NewPool(connectCtx, cfg.PostgresDSN)
 	cancel()
@@ -88,7 +96,7 @@ func run(ctx context.Context, cfg config.Common, topic string, log *slog.Logger)
 		interceptors.UnaryServerRecovery(),
 		interceptors.UnaryServerRequireDeadline(),
 	))
-	ingestionv1.RegisterIngestionServiceServer(grpcServer, server.New(pool, producer, clock.New(), topic))
+	ingestionv1.RegisterIngestionServiceServer(grpcServer, server.New(pool, producer, clock.New(), topic, rollingBatchSource))
 
 	serveErr := make(chan error, 1)
 	go func() {
