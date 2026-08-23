@@ -446,3 +446,29 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   getting its own implementation, so the RPC's per-record answer and the
   system-wide metric can never disagree about what "complete" means. It was
   previously hardcoded `true`. See `docs/INCIDENTS.md` 2026-08-23.
+- 2026-08-23: Implemented the Docker matrix path filtering that `AGENTS.md`
+  had specified and the Phase 0 CI checkbox had claimed, but which was never
+  actually built: every PR rebuilt all nine service images, including
+  documentation-only ones. A `changed` job now computes the build matrix from
+  the diff and `docker` is skipped when nothing reaching an image changed.
+  Three decisions worth recording. First, it **fails safe in every ambiguous
+  case**: a filter that wrongly skips a build lets a broken image reach
+  `main`, while one that wrongly runs a build costs a minute, so shared
+  inputs (`go.mod`, `internal/platform/`, `proto/`, `.github/`) rebuild
+  everything, and an undeterminable diff base (a new branch, a force push, a
+  missing commit) does too. Second, shared code has to rebuild *every* image
+  rather than being filtered per service, because each Dockerfile builds with
+  the repo root as its context and `COPY`s the whole tree
+  (`ARCHITECTURE.md` §2a), so `internal/platform/` really is an input to all
+  nine. Third, the logic lives in `.github/scripts/changed-services.sh`
+  rather than inline YAML, and builds its JSON in plain shell rather than with
+  `jq`, specifically so it can be run and tested locally against real commits
+  instead of only by pushing and watching. It was verified that way before it
+  ever ran on a runner: docs-only builds nothing, a single-service change
+  builds one image, a `internal/platform/` change builds all nine, a
+  migrations-only change builds nothing (no image contains migrations), and
+  every fail-safe branch returns the full matrix. Deliberately left alone:
+  `lint`, `build-test`, `proto` and `integration` still run on everything.
+  They are the correctness gates, they are a small fraction of the wall
+  clock, and narrowing them on the same day two real bugs were caught only by
+  `integration` would be trading the wrong thing for a minute.

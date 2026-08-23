@@ -82,21 +82,36 @@ jobs:
 
   # Proves each service image actually builds, and that its Dockerfile
   # respects the repo-root build context (docs/ARCHITECTURE.md section 2a).
+  # Which images actually need rebuilding, so a docs-only change does not
+  # rebuild nine Go binaries (AGENTS.md, "Branching and CI conventions").
+  # The logic lives in a script rather than inline YAML so it can be run and
+  # tested locally instead of only by pushing and hoping.
+  changed:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      any: ${{ steps.pick.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}   # the script needs the diff base in history
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: .github/scripts/changed-services.sh
+
   docker:
+    needs: changed
+    # Skipped entirely when nothing that reaches an image changed. Note this
+    # is a skip, not a failure: with no required-checks protection on this
+    # repo a skipped job cannot block a merge.
+    if: needs.changed.outputs.any == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - services/api-gateway
-          - services/ingestion
-          - services/decision-engine
-          - services/classifier
-          - services/executor
-          - services/audit
-          - services/reporting
-          - demo/world-simulator
-          - demo/notification-simulator
+        service: ${{ fromJSON(needs.changed.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
