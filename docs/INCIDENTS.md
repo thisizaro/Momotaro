@@ -269,3 +269,35 @@ breaks locally. More generally: a check that fails identically regardless of
 the diff under review is a broken check, not a broken PR, first move should
 be reproducing it locally against a diff-free branch before suspecting the
 change in front of you.
+
+### 2026-08-23, `scanRecords` would have failed on every unscoped invariant check
+
+**What happened:** Caught by hand while writing `services/audit/internal/
+server/store.go`'s `scanRecords` query, before a test ever ran it: `psql`
+reproduced `ERROR: invalid input syntax for type uuid: ""` for
+`SELECT 1 WHERE '' = '' OR ''::uuid = ''::uuid;` before any Go code existed
+to hit it.
+
+**Root cause:** The query was `WHERE $1 = '' OR r.batch_id = $1::uuid`,
+intending the empty-string branch to short-circuit the cast when no batch
+filter is requested (`VerifyInvariantsRequest.batch_id` empty means "check
+everything"). Postgres does not short-circuit `OR` the way a procedural
+language does; both operands are evaluated regardless, so `''::uuid` runs
+and errors every time `batch_id` is empty, i.e. on every unscoped
+`VerifyInvariants` call, which is the common case.
+
+**Fix:** Compare `r.batch_id::text = $1` instead of casting the parameter to
+`uuid`. A text comparison never errors regardless of what `$1` contains, so
+both the empty-string case and a malformed non-empty `$1` (see
+`TestScanRecordsWithMalformedBatchIDMatchesNothingRatherThanErroring`)
+degrade to "matches nothing" instead of an error; `Server.VerifyInvariants`
+still validates the batch_id format up front with `uuid.Parse` so a typo
+gets a clear `InvalidArgument` rather than a silent empty result.
+
+**Prevention:** Added `TestScanRecordsWithEmptyBatchIDChecksEverything` and
+`TestVerifyInvariantsEmptyBatchIDChecksEverythingWithoutErroring` as
+regression tests. More generally: when a SQL query has an "optional filter"
+shaped like `$1 = '' OR column = $1::sometype`, check the cast side against
+an actually-empty parameter by hand (`psql`, not just reading the query) —
+`OR` short-circuiting is a habit carried over from procedural code that SQL
+does not share.
