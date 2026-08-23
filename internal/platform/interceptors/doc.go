@@ -43,7 +43,9 @@
 //
 // # Status
 //
-// Not implemented. Built in Phase 4 (observability), except the recovery and
-// deadline interceptors, which are cheap and should land with the first
-// service in Phase 1.
+// Recovery (UnaryServerRecovery), server-side deadline enforcement
+// (UnaryServerRequireDeadline) and the client-side deadline default
+// (UnaryClientDefaultDeadline) are implemented and wired into every
+// service's gRPC server/client (docs/PLAN.md Phase 0). Metrics, tracing,
+// request-scoped logging, and the round_robin dialing helper remain Phase 4.
 package interceptors

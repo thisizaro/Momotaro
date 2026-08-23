@@ -239,3 +239,17 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   never notice it stopped running. Consequence to keep in mind: the
   DB-touching service tests now only run in the integration job, so that job
   runs on pull requests too rather than merges only.
+- 2026-08-23: Closed out Phase 0's last box, `internal/platform/interceptors`.
+  Built only what `doc.go` said should land now: `UnaryServerRecovery`
+  (panic → `codes.Internal` instead of a dead pod), `UnaryServerRequireDeadline`
+  (server-side, rejects a call with `codes.InvalidArgument` if it arrives
+  with no context deadline — turns `ENGINEERING.md` §3's rule into something
+  verified on receipt, not just remembered at each call site), and
+  `UnaryClientDefaultDeadline` (client-side, applies a default deadline only
+  when the caller's context does not already carry one). Metrics, tracing,
+  request-scoped logging, and the `round_robin` dialing helper stay Phase 4,
+  per the doc's own status note. Wired into all four gRPC servers
+  (classifier, executor, audit, ingestion) and both inter-service gRPC
+  clients (api-gateway→ingestion, decision-engine→classifier/executor); the
+  full test suite including `test/e2e` still passes, since every existing
+  call site already set an explicit deadline before this landed.
