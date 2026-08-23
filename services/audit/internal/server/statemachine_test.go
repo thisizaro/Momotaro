@@ -61,3 +61,19 @@ func TestIsAllowedTransitionRejectsInvalidEdges(t *testing.T) {
 		})
 	}
 }
+
+// The Phase 1 pipeline that actually exists schedules straight out of New,
+// because Scoring is the Phase 2 economics gate and has not been built. So
+// these two edges are what every classified record really produces today,
+// and rejecting them made the verifier flag the entire normal output of the
+// system. See docs/INCIDENTS.md 2026-08-23.
+func TestIsAllowedTransitionAcceptsThePhase1SchedulingEdges(t *testing.T) {
+	for _, to := range []commonv1.RecordState{
+		commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED,
+		commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED,
+	} {
+		if !isAllowedTransition(commonv1.RecordState_RECORD_STATE_NEW, to) {
+			t.Errorf("New -> %s rejected, but this is what the Phase 1 Decision Engine actually writes", to)
+		}
+	}
+}

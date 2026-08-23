@@ -26,6 +26,18 @@ var allowedTransitions = map[transition]bool{
 	// record will pass through it and this edge stops being produced.
 	{commonv1.RecordState_RECORD_STATE_NEW, commonv1.RecordState_RECORD_STATE_RECOVERED}: true,
 
+	// TEMPORARY, for the same reason as the edge above but for the pipeline
+	// that exists now rather than the walking skeleton. Phase 1's Decision
+	// Engine schedules straight out of New, because Scoring is the Phase 2
+	// economics gate and has not been built, so every classified record
+	// produces one of these two edges. Their absence meant the verifier
+	// reported the entire normal output of the system as an impossible
+	// transition (docs/INCIDENTS.md 2026-08-23). Remove together with the
+	// New -> Recovered edge once Scoring lands, at which point every record
+	// passes through it and none of the three are produced any more.
+	{commonv1.RecordState_RECORD_STATE_NEW, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED}: true,
+	{commonv1.RecordState_RECORD_STATE_NEW, commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED}: true,
+
 	{commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED}:   true,
 	{commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED}:   true,
 	{commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC}: true,

@@ -143,3 +143,92 @@ func TestVerifyInvariantsCountsUntouchedRecordsButNeverFlagsThem(t *testing.T) {
 		t.Errorf("a record with no record_state yet must never be flagged: %+v", resp)
 	}
 }
+
+// Regression for docs/INCIDENTS.md 2026-08-23: these are the exact trails
+// the Phase 1 pipeline produces end to end, and the verifier reported every
+// one of them as an impossible transition because the state machine only
+// knew the Scoring-mediated path from the target design.
+func TestVerifyInvariantsAcceptsRealPhase1Trails(t *testing.T) {
+	newTo := func(to commonv1.RecordState) transition {
+		return transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: to}
+	}
+	snapshots := []recordSnapshot{
+		// The walking-skeleton e2e path: classify, claim, succeed.
+		snap("rec-retry-recovered", true, commonv1.RecordState_RECORD_STATE_RECOVERED,
+			newTo(commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED),
+			transition{From: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_RETRYING},
+			transition{From: commonv1.RecordState_RECORD_STATE_RETRYING, To: commonv1.RecordState_RECORD_STATE_RECOVERED}),
+		// A failing execute escalates (no retry budget until Phase 2).
+		snap("rec-retry-escalated", true, commonv1.RecordState_RECORD_STATE_ESCALATED,
+			newTo(commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED),
+			transition{From: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_RETRYING},
+			transition{From: commonv1.RecordState_RECORD_STATE_RETRYING, To: commonv1.RecordState_RECORD_STATE_ESCALATED}),
+		// A nudge parks in Nudged awaiting the Phase 5 delayed outcome.
+		snap("rec-nudge-parked", true, commonv1.RecordState_RECORD_STATE_NUDGED,
+			newTo(commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED),
+			transition{From: commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_NUDGED}),
+	}
+
+	resp := verifyInvariants(snapshots)
+
+	if resp.RecordsChecked != 3 {
+		t.Errorf("RecordsChecked = %d, want 3", resp.RecordsChecked)
+	}
+	if resp.ImpossibleTransitions != 0 || resp.IncompleteAuditTrails != 0 {
+		t.Errorf("the pipeline's own normal output was reported as a violation: %+v", resp)
+	}
+}
+
+func TestTrailComplete(t *testing.T) {
+	tests := []struct {
+		name string
+		snap recordSnapshot
+		want bool
+	}{
+		{
+			"a sound Phase 1 trail",
+			snap("a", true, commonv1.RecordState_RECORD_STATE_RETRYING,
+				transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED},
+				transition{From: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_RETRYING}),
+			true,
+		},
+		{
+			// Ingested, not yet picked up by Decision Engine. No state change
+			// has happened, so there is no trail that could be missing one.
+			"untouched record",
+			snap("b", false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED),
+			true,
+		},
+		{
+			"state with no entries at all",
+			snap("c", true, commonv1.RecordState_RECORD_STATE_RECOVERED),
+			false,
+		},
+		{
+			"last entry disagrees with current_state",
+			snap("d", true, commonv1.RecordState_RECORD_STATE_ESCALATED,
+				transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_RECOVERED}),
+			false,
+		},
+		{
+			"an edge outside the state machine",
+			snap("e", true, commonv1.RecordState_RECORD_STATE_NUDGED,
+				transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_NUDGED}),
+			false,
+		},
+		{
+			"a broken chain between two otherwise-legal edges",
+			snap("f", true, commonv1.RecordState_RECORD_STATE_RECOVERED,
+				transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED},
+				transition{From: commonv1.RecordState_RECORD_STATE_NUDGED, To: commonv1.RecordState_RECORD_STATE_RECOVERED}),
+			false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := trailComplete(tc.snap); got != tc.want {
+				t.Errorf("trailComplete = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
