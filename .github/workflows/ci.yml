@@ -103,8 +103,10 @@ jobs:
 
   # The end-to-end test needs the full stack up, so it runs on merge rather
   # than on every PR (docs/AGENTS.md testing conventions).
+  # Runs on PRs as well as merges. The infra-dependent tests now sit behind
+  # build tags, so if this only ran on merge a PR could go green without any
+  # of them executing. Container startup is ~30s, cheap for that coverage.
   integration:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,7 +123,10 @@ jobs:
           POSTGRES_DSN: postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable
           REDIS_ADDR: localhost:6379
           KAFKA_BROKERS: localhost:9092
-        run: go test -race -tags=integration ./... 
+        # Both tags: `integration` covers the tests that need Postgres/Kafka,
+        # `e2e` covers test/e2e, which runs the real service binaries as
+        # subprocesses. Naming only one silently skips the other.
+        run: go test -race -count=1 -tags='integration e2e' ./...
       - name: infra logs on failure
         if: failure()
         run: docker compose logs --tail=100

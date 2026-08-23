@@ -189,3 +189,48 @@ Decision Engine in production (never skip a real record on first deploy);
 that same default is exactly what makes topic-sharing across test runs
 dangerous, so keep the two environments' topics separate rather than trying
 to make one default safe for both.
+
+### 2026-08-23, CI failed: infra-dependent tests ran in a job with no infra
+**What happened:** After the walking skeleton merged, CI's `build-test` job
+failed with `dial tcp 127.0.0.1:5432: connection refused` across six
+packages. It passed for everyone locally.
+**Root cause:** `build-test` runs `go test -race ./...` on a bare checkout,
+and only the separate `integration` job starts docker compose. The skeleton's
+`pgx`, `kafkax` and four service test packages connect to real Postgres and
+Kafka and call `t.Fatalf` when they cannot, which is correct per
+`ENGINEERING.md` §1 ("do not mock what you own"). The job structure simply
+did not match the testing policy. Two things hid it locally: the compose
+stack was already running, and Go's test cache kept reporting a stale `ok`
+even after the stack came down. It only reproduced with `-count=1`.
+**Fix:** Put every infra-dependent test file behind `//go:build integration`
+so `build-test` runs pure unit tests only, and the `integration` job runs the
+rest. Added `make test-integration`, which brings the stack up first.
+**Prevention:** A cached `ok` is not evidence. Reproduce CI locally with
+`-count=1` and the stack **down**. Same family as the migration incident: a
+zero exit code, or a cached pass, is not proof the thing you wanted happened.
+
+### 2026-08-23, the walking-skeleton e2e test was never running in CI
+**What happened:** Found while fixing the above. CI's integration job ran
+`go test -tags=integration ./...`, but `test/e2e/walking_skeleton_test.go` is
+tagged `//go:build e2e`. The tags did not match, so the job reported success
+having executed none of it.
+**Root cause:** `ci.yml` was written before any e2e test existed and guessed
+the tag name. A green job that silently tests nothing is worse than a red
+one, because nobody investigates it.
+**Fix:** `-tags='integration e2e'`. Verified the e2e test genuinely passes:
+one record through all six real service binaries to RECORD_STATE_RECOVERED.
+Also moved the integration job to run on pull requests as well as merges,
+since with the DB tests now behind a tag a PR could otherwise go green
+without any of them running.
+**Prevention:** When adding a build tag to tests, grep CI for the tag. A job
+whose test count silently drops to zero looks identical to one that passed.
+
+### 2026-08-23, `make help` printed filenames after every target
+**What happened:** Immediately after merging the `.env` fix, `make help`
+started printing `Makefile:test` instead of `test` for every line.
+**Root cause:** `include .env` adds a second entry to `$(MAKEFILE_LIST)`, and
+`grep` prefixes output with the filename once given more than one file.
+**Fix:** `grep -hE` to suppress filename prefixes.
+**Prevention:** Harmless cosmetically, but a good reminder that `include`
+changes `MAKEFILE_LIST` for every target that reads it, not just the include
+site.

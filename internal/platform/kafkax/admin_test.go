@@ -1,3 +1,7 @@
+//go:build integration
+
+// Test-local helpers for the integration-tagged tests in this package.
+
 package kafkax
 
 import "context"

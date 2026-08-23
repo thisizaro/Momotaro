@@ -227,3 +227,15 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
     in-process wiring test was never an option here, and the subprocess
     shape is closer to how the system actually runs (`make up` + one
     binary per service) besides.
+- 2026-08-23: Tests are split by infrastructure need, not by scope. Anything
+  that dials real Postgres or Kafka sits behind `//go:build integration`
+  (`internal/platform/pgx`, `internal/platform/kafkax`, and the audit,
+  decision-engine, executor and ingestion server tests); `test/e2e` stays
+  behind `e2e`. `go test ./...` on a bare checkout therefore runs only tests
+  that need nothing, and CI's `build-test` job is honest about what it
+  covers. `make test-integration` brings the stack up and runs the rest with
+  both tags. Rejected the alternative of skipping when infra is unreachable:
+  a test that silently skips in CI is a test you do not have, and you would
+  never notice it stopped running. Consequence to keep in mind: the
+  DB-touching service tests now only run in the integration job, so that job
+  runs on pull requests too rather than merges only.

@@ -29,7 +29,7 @@ endif
 
 ## help: list targets
 help:
-	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | awk -F': ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+	@grep -hE '^## ' $(MAKEFILE_LIST) | sed 's/## //' | awk -F': ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 ## tools: install pinned codegen tooling
 tools:
@@ -54,9 +54,13 @@ proto-breaking:
 build:
 	go build ./...
 
-## test: run all tests with race detection
+## test: unit tests only, no infrastructure needed
 test:
 	go test -race ./...
+
+## test-integration: tests that need the docker-compose stack (brings it up)
+test-integration: up migrate-up
+	go test -race -count=1 -tags='integration e2e' ./...
 
 ## vet: go vet
 vet:
@@ -101,5 +105,5 @@ docker-build:
 		docker build -q -f demo/$$d/Dockerfile -t momotaro/$$d . ; \
 	done
 
-.PHONY: help tools proto proto-lint proto-breaking build test vet fmt check \
-        up down down-clean migrate-up migrate-status docker-build
+.PHONY: help tools proto proto-lint proto-breaking build test test-integration \
+        vet fmt check up down down-clean migrate-up migrate-status docker-build

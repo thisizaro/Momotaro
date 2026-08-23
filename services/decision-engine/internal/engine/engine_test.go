@@ -1,3 +1,11 @@
+//go:build integration
+
+// Decision Engine's tests exercise real Postgres rather than a mock, per
+// docs/ENGINEERING.md section 1 ("do not mock what you own"). They therefore
+// need the docker-compose stack up, so they sit behind the `integration`
+// build tag: `go test ./...` on a bare checkout must not dial a database that
+// is not running. Run with `make test-integration`.
+
 package engine
 
 import (

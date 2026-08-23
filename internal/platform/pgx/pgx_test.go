@@ -1,3 +1,12 @@
+//go:build integration
+
+// These tests hit the real docker-compose Postgres and Kafka rather than
+// mocks, per docs/ENGINEERING.md section 1 ("do not mock what you own").
+// That means they need infrastructure, so they sit behind the `integration`
+// build tag: `go test ./...` on a bare checkout must not try to dial a
+// database that is not there. Run them with `make test-integration` (which
+// brings the stack up first), or in CI's integration job.
+
 package pgx
 
 import (
