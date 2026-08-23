@@ -58,9 +58,17 @@ jobs:
       # Mechanically enforces the proto-PR-first rule: a backwards
       # incompatible change fails here rather than surprising another agent
       # mid-branch (docs/ARCHITECTURE.md section 9).
+      #
+      # Compares against the LOCAL origin/main ref (via `make proto-breaking`,
+      # the same target contributors run before pushing), not a fresh remote
+      # clone. This is a private repo, so an anonymous HTTPS clone of
+      # "https://github.com/<repo>.git" 404s on the username prompt and fails
+      # every PR regardless of the diff; fetch-depth: 0 above already gives us
+      # full history for every branch, including origin/main, so there is no
+      # need to clone anything. See docs/INCIDENTS.md.
       - name: breaking-change check
         if: github.event_name == 'pull_request'
-        run: cd proto && buf breaking --against "https://github.com/${{ github.repository }}.git#branch=main,subdir=proto"
+        run: make proto-breaking
       # A service PR must never carry generated-code changes. If regenerating
       # produces a diff, either gen/ is stale or this PR edited protos without
       # being a proto PR. Both need splitting.
