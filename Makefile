@@ -16,6 +16,15 @@ PROTOC_GEN_GRPC_VER   := v1.5.1
 SERVICES := api-gateway ingestion decision-engine classifier executor audit reporting
 DEMOS    := world-simulator notification-simulator
 
+# Load .env into every recipe's environment (docs/ENGINEERING.md section 5:
+# services read config from the environment, never a dotfile directly).
+# Without this, `go run` sees none of POSTGRES_DSN / REDIS_ADDR / etc, since
+# a Makefile recipe does not source .env on its own.
+ifneq (,$(wildcard ./.env))
+	include .env
+	export
+endif
+
 .DEFAULT_GOAL := help
 
 ## help: list targets
