@@ -1,226 +1,150 @@
 //go:build integration
 
-// Decision Engine's tests exercise real Postgres rather than a mock, per
-// docs/ENGINEERING.md section 1 ("do not mock what you own"). They therefore
-// need the docker-compose stack up, so they sit behind the `integration`
-// build tag: `go test ./...` on a bare checkout must not dial a database that
-// is not running. Run with `make test-integration`.
+// Decision Engine's tests exercise real Postgres and Kafka rather than a
+// mock, per docs/ENGINEERING.md section 1 ("do not mock what you own").
+// They therefore need the docker-compose stack up, so they sit behind the
+// `integration` build tag. Run with `make test-integration`.
 
 package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
-	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
-	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
-	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
-	"google.golang.org/grpc"
 )
 
-func dsn(t *testing.T) string {
-	t.Helper()
-	if v := os.Getenv("POSTGRES_DSN"); v != "" {
-		return v
-	}
-	return "postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable"
+func testConfig(dlqTopic string) Config {
+	return Config{CallTimeout: 2 * time.Second, RetryDelay: time.Minute, NudgeDelay: time.Minute, DLQTopic: dlqTopic}
 }
 
-func testPool(t *testing.T) *pgxpkg.Pool {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	pool, err := pgxpkg.NewPool(ctx, dsn(t))
-	if err != nil {
-		t.Fatalf("NewPool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func seedRecord(ctx context.Context, t *testing.T, pool *pgxpkg.Pool) (batchID, recordID string) {
-	t.Helper()
-	batchID = uuid.NewString()
-	recordID = uuid.NewString()
-	if _, err := pool.Exec(ctx, `INSERT INTO batch (id, source) VALUES ($1, 'test')`, batchID); err != nil {
-		t.Fatalf("seed batch: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO record (id, batch_id, type, amount_paise, failure_code)
-		VALUES ($1, $2, 'RECORD_TYPE_PAYMENT', 10000, 'BANK_TIMEOUT')`, recordID, batchID); err != nil {
-		t.Fatalf("seed record: %v", err)
-	}
-	t.Cleanup(func() {
-		bg := context.Background()
-		_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, recordID)
-		_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, recordID)
-		_, _ = pool.Exec(bg, `DELETE FROM record WHERE id = $1`, recordID)
-		_, _ = pool.Exec(bg, `DELETE FROM batch WHERE id = $1`, batchID)
-	})
-	return batchID, recordID
-}
-
-func rawEventMessage(t *testing.T, evt RawEvent) kafkax.Message {
-	t.Helper()
-	b, err := json.Marshal(evt)
-	if err != nil {
-		t.Fatalf("marshal RawEvent: %v", err)
-	}
-	return kafkax.Message{Topic: "raw.events", Key: evt.RecordID, Value: b}
-}
-
-type fakeClassifier struct {
-	resp  *classifierv1.ClassifyResponse
-	err   error
-	calls int32
-}
-
-func (f *fakeClassifier) Classify(ctx context.Context, in *classifierv1.ClassifyRequest, opts ...grpc.CallOption) (*classifierv1.ClassifyResponse, error) {
-	atomic.AddInt32(&f.calls, 1)
-	return f.resp, f.err
-}
-func (f *fakeClassifier) ComposeNudge(ctx context.Context, in *classifierv1.ComposeNudgeRequest, opts ...grpc.CallOption) (*classifierv1.ComposeNudgeResponse, error) {
-	return nil, errors.New("not used by the walking skeleton")
-}
-
-type fakeExecutor struct {
-	resp  *executorv1.ExecuteResponse
-	err   error
-	calls int32
-}
-
-func (f *fakeExecutor) Execute(ctx context.Context, in *executorv1.ExecuteRequest, opts ...grpc.CallOption) (*executorv1.ExecuteResponse, error) {
-	atomic.AddInt32(&f.calls, 1)
-	return f.resp, f.err
-}
-
-func successClassifier() *fakeClassifier {
-	return &fakeClassifier{resp: &classifierv1.ClassifyResponse{
-		Bucket:            commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK,
-		RecommendedAction: commonv1.ActionType_ACTION_TYPE_RETRY,
-		Rationale:         "transient bank failure, retry",
-		Confidence:        1,
-		Source:            commonv1.Source_SOURCE_RULES_FALLBACK,
-	}}
-}
-
-func TestHandleMessageReachesRecoveredOnSuccess(t *testing.T) {
+func TestHandleMessageSchedulesRetry(t *testing.T) {
 	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
-	classifier := successClassifier()
-	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS, CostPaise: 0}}
+	classifier := retryClassifier()
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
 
-	e := New(pool, classifier, executor, clock.New(), 2*time.Second)
-
-	msg := rawEventMessage(t, RawEvent{
-		RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT",
-		AmountPaise: 10000, Currency: "INR", FailureCode: "BANK_TIMEOUT",
-	})
+	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
 		t.Fatalf("HandleMessage: %v", err)
 	}
 
-	var state string
+	var state, bucket, pendingAction string
 	var attemptCount int
-	var bucket string
-	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count, root_cause_bucket FROM record_state WHERE record_id=$1`, recordID).
-		Scan(&state, &attemptCount, &bucket); err != nil {
+	var dueAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count, root_cause_bucket, pending_action, due_at FROM record_state WHERE record_id=$1`, recordID).
+		Scan(&state, &attemptCount, &bucket, &pendingAction, &dueAt); err != nil {
 		t.Fatalf("query record_state: %v", err)
 	}
-	if state != commonv1.RecordState_RECORD_STATE_RECOVERED.String() {
-		t.Errorf("current_state = %q, want %q", state, commonv1.RecordState_RECORD_STATE_RECOVERED.String())
+	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String() {
+		t.Errorf("current_state = %q, want RETRY_SCHEDULED", state)
 	}
-	if attemptCount != 1 {
-		t.Errorf("attempt_count = %d, want 1", attemptCount)
+	if attemptCount != 0 {
+		t.Errorf("attempt_count = %d, want 0 (scheduling is not itself an attempt)", attemptCount)
 	}
-	if bucket != commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK.String() {
-		t.Errorf("root_cause_bucket = %q, want TRANSIENT_BANK", bucket)
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_RETRY.String() {
+		t.Errorf("pending_action = %q, want ACTION_TYPE_RETRY", pendingAction)
+	}
+	if dueAt == nil {
+		t.Fatal("due_at is nil, want a future timestamp")
+	}
+	if !dueAt.After(time.Now().Add(-time.Second)) {
+		t.Errorf("due_at = %v, want roughly now + RetryDelay", dueAt)
 	}
 
 	var entryCount int
-	var toState, rationale, source string
-	var attemptNumber int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*), max(to_state), max(rationale), max(source), max(attempt_number)
-		FROM audit_entry WHERE record_id=$1`, recordID,
-	).Scan(&entryCount, &toState, &rationale, &source, &attemptNumber); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_entry WHERE record_id=$1`, recordID).Scan(&entryCount); err != nil {
 		t.Fatalf("query audit_entry: %v", err)
 	}
 	if entryCount != 1 {
-		t.Fatalf("audit_entry rows = %d, want 1", entryCount)
+		t.Errorf("audit_entry rows = %d, want 1", entryCount)
 	}
-	if toState != commonv1.RecordState_RECORD_STATE_RECOVERED.String() {
-		t.Errorf("audit to_state = %q, want RECOVERED", toState)
-	}
-	if rationale != "transient bank failure, retry" {
-		t.Errorf("audit rationale = %q, want the classifier's rationale", rationale)
-	}
-	if source != commonv1.Source_SOURCE_RULES_FALLBACK.String() {
-		t.Errorf("audit source = %q, want SOURCE_RULES_FALLBACK", source)
-	}
-	if attemptNumber != 1 {
-		t.Errorf("audit attempt_number = %d, want 1", attemptNumber)
-	}
-
 	if classifier.calls != 1 {
 		t.Errorf("classifier called %d times, want 1", classifier.calls)
 	}
-	if executor.calls != 1 {
-		t.Errorf("executor called %d times, want 1", executor.calls)
-	}
 }
 
-func TestHandleMessageEscalatesOnExecutionFailure(t *testing.T) {
+func TestHandleMessageSchedulesNudge(t *testing.T) {
 	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
-	classifier := successClassifier()
-	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_FAILURE, FailureCode: "HARD_DECLINE"}}
+	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER)}
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
 
-	e := New(pool, classifier, executor, clock.New(), 2*time.Second)
-	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
+	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_CHECKOUT", AmountPaise: 5000, FailureCode: "ABANDONED"})
+	if err := e.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
 
+	var state, pendingAction string
+	if err := pool.QueryRow(ctx, `SELECT current_state, pending_action FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &pendingAction); err != nil {
+		t.Fatalf("query record_state: %v", err)
+	}
+	if state != commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED.String() {
+		t.Errorf("current_state = %q, want NUDGE_SCHEDULED", state)
+	}
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER.String() {
+		t.Errorf("pending_action = %q, want ACTION_TYPE_NUDGE_REMINDER", pendingAction)
+	}
+}
+
+func TestHandleMessageEscalatesOnExplicitEscalateAction(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	batchID, recordID := seedRecord(ctx, t, pool)
+
+	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+
+	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "RISK_HOLD"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
 		t.Fatalf("HandleMessage: %v", err)
 	}
 
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT current_state FROM record_state WHERE record_id=$1`, recordID).Scan(&state); err != nil {
+	var pendingAction *string
+	var dueAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT current_state, pending_action, due_at FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &pendingAction, &dueAt); err != nil {
 		t.Fatalf("query record_state: %v", err)
 	}
 	if state != commonv1.RecordState_RECORD_STATE_ESCALATED.String() {
 		t.Errorf("current_state = %q, want ESCALATED", state)
 	}
+	if pendingAction != nil {
+		t.Errorf("pending_action = %q, want NULL for an escalated record", *pendingAction)
+	}
+	if dueAt != nil {
+		t.Errorf("due_at = %v, want NULL for a terminal record", *dueAt)
+	}
 }
 
-// A record already in a terminal state must not be reprocessed: this is
-// the guard against a Kafka redelivery (e.g. crash before offset commit)
-// double-writing the audit trail.
-func TestHandleMessageSkipsAlreadyTerminalRecord(t *testing.T) {
+// A record already in RECORD_STATE, in any state, means this raw.events
+// message is a redelivery: at-least-once delivery plus a crash before
+// offset commit. Reprocessing it would double the audit trail (or, worse,
+// violate record_state's primary key).
+func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
-	if _, err := pool.Exec(ctx, `INSERT INTO record_state (record_id, current_state, attempt_count) VALUES ($1, $2, 1)`,
-		recordID, commonv1.RecordState_RECORD_STATE_RECOVERED.String()); err != nil {
-		t.Fatalf("seed terminal record_state: %v", err)
+	if _, err := pool.Exec(ctx, `INSERT INTO record_state (record_id, current_state, attempt_count) VALUES ($1, $2, 0)`,
+		recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String()); err != nil {
+		t.Fatalf("seed record_state: %v", err)
 	}
 
-	classifier := successClassifier()
-	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}}
-	e := New(pool, classifier, executor, clock.New(), 2*time.Second)
+	classifier := retryClassifier()
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -228,12 +152,8 @@ func TestHandleMessageSkipsAlreadyTerminalRecord(t *testing.T) {
 	}
 
 	if classifier.calls != 0 {
-		t.Errorf("classifier called %d times for an already-terminal record, want 0", classifier.calls)
+		t.Errorf("classifier called %d times for a redelivered message, want 0", classifier.calls)
 	}
-	if executor.calls != 0 {
-		t.Errorf("executor called %d times for an already-terminal record, want 0", executor.calls)
-	}
-
 	var entryCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_entry WHERE record_id=$1`, recordID).Scan(&entryCount); err != nil {
 		t.Fatalf("query audit_entry: %v", err)
@@ -243,21 +163,47 @@ func TestHandleMessageSkipsAlreadyTerminalRecord(t *testing.T) {
 	}
 }
 
-func TestHandleMessagePropagatesClassifierError(t *testing.T) {
+func TestHandleMessageDeadLettersMalformedPayload(t *testing.T) {
 	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+
+	raw := "not json"
+	msg := kafkax.Message{Topic: "raw.events", Key: "bad-key", Value: []byte(raw)}
+	if err := e.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v, want nil (malformed payloads are dead-lettered, not returned as an error)", err)
+	}
+
+	dl := waitForDeadLetter(t, dlqTopic, raw, 10*time.Second)
+	if dl.RawValue != raw {
+		t.Errorf("dead letter RawValue = %q, want %q", dl.RawValue, raw)
+	}
+	if dl.FailureReason == "" {
+		t.Error("dead letter FailureReason is empty")
+	}
+}
+
+func TestHandleMessageDeadLettersAfterClassifyRetriesExhausted(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{err: errors.New("classifier unavailable")}
-	executor := &fakeExecutor{}
-	e := New(pool, classifier, executor, clock.New(), 2*time.Second)
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
-	if err := e.HandleMessage(ctx, msg); err == nil {
-		t.Fatal("expected an error when the classifier call fails")
+	if err := e.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v, want nil (exhausted retries are dead-lettered, not returned as an error)", err)
 	}
-	if executor.calls != 0 {
-		t.Errorf("executor called %d times despite classifier failure, want 0", executor.calls)
+
+	if classifier.calls != maxClassifyAttempts {
+		t.Errorf("classifier called %d times, want exactly maxClassifyAttempts=%d", classifier.calls, maxClassifyAttempts)
+	}
+
+	dl := waitForDeadLetter(t, dlqTopic, recordID, 10*time.Second)
+	if dl.RecordID != recordID {
+		t.Errorf("dead letter RecordID = %q, want %q", dl.RecordID, recordID)
 	}
 
 	var count int
@@ -265,16 +211,46 @@ func TestHandleMessagePropagatesClassifierError(t *testing.T) {
 		t.Fatalf("query: %v", err)
 	}
 	if count != 0 {
-		t.Error("record_state was written despite the classify failure")
+		t.Error("record_state was written despite the record being dead-lettered")
 	}
 }
 
-func TestHandleMessageRejectsMalformedPayload(t *testing.T) {
+func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) {
 	pool := testPool(t)
-	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, clock.New(), 2*time.Second)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	batchID, recordID := seedRecord(ctx, t, pool)
 
-	msg := kafkax.Message{Topic: "raw.events", Key: "bad", Value: []byte("not json")}
-	if err := e.HandleMessage(context.Background(), msg); err == nil {
-		t.Fatal("expected an error for a malformed raw event payload")
+	classifier := retryClassifier()
+	classifier.err = errors.New("transient")
+	classifier.failN = maxClassifyAttempts - 1 // fails all but the last attempt
+
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
+	if err := e.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if classifier.calls != maxClassifyAttempts {
+		t.Errorf("classifier called %d times, want %d", classifier.calls, maxClassifyAttempts)
+	}
+
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT current_state FROM record_state WHERE record_id=$1`, recordID).Scan(&state); err != nil {
+		t.Fatalf("query record_state: %v", err)
+	}
+	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String() {
+		t.Errorf("current_state = %q, want RETRY_SCHEDULED", state)
+	}
+}
+
+func TestHandleMessageRejectsMalformedPayloadIsNeverFatal(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+
+	msg := kafkax.Message{Topic: "raw.events", Key: "bad", Value: []byte("{not valid json")}
+	if err := e.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v, want nil", err)
 	}
 }

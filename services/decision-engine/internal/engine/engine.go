@@ -1,18 +1,13 @@
-// Package engine is the Decision Engine's consuming loop.
-//
-// Walking skeleton (docs/PLAN.md): consume raw.events ONE AT A TIME, no
-// keyed worker pool yet (docs/ARCHITECTURE.md section 8a lands with the
-// depth work), call Classifier then Executor over gRPC, and write
-// RECORD_STATE + AUDIT_ENTRY in one transaction (docs/ARCHITECTURE.md
-// section 10a). The full state machine (Scoring, RetryScheduled, the
-// scheduler worker) is Phase 1/2 depth; this collapses New straight to
-// Recovered or Escalated based on the one hardcoded attempt.
+// Package engine is the Decision Engine's core: the raw.events consumer
+// handler (this file), the pure state-transition rules (state.go), the
+// scheduler worker (scheduler.go), and their shared SQL (store.go) and
+// wire types (rawevent.go, dlq.go). Each does one job
+// (docs/ENGINEERING.md section 14); this file is orchestration only.
 package engine
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -26,53 +21,76 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// RawEvent mirrors services/ingestion/internal/server.RawEvent, the
-// raw.events wire payload. Kept structurally in sync by hand; see that
-// type's doc comment for why there is no shared package for it.
-type RawEvent struct {
-	RecordID      string    `json:"record_id"`
-	BatchID       string    `json:"batch_id"`
-	Type          string    `json:"type"`
-	AmountPaise   int64     `json:"amount_paise"`
-	Currency      string    `json:"currency"`
-	FailureCode   string    `json:"failure_code"`
-	InstrumentRef string    `json:"instrument_ref"`
-	CreatedAt     time.Time `json:"created_at"`
+// maxClassifyAttempts and classifyRetryDelay bound HandleMessage's own
+// retry of a transient classify failure before dead-lettering the record
+// (docs/ARCHITECTURE.md section 8b): a blip must not immediately poison a
+// partition, but a permanently unreachable Classifier must not spin
+// forever either.
+const (
+	maxClassifyAttempts = 3
+	classifyRetryDelay  = 200 * time.Millisecond
+)
+
+// Config holds Engine's tunable knobs, grouped so New's call site does not
+// become an unreadable run of positional durations.
+type Config struct {
+	CallTimeout time.Duration
+	// RetryDelay and NudgeDelay are Phase 1 placeholders for the
+	// cause-aware retry timing docs/ARCHITECTURE.md section 5a describes
+	// (salary window for insufficient_funds, short backoff for
+	// bank_timeout, etc). That policy is Phase 2 work, built on top of the
+	// scheduler mechanism Phase 1 proves here with one fixed delay per
+	// action family.
+	RetryDelay time.Duration
+	NudgeDelay time.Duration
+	DLQTopic   string
 }
 
-// Engine consumes raw.events and drives one record through classification
-// and execution to a terminal state.
+// Engine consumes raw.events: classify a fresh record and schedule its
+// first action. Execution itself happens later, driven by the scheduler
+// worker (scheduler.go) when the scheduled due_at arrives, never inline
+// here (docs/ARCHITECTURE.md section 7's diagram never executes directly
+// from New).
 type Engine struct {
-	pool        *pgxpkg.Pool
-	classifier  classifierv1.ClassifierServiceClient
-	executor    executorv1.ExecutorServiceClient
-	clock       clock.Clock
-	callTimeout time.Duration
+	store   *store
+	clients *clients
+	dlq     *deadLetterPublisher
+	clock   clock.Clock
+	cfg     Config
 }
 
-// New returns an Engine. callTimeout bounds every outbound gRPC call
-// (docs/ENGINEERING.md section 3: no unbounded outbound call).
-func New(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, clk clock.Clock, callTimeout time.Duration) *Engine {
-	return &Engine{pool: pool, classifier: classifier, executor: executor, clock: clk, callTimeout: callTimeout}
+// New returns an Engine. dlqProducer publishes to cfg.DLQTopic
+// (raw.events.dlq in production).
+func New(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, cfg Config) *Engine {
+	return &Engine{
+		store:   newStore(pool),
+		clients: &clients{classifier: classifier, executor: executor, callTimeout: cfg.CallTimeout},
+		dlq:     newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
+		clock:   clk,
+		cfg:     cfg,
+	}
 }
 
-// HandleMessage processes one raw.events record: classify, execute, then
-// record the resulting state and its audit entry in one transaction. This
-// is the handler passed to kafkax.Consumer.Consume.
+// HandleMessage processes one raw.events record: classify it and schedule
+// its first action. This is the handler passed to kafkax.ConsumeKeyed, so
+// it must resolve every record's fate itself: a malformed payload or a
+// Classifier that will not answer is dead-lettered, never returned as an
+// error, which under ConsumeKeyed's contract would be treated as an
+// infrastructure failure and stop the whole consumer.
 func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 	var evt RawEvent
 	if err := json.Unmarshal(msg.Value, &evt); err != nil {
-		return fmt.Errorf("unmarshal raw event (key=%s): %w", msg.Key, err)
+		return e.deadLetterRaw(ctx, msg, fmt.Sprintf("unmarshal raw event: %v", err))
 	}
 
 	log := logger.ForRecord(logger.From(ctx), evt.RecordID, evt.BatchID)
 
-	terminal, err := e.alreadyTerminal(ctx, evt.RecordID)
+	exists, err := e.store.recordStateExists(ctx, evt.RecordID)
 	if err != nil {
 		return err
 	}
-	if terminal {
-		log.Info("record already in a terminal state, skipping redelivery")
+	if exists {
+		log.Info("record_state already exists, skipping redelivered raw.events message")
 		return nil
 	}
 
@@ -87,88 +105,79 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 		CreatedAt:     timestamppb.New(evt.CreatedAt),
 	}
 
-	classifyResp, err := e.classify(ctx, record)
+	classifyResp, err := e.classifyWithRetry(ctx, record)
 	if err != nil {
-		return fmt.Errorf("classify record %s: %w", evt.RecordID, err)
-	}
-	log.Info("classified",
-		logger.KeyBucket, classifyResp.GetBucket().String(),
-		logger.KeyAction, classifyResp.GetRecommendedAction().String(),
-		logger.KeySource, classifyResp.GetSource().String())
-
-	executeResp, err := e.execute(ctx, evt, classifyResp.GetRecommendedAction())
-	if err != nil {
-		return fmt.Errorf("execute record %s: %w", evt.RecordID, err)
+		log.Error("classify failed after retries, dead-lettering", logger.KeyError, err.Error())
+		return e.deadLetterEvent(ctx, evt, fmt.Sprintf("classify failed after %d attempts: %v", maxClassifyAttempts, err))
 	}
 
-	resultState := commonv1.RecordState_RECORD_STATE_ESCALATED
-	reason := "execution did not succeed, escalating for human review"
-	if executeResp.GetOutcome() == commonv1.Outcome_OUTCOME_SUCCESS {
-		resultState = commonv1.RecordState_RECORD_STATE_RECOVERED
-		reason = "classified and executed successfully"
-	}
-
+	state, pendingAction, reason := decideAfterClassify(classifyResp)
 	now := e.clock.Now()
-	err = pgxpkg.WithTx(ctx, e.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO record_state (record_id, current_state, attempt_count, root_cause_bucket, last_action_at, updated_at)
-			VALUES ($1, $2, 1, $3, $4, $4)`,
-			evt.RecordID, resultState.String(), classifyResp.GetBucket().String(), now); err != nil {
-			return fmt.Errorf("insert record_state: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO audit_entry
-				(record_id, batch_id, ts, from_state, to_state, reason, rationale, source, actor, attempt_number, cost_paise)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'system', $9, $10)`,
-			evt.RecordID, evt.BatchID, now,
-			commonv1.RecordState_RECORD_STATE_NEW.String(), resultState.String(),
-			reason, classifyResp.GetRationale(), classifyResp.GetSource().String(),
-			int32(1), executeResp.GetCostPaise()); err != nil {
-			return fmt.Errorf("insert audit_entry: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("record outcome for %s: %w", evt.RecordID, err)
+	dueAt := e.dueAtFor(state, now)
+
+	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), state, pendingAction, reason, classifyResp.GetRationale(), classifyResp.GetSource(), dueAt, now); err != nil {
+		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)
 	}
 
-	log.Info("record processed", logger.KeyState, resultState.String(), logger.KeyOutcome, executeResp.GetOutcome().String())
+	log.Info("record classified and scheduled",
+		logger.KeyState, state.String(), logger.KeyBucket, classifyResp.GetBucket().String(), logger.KeySource, classifyResp.GetSource().String())
 	return nil
 }
 
-func (e *Engine) classify(ctx context.Context, record *commonv1.Record) (*classifierv1.ClassifyResponse, error) {
-	callCtx, cancel := context.WithTimeout(ctx, e.callTimeout)
-	defer cancel()
-	return e.classifier.Classify(callCtx, &classifierv1.ClassifyRequest{Record: record})
-}
-
-func (e *Engine) execute(ctx context.Context, evt RawEvent, action commonv1.ActionType) (*executorv1.ExecuteResponse, error) {
-	callCtx, cancel := context.WithTimeout(ctx, e.callTimeout)
-	defer cancel()
-	return e.executor.Execute(callCtx, &executorv1.ExecuteRequest{
-		RecordId:      evt.RecordID,
-		BatchId:       evt.BatchID,
-		ActionType:    action,
-		AttemptNumber: 1,
-		AmountPaise:   evt.AmountPaise,
-	})
-}
-
-func (e *Engine) alreadyTerminal(ctx context.Context, recordID string) (bool, error) {
-	var stateStr string
-	err := e.pool.QueryRow(ctx, `SELECT current_state FROM record_state WHERE record_id = $1`, recordID).Scan(&stateStr)
-	if err != nil {
-		if errors.Is(err, pgxpkg.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("query record_state for %s: %w", recordID, err)
-	}
-	switch commonv1.RecordState(commonv1.RecordState_value[stateStr]) {
-	case commonv1.RecordState_RECORD_STATE_RECOVERED,
-		commonv1.RecordState_RECORD_STATE_ESCALATED,
-		commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC:
-		return true, nil
+// dueAtFor computes when a newly scheduled record should first become
+// actionable, or nil for a state that is not waiting on the scheduler
+// (docs/ARCHITECTURE.md section 7a: due_at is what the scheduler polls).
+func (e *Engine) dueAtFor(state commonv1.RecordState, now time.Time) *time.Time {
+	var delay time.Duration
+	switch state {
+	case commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED:
+		delay = e.cfg.RetryDelay
+	case commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED:
+		delay = e.cfg.NudgeDelay
 	default:
-		return false, nil
+		return nil
 	}
+	due := now.Add(delay)
+	return &due
+}
+
+// classifyWithRetry retries a failing Classify call up to
+// maxClassifyAttempts times, waiting classifyRetryDelay between attempts
+// via the injected clock so this is testable without a real wait
+// (docs/ENGINEERING.md section 2).
+func (e *Engine) classifyWithRetry(ctx context.Context, record *commonv1.Record) (*classifierv1.ClassifyResponse, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxClassifyAttempts; attempt++ {
+		resp, err := e.clients.classify(ctx, record)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt < maxClassifyAttempts {
+			select {
+			case <-e.clock.After(classifyRetryDelay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+func (e *Engine) deadLetterRaw(ctx context.Context, msg kafkax.Message, reason string) error {
+	dl := DeadLetter{RawValue: string(msg.Value), FailureReason: reason, FailedAt: e.clock.Now()}
+	if err := e.dlq.Publish(ctx, dl); err != nil {
+		return fmt.Errorf("publish dead letter: %w", err)
+	}
+	logger.From(ctx).Error("record dead-lettered, payload could not be parsed", logger.KeyError, reason)
+	return nil
+}
+
+func (e *Engine) deadLetterEvent(ctx context.Context, evt RawEvent, reason string) error {
+	dl := DeadLetter{RecordID: evt.RecordID, BatchID: evt.BatchID, FailureReason: reason, FailedAt: e.clock.Now()}
+	if err := e.dlq.Publish(ctx, dl); err != nil {
+		return fmt.Errorf("publish dead letter for %s: %w", evt.RecordID, err)
+	}
+	logger.ForRecord(logger.From(ctx), evt.RecordID, evt.BatchID).Error("record dead-lettered", logger.KeyError, reason)
+	return nil
 }
