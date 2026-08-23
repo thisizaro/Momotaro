@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/thisizaro/Momotaro/internal/platform/config"
+	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
@@ -75,7 +76,9 @@ func slogFallback() *slog.Logger {
 }
 
 func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
-	ingestionConn, err := grpc.NewClient(cfg.IngestionAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	ingestionConn, err := grpc.NewClient(cfg.IngestionAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(interceptors.UnaryClientDefaultDeadline(cfg.CallTimeout)))
 	if err != nil {
 		return fmt.Errorf("dial ingestion at %s: %w", cfg.IngestionAddr, err)
 	}

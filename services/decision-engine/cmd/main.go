@@ -19,6 +19,7 @@ import (
 
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
+	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
@@ -98,13 +99,17 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	classifierConn, err := grpc.NewClient(cfg.ClassifierAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	classifierConn, err := grpc.NewClient(cfg.ClassifierAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(interceptors.UnaryClientDefaultDeadline(cfg.CallTimeout)))
 	if err != nil {
 		return fmt.Errorf("dial classifier at %s: %w", cfg.ClassifierAddr, err)
 	}
 	defer classifierConn.Close()
 
-	executorConn, err := grpc.NewClient(cfg.ExecutorAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	executorConn, err := grpc.NewClient(cfg.ExecutorAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(interceptors.UnaryClientDefaultDeadline(cfg.CallTimeout)))
 	if err != nil {
 		return fmt.Errorf("dial executor at %s: %w", cfg.ExecutorAddr, err)
 	}

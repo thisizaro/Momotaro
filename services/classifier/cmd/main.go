@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/thisizaro/Momotaro/internal/platform/config"
+	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
@@ -61,7 +62,10 @@ func run(ctx context.Context, cfg config.Common, log *slog.Logger) error {
 		return fmt.Errorf("listen on grpc port %d: %w", cfg.GRPCPort, err)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		interceptors.UnaryServerRecovery(),
+		interceptors.UnaryServerRequireDeadline(),
+	))
 	classifierv1.RegisterClassifierServiceServer(grpcServer, server.New())
 
 	serveErr := make(chan error, 1)

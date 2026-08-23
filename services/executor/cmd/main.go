@@ -19,6 +19,7 @@ import (
 
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
+	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
@@ -69,7 +70,10 @@ func run(ctx context.Context, cfg config.Common, log *slog.Logger) error {
 		return fmt.Errorf("listen on grpc port %d: %w", cfg.GRPCPort, err)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		interceptors.UnaryServerRecovery(),
+		interceptors.UnaryServerRequireDeadline(),
+	))
 	executorv1.RegisterExecutorServiceServer(grpcServer, server.New(pool, clock.New(), server.StubOutcome))
 
 	serveErr := make(chan error, 1)

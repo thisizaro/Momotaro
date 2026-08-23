@@ -19,6 +19,7 @@ import (
 
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
+	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
@@ -83,7 +84,10 @@ func run(ctx context.Context, cfg config.Common, topic string, log *slog.Logger)
 		return fmt.Errorf("listen on grpc port %d: %w", cfg.GRPCPort, err)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		interceptors.UnaryServerRecovery(),
+		interceptors.UnaryServerRequireDeadline(),
+	))
 	ingestionv1.RegisterIngestionServiceServer(grpcServer, server.New(pool, producer, clock.New(), topic))
 
 	serveErr := make(chan error, 1)

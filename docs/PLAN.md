@@ -60,11 +60,16 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       structured logger with fixed correlation keys, fail-fast config
       loader. All tested under `-race`
       → `ENGINEERING.md` §2, §5, §9
-- [ ] Shared internal packages, part 2: gRPC interceptors
+- [x] Shared internal packages, part 2: gRPC interceptors
       (metrics/tracing/recovery/deadline), graceful-shutdown helper, and the
       `kafkax`/`pgx` helpers. Library choices are already pinned in each
       package's doc.go; recovery + deadline interceptors and the shutdown
-      helper should land with the first service, the rest in Phase 4
+      helper should land with the first service, the rest in Phase 4.
+      `UnaryServerRecovery` + `UnaryServerRequireDeadline` wired into every
+      service's gRPC server, `UnaryClientDefaultDeadline` into every
+      inter-service gRPC client (api-gateway→ingestion,
+      decision-engine→classifier/executor); metrics, tracing and
+      request-scoped logging remain Phase 4
       → `ENGINEERING.md` §3, §6, `ARCHITECTURE.md` §8a, §13
 - [x] `docker-compose.yml` for local dev: Postgres, Redis, Kafka
       (single-broker/KRaft is fine), plus a Kafka UI (redpanda console or
