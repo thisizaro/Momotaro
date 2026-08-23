@@ -269,3 +269,29 @@ breaks locally. More generally: a check that fails identically regardless of
 the diff under review is a broken check, not a broken PR, first move should
 be reproducing it locally against a diff-free branch before suspecting the
 change in front of you.
+
+### 2026-08-23, ConsumeKeyed's own shutdown signal could abort its final commits
+**What happened:** An integration test for the new keyed worker pool
+(`kafkax.ConsumeKeyed`) closed a consumer, opened a fresh one in the same
+group, and expected nothing to be redelivered. One message was, intermittently.
+**Root cause:** The commit call for a just-finished record used the same
+`ctx` the caller cancels to stop the fetch loop. Cancelling that context to
+begin a graceful shutdown could race with, and abort, the `CommitRecords`
+call for the record whose completion triggered the shutdown, silently
+losing that commit. The first version of the test also raced itself: it
+tore down the consumer as soon as handler *call counts* reached the
+expected total, which is not the same as the resulting commits having
+actually landed.
+**Fix:** Commits now run on their own bounded context
+(`context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)`), so the
+signal that starts shutdown cannot abort the commits shutdown depends on to
+not lose progress. Fixed the test to wait for `ConsumeKeyed` itself to
+return (which internally waits for every worker via a `WaitGroup`) rather
+than for a handler call count, since only the former actually implies the
+commit finished.
+**Prevention:** For anything with a "finish in-flight work, then stop"
+shutdown contract, the operation that must survive shutdown (here, the
+final commit) needs a context that outlives the cancellation signal that
+triggers it, not the same one. And in tests, synchronise on the real
+completion signal (a function actually returning) rather than a proxy for
+it (a counter reaching a value), the two are not always the same moment.
