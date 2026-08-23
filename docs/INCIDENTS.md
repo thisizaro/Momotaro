@@ -514,3 +514,36 @@ are observing can hide the very thing you are looking for. And when a fix is
 claimed to have resolved a CI failure, the evidence is a green run of the
 job that was failing, on the branch that failed, not a green run of a
 different job on a different ref. One green check is not a trend.
+
+### 2026-08-23, the nudge path recorded a transition the state machine forbade
+**What happened:** The new Phase 1 smoke test failed on its first run, on the
+two nudge records only: `trail_complete = false`, and
+`VerifyInvariants` reporting `impossible_transitions = 2` with
+"entry 2: RECORD_STATE_NUDGED -> RECORD_STATE_NUDGED is not a valid
+transition". The retry and escalation records were all fine.
+**Root cause:** A genuine disagreement between the pipeline and the verifier,
+and the first thing to exercise the nudge path end to end was this test. The
+Decision Engine's scheduler claims a due nudge into `Nudged` before executing
+it, then executing produces `OUTCOME_PENDING`, which `decideAfterExecute` also
+maps to `Nudged` because the customer has not answered. So the trail
+legitimately contains a `Nudged -> Nudged` self-edge, and the state machine,
+written from `ARCHITECTURE.md` section 7's diagram, had no such edge.
+**Fix:** Allowed the edge, rather than suppressing the entry. Checked what the
+second entry actually carries before deciding: it holds the attempt number and
+the send's real `cost_paise`, so dropping it would lose that spend from the
+history the audit trail is supposed to be the source of truth for. Marked in
+`statemachine.go` as a real edge rather than one of the temporary Phase 1
+ones, since the claim-then-execute split is how the scheduler works and not a
+phase artifact. Added a unit test for it, plus one asserting the self-edge
+stays specific to `Nudged`: a `Retrying` self-edge would still mean something
+had gone wrong, and blanket-allowing self-loops would have been the lazy fix
+that hid that.
+**Prevention:** Two things worth keeping. The bug was reachable only by
+driving a nudge from the public API through to its parked state, which no unit
+or single-record test did, so it survived the Decision Engine, Audit and
+Executor work all landing individually green. A pipeline with branches needs a
+test that walks each branch end to end, not just the happy one. And when a
+verifier and the system disagree, the useful question is which of them is
+wrong: here the verifier was, but that was only clear after checking what the
+disputed audit entry actually contained. Reflexively silencing either side
+would have been wrong in a way that was hard to notice later.

@@ -516,3 +516,24 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   rule, "the service that owns a state change writes both", since the
   Executor owns no state change. Worth a clarifying edit to that table by
   whoever owns the docs.
+- 2026-08-23: Phase 1's smoke test asserts what the pipeline settles records
+  into, not just that it produces something. Three choices worth recording.
+  (1) Expectations are derived per failure code, and each case carries the
+  chain it expects (`TRANSIENT_BANK -> RETRY -> claimed -> stub succeeds`), so
+  a failure names which link broke rather than only reporting a wrong state.
+  A test that asserted "reached some terminal state" would have passed while
+  the classifier mapped everything to `ESCALATE`. (2) Batch-wide correctness
+  is checked by calling `Audit.VerifyInvariants` scoped to the batch rather
+  than by re-deriving the invariants in the test. That is the service's whole
+  second job (`ARCHITECTURE.md` §10a) and duplicating its logic in a test
+  would mean two implementations that could agree with each other while both
+  being wrong. Scoping to the batch also keeps it immune to whatever else is
+  in the shared database, which is the failure mode that has already bitten
+  this repo twice. (3) `Nudged` counts as *settled* but not *terminal*, and
+  the test cross-checks its own notion of terminal against the three states
+  `common.proto` actually marks terminal, so drift between the test and the
+  contract surfaces rather than passing quietly. Related: the Executor stub's
+  "attempt 2+ fails" branch is deliberately not exercised end to end, because
+  Phase 1 has no retry budget and so never schedules a second attempt;
+  fabricating one would test the fabrication rather than the pipeline, so it
+  stays covered by unit tests until Phase 2 makes it reachable honestly.
