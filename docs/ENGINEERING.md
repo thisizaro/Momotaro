@@ -179,6 +179,17 @@ data-loss bug.
 - Update `AGENTS.md`'s decision log in the same PR if you made a
   load-bearing decision. A decision that lives only in a chat transcript is
   a decision the next agent will contradict.
+- Sync your feature branch with `main` (`git fetch origin`, then merge
+  `origin/main` into your branch) before opening a PR, and again before
+  merging if the PR has sat open for a while. Multiple agents work in
+  parallel on separate branches, and `main` moves while yours is open. Do
+  this with a merge, not a rebase, since rebasing rewrites history and
+  requires a force-push, which is unsafe when another agent or machine
+  might have the same branch checked out. Merging locally first also
+  avoids relying on GitHub's PR mergeability preview, which does not
+  reliably honor the `merge=union` strategy configured in `.gitattributes`
+  for the append-only docs (`PLAN.md`, `DECISIONS.md`, `INCIDENTS.md`) and
+  can show a conflict that a real `git merge` resolves cleanly.
 
 ## 11. Definition of Done
 
