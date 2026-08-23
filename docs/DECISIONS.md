@@ -325,3 +325,29 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `Consume`'s existing contract. See `docs/INCIDENTS.md`
   2026-08-23 for a real race this surfaced during testing (commits must run
   on a context that outlives the shutdown signal that triggers them).
+- 2026-08-23: Decision Engine's Phase 1 depth deliberately excludes the
+  `Scoring`/`ClosedUneconomic` economics gate and any retry budget/cap:
+  those are explicit Phase 2 items in `docs/PLAN.md`. Consequences of that
+  scoping, worth stating so a later agent does not read them as bugs: (1)
+  `HandleMessage` never calls Execute, every action including a plain retry
+  goes through the scheduler on a fixed Phase 1 delay
+  (`RETRY_DELAY`/`NUDGE_DELAY`, both scaled by `DEMO_TIME_SCALE`), so the
+  state diagram's actual shape (New -> Scoring -> RetryScheduled -> ...)
+  holds even with Scoring itself not built yet; (2) a failed retry or nudge
+  escalates immediately rather than re-scoring and trying again, since
+  there is no budget to check against yet; (3) `ACTION_TYPE_NONE` (the
+  honest home for which is `ClosedUneconomic`) escalates for the same
+  reason. A record whose classify or execute call keeps failing is retried
+  a bounded number of times (`maxClassifyAttempts`/`maxExecuteAttempts` = 3)
+  then published to `raw.events.dlq`, per `ARCHITECTURE.md` §8b; it is left
+  in whatever state it was claimed into rather than moved to `Escalated`,
+  since the architecture explicitly treats a DLQ'd record as a processing
+  failure, distinct from a considered decision.
+- 2026-08-23: Fixed a real cross-package test race surfaced while testing
+  the scheduler: `go test ./...` runs packages concurrently, and the
+  scheduler's due-record claim query is intentionally unscoped (a
+  system-wide poll is its actual job), so it could claim a record belonging
+  to `test/e2e`'s walking-skeleton run against the same shared Postgres.
+  Scheduler tests now assert only state scoped to the record_id they
+  seeded, never a shared fake's global call count. See `docs/INCIDENTS.md`
+  2026-08-23.

@@ -137,18 +137,47 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       Split into `validate.go`/`record.go`/`store.go`/`events.go`/`server.go`
       per `ENGINEERING.md` §14 (one job per file); `server.go` is
       orchestration only.
-- [ ] Decision Engine: consumes `raw.events` via a **keyed worker pool**
-      (not one-at-a-time) with contiguous-prefix offset commits, calls
-      Classifier + Executor via gRPC, owns the state machine, writes
-      `RECORD_STATE` and `AUDIT_ENTRY` **in one transaction**
-      → `ARCHITECTURE.md` §4, §7, §8a, §10a
-- [ ] Decision Engine scheduler worker: `due_at` polling with
+- [x] (unplanned, needed by the keyed worker pool below) added
+      `kafkax.Consumer.ConsumeKeyed`: dispatch-by-key-hash across a bounded
+      worker pool with contiguous-prefix offset commits. Built in
+      `internal/platform/kafkax` since it is generic Kafka consumption
+      infrastructure, not Decision Engine business logic; `kafkax.go`'s own
+      doc comment anticipated this landing here → `ARCHITECTURE.md` §8a
+- [x] (unplanned, needed by the scheduler below) added
+      `record_state.pending_action` (migration `00003`): the state alone
+      does not say which nudge subtype was scheduled, so the scheduler had
+      nothing to resume from → `ARCHITECTURE.md` §7a
+- [x] Decision Engine: consumes `raw.events` via a **keyed worker pool**
+      (not one-at-a-time, `kafkax.ConsumeKeyed` above) with contiguous-prefix
+      offset commits, calls Classifier via gRPC, owns the state machine,
+      writes `RECORD_STATE` and `AUDIT_ENTRY` **in one transaction**
+      → `ARCHITECTURE.md` §4, §7, §8a, §10a.
+      Phase 1 scope deliberately excludes the `Scoring`/`ClosedUneconomic`
+      economics gate (Phase 2): `HandleMessage` classifies and schedules
+      only, it never calls Execute directly, every action (including retry)
+      goes through the scheduler below so the diagram's actual shape holds.
+      A classify failure retries a bounded number of times then dead-letters
+      rather than blocking the partition. Split into
+      `state.go`/`store.go`/`clients.go`/`dlq.go`/`engine.go`/`scheduler.go`
+      per `ENGINEERING.md` §14.
+- [x] Decision Engine scheduler worker: `due_at` polling with
       `FOR UPDATE SKIP LOCKED`, so cooldowns and cause-aware retry timing
       actually fire. Nothing time-based works without this
-      → `ARCHITECTURE.md` §7a
-- [ ] DLQ path: bounded processing retries, then publish to
+      → `ARCHITECTURE.md` §7a.
+      Claims a due record (Scheduled -> Retrying/Nudged, its own audit
+      entry) in one transaction, then calls Execute outside it so a slow
+      downstream call never holds the row lock. A failed nudge/retry
+      escalates (no retry budget yet, Phase 2); a `PENDING` nudge outcome
+      parks in `Nudged` with `due_at` left `NULL`, since
+      `ReportDelayedOutcome`'s caller (World Simulator) is Phase 5.
+- [x] DLQ path: bounded processing retries, then publish to
       `raw.events.dlq` with the failure reason and commit the offset, so one
-      poison record cannot wedge a partition → `ARCHITECTURE.md` §8b
+      poison record cannot wedge a partition → `ARCHITECTURE.md` §8b.
+      Applied at both failure points: `HandleMessage`'s classify call and
+      the scheduler's Execute call, each retried up to 3 times before
+      dead-lettering. Not written as a `RecordState` value (none exists for
+      it); left in whatever state it was claimed into, since a DLQ'd record
+      is a processing failure, not a considered decision like `Escalated`.
 - [ ] Classifier: rules-only for now (`source=rules_fallback` always), the
       LLM provider-chain interface stubbed but not wired to a real provider
       yet → `ARCHITECTURE.md` §5, `PRD.md` §2a

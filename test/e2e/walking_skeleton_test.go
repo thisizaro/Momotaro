@@ -212,8 +212,12 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 	// ever reaching this test's message. See docs/INCIDENTS.md.
 	topic := "e2e-raw-events-" + uuid.NewString()
 	group := "e2e-decision-engine-" + uuid.NewString()
+	dlqTopic := "e2e-raw-events-dlq-" + uuid.NewString()
 	if err := kafkax.EnsureTopic(ctx, []string{kafkaBrokers}, topic, 1); err != nil {
 		t.Fatalf("EnsureTopic: %v", err)
+	}
+	if err := kafkax.EnsureTopic(ctx, []string{kafkaBrokers}, dlqTopic, 1); err != nil {
+		t.Fatalf("EnsureTopic (dlq): %v", err)
 	}
 
 	classifierBin := buildBinary(t, root, binDir, "classifier")
@@ -266,6 +270,14 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 		"CALL_TIMEOUT":              "5s",
 		"RAW_EVENTS_TOPIC":          topic,
 		"RAW_EVENTS_CONSUMER_GROUP": group,
+		"RAW_EVENTS_DLQ_TOPIC":      dlqTopic,
+		// Short and isolated: production's real cause-aware timing
+		// (ARCHITECTURE.md section 5a) is Phase 2 work, Phase 1's fixed
+		// delay defaults to 30s, comfortably longer than pipelineWait. A
+		// fresh topic per run avoids replaying another run's dead letters.
+		"RETRY_DELAY":             "1s",
+		"NUDGE_DELAY":             "1s",
+		"SCHEDULER_POLL_INTERVAL": "300ms",
 	})))
 
 	procs = append(procs, startProcess(t, "api-gateway", apiGatewayBin, merge(commonEnv(gwPort, gwMetrics), map[string]string{
@@ -391,22 +403,31 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 	if !auditResp.GetTrailComplete() {
 		t.Error("audit TrailComplete = false")
 	}
+	// Three transitions now, not one: NEW -> RETRY_SCHEDULED (classify),
+	// RETRY_SCHEDULED -> RETRYING (the scheduler claiming the due record),
+	// RETRYING -> RECOVERED (the execute outcome). Every transition is its
+	// own AUDIT_ENTRY row by design (docs/ARCHITECTURE.md section 7), the
+	// walking skeleton's single collapsed step was the Phase 1 depth work's
+	// starting point, not the final shape.
 	entries := auditResp.GetEntries()
-	if len(entries) != 1 {
-		t.Fatalf("audit entries = %d, want 1", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("audit entries = %d, want 3 (classify, claim, outcome)", len(entries))
 	}
-	entry := entries[0]
-	if entry.GetToState() != commonv1.RecordState_RECORD_STATE_RECOVERED {
-		t.Errorf("audit entry ToState = %v, want RECOVERED", entry.GetToState())
+
+	classify := entries[0]
+	if classify.GetSource() != commonv1.Source_SOURCE_RULES_FALLBACK {
+		t.Errorf("classify entry Source = %v, want SOURCE_RULES_FALLBACK", classify.GetSource())
 	}
-	if entry.GetSource() != commonv1.Source_SOURCE_RULES_FALLBACK {
-		t.Errorf("audit entry Source = %v, want SOURCE_RULES_FALLBACK", entry.GetSource())
+	if classify.GetRationale() == "" {
+		t.Error("classify entry Rationale is empty")
 	}
-	if entry.GetRationale() == "" {
-		t.Error("audit entry Rationale is empty")
+
+	outcome := entries[len(entries)-1]
+	if outcome.GetToState() != commonv1.RecordState_RECORD_STATE_RECOVERED {
+		t.Errorf("final entry ToState = %v, want RECOVERED", outcome.GetToState())
 	}
-	if entry.GetAttemptNumber() != 1 {
-		t.Errorf("audit entry AttemptNumber = %d, want 1", entry.GetAttemptNumber())
+	if outcome.GetAttemptNumber() != 1 {
+		t.Errorf("final entry AttemptNumber = %d, want 1", outcome.GetAttemptNumber())
 	}
 	if auditResp.GetRecord().GetAmountPaise() != 75000 {
 		t.Errorf("audit Record.AmountPaise = %d, want 75000", auditResp.GetRecord().GetAmountPaise())

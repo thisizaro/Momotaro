@@ -295,3 +295,28 @@ final commit) needs a context that outlives the cancellation signal that
 triggers it, not the same one. And in tests, synchronise on the real
 completion signal (a function actually returning) rather than a proxy for
 it (a counter reaching a value), the two are not always the same moment.
+
+### 2026-08-23, Decision Engine scheduler tests flaked on a shared executor call count
+**What happened:** `TestSchedulerClaimsDueRetryAndRecordsSuccess` failed
+intermittently under `make test-integration` (the whole-repo `go test ./...`
+run) with "executor called 2 times, want 1", despite the test only ever
+seeding one due record.
+**Root cause:** `go test ./...` runs different packages concurrently by
+default. The scheduler's `claimDue` query is deliberately unscoped, it polls
+`record_state`/`record` system-wide by `due_at`, because that is genuinely
+its production job. Running at the same wall-clock moment as
+`test/e2e`'s walking-skeleton test, which drives a real decision-engine
+binary against the same shared Postgres, let this test's `tick()` also
+claim (and execute against its own fake) a record that belonged to the
+other package's test entirely.
+**Fix:** Stopped asserting the shared fake's global call count in scheduler
+tests. Assert only what is scoped to the record_id each test actually
+seeded (`current_state`, `attempt_count`, `audit_entry` rows for that id),
+which stays correct regardless of what else `claimDue` happens to pick up
+in the same tick.
+**Prevention:** A query that is intentionally system-wide (no record/batch
+scoping) cannot be tested as if it only ever sees this test's own data,
+once anything else with write access to the same tables can run
+concurrently. Assert on the specific row you seeded, not on a shared
+collaborator's total call count, whenever the code under test shares
+mutable state with other tests by design.

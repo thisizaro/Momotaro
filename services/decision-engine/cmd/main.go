@@ -33,13 +33,14 @@ import (
 
 const serviceName = "decision-engine"
 
-// defaultRawEventsTopic and defaultRawEventsConsumerGroup are fixed per
-// docs/ARCHITECTURE.md section 8 (three topics, not one per hop). Both are
-// overridable via env so the walking-skeleton integration test can run
-// against an isolated topic/group instead of the shared production ones.
+// Fixed per docs/ARCHITECTURE.md section 8 (three topics, not one per hop).
+// All overridable via env so the walking-skeleton and depth integration
+// tests can run against isolated topics/groups instead of the shared
+// production ones.
 const (
 	defaultRawEventsTopic         = "raw.events"
 	defaultRawEventsConsumerGroup = "decision-engine"
+	defaultDLQTopic               = "raw.events.dlq"
 )
 
 // serviceConfig adds this service's own settings to the shared ones.
@@ -50,6 +51,12 @@ type serviceConfig struct {
 	CallTimeout    time.Duration
 	Topic          string
 	ConsumerGroup  string
+	DLQTopic       string
+	WorkerPoolSize int
+	// RetryDelay/NudgeDelay: Phase 1 placeholders, see engine.Config.
+	RetryDelay   time.Duration
+	NudgeDelay   time.Duration
+	PollInterval time.Duration
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -61,6 +68,11 @@ func loadConfig() (serviceConfig, error) {
 		CallTimeout:    l.Duration("CALL_TIMEOUT", 5*time.Second),
 		Topic:          l.StrDefault("RAW_EVENTS_TOPIC", defaultRawEventsTopic),
 		ConsumerGroup:  l.StrDefault("RAW_EVENTS_CONSUMER_GROUP", defaultRawEventsConsumerGroup),
+		DLQTopic:       l.StrDefault("RAW_EVENTS_DLQ_TOPIC", defaultDLQTopic),
+		WorkerPoolSize: l.Int("WORKER_POOL_SIZE", 32),
+		RetryDelay:     l.Duration("RETRY_DELAY", 30*time.Second),
+		NudgeDelay:     l.Duration("NUDGE_DELAY", 30*time.Second),
+		PollInterval:   l.Duration("SCHEDULER_POLL_INTERVAL", 2*time.Second),
 	}
 	return cfg, l.Err()
 }
@@ -115,10 +127,28 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	defer executorConn.Close()
 
+	dlqProducer, err := kafkax.NewProducer(cfg.KafkaBrokers)
+	if err != nil {
+		return fmt.Errorf("connect dlq producer to kafka: %w", err)
+	}
+	defer dlqProducer.Close()
+
+	// Scale applies DEMO_TIME_SCALE (docs/ARCHITECTURE.md section 17): every
+	// wall-clock wait in the system compresses through this one knob, and
+	// these Phase 1 fixed delays are wall-clock waits like any other.
+	engCfg := engine.Config{
+		CallTimeout: cfg.CallTimeout,
+		RetryDelay:  cfg.Scale(cfg.RetryDelay),
+		NudgeDelay:  cfg.Scale(cfg.NudgeDelay),
+		DLQTopic:    cfg.DLQTopic,
+	}
 	eng := engine.New(pool,
 		classifierv1.NewClassifierServiceClient(classifierConn),
 		executorv1.NewExecutorServiceClient(executorConn),
-		clock.New(), cfg.CallTimeout)
+		dlqProducer, clock.New(), engCfg)
+
+	schedCfg := engine.SchedulerConfig{CallTimeout: cfg.CallTimeout, PollInterval: cfg.Scale(cfg.PollInterval), DLQTopic: cfg.DLQTopic}
+	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), schedCfg)
 
 	consumer, err := kafkax.NewConsumer(cfg.KafkaBrokers, cfg.ConsumerGroup, []string{cfg.Topic})
 	if err != nil {
@@ -126,24 +156,46 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	defer consumer.Close()
 
+	// A separate cancel from the signal-driven ctx: if either the consumer
+	// or the scheduler exits on its own (error or otherwise), the other
+	// must stop too, not run on unsupervised until a signal eventually
+	// arrives.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
 	consumeErr := make(chan error, 1)
 	go func() {
-		consumeErr <- consumer.Consume(ctx, eng.HandleMessage)
+		consumeErr <- consumer.ConsumeKeyed(runCtx, cfg.WorkerPoolSize, eng.HandleMessage)
 	}()
 
-	log.Info("consuming", "topic", cfg.Topic, "group", cfg.ConsumerGroup)
+	schedulerErr := make(chan error, 1)
+	go func() {
+		schedulerErr <- scheduler.Run(runCtx)
+	}()
 
+	log.Info("running", "topic", cfg.Topic, "group", cfg.ConsumerGroup, "worker_pool_size", cfg.WorkerPoolSize, "poll_interval", cfg.PollInterval)
+
+	var runErr error
 	select {
 	case err := <-consumeErr:
+		cancelRun()
+		<-schedulerErr
 		if err != nil && !errors.Is(err, context.Canceled) {
-			return fmt.Errorf("consume %s: %w", cfg.Topic, err)
+			runErr = fmt.Errorf("consume %s: %w", cfg.Topic, err)
 		}
-		return nil
+	case err := <-schedulerErr:
+		cancelRun()
+		<-consumeErr
+		if err != nil && !errors.Is(err, context.Canceled) {
+			runErr = fmt.Errorf("scheduler: %w", err)
+		}
 	case <-ctx.Done():
+		<-consumeErr
+		<-schedulerErr
 	}
 
-	return shutdown.Close(10*time.Second, func(ctx context.Context) error {
-		consumer.Close()
-		return nil
-	})
+	if shutErr := shutdown.Close(10*time.Second, func(ctx context.Context) error { consumer.Close(); return nil }); shutErr != nil {
+		return errors.Join(runErr, shutErr)
+	}
+	return runErr
 }
