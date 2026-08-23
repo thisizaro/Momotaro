@@ -236,14 +236,72 @@ concurrently:
   generated stubs, no separate contract-testing framework needed at this
   scale, the committed generated code (section 9 in Architecture) already
   is the contract.
-- One end-to-end integration test runs the whole `docker-compose` stack and
-  asserts the correctness invariants from `docs/PRD.md` §9/§10 (zero
-  stopping-rule violations, 100% audit trail completeness) over a small
-  synthetic batch, this is the test that proves the system, not just its
-  parts.
-- CI runs unit tests on every PR (path-filtered). The end-to-end test is
-  heavier (needs the full stack up) and runs on merge to `main`, not on
-  every PR.
+- End-to-end tests run the whole `docker-compose` stack and assert the
+  correctness invariants from `docs/PRD.md` §9/§10 (zero stopping-rule
+  violations, 100% audit trail completeness) over a small synthetic batch.
+  These are the tests that prove the system, not just its parts.
+- CI runs everything on every PR and on every merge to `main`. An earlier
+  version of this section said the heavy tests ran only on merge; that was
+  changed deliberately, because the infra-dependent tests sit behind build
+  tags and a PR could otherwise go fully green without a single one of them
+  executing.
+
+### How to run them
+
+```bash
+make test               # unit tests only. No docker needed. Seconds.
+make test-integration   # brings up docker, migrates, runs every tier
+make check              # fmt, vet, proto-lint, build, unit tests
+```
+
+`make test-integration` is self-contained: it depends on `up` and
+`migrate-up`, so it starts the infra and applies migrations itself. Use
+`make down-clean` first if you want to prove something works from an empty
+database, which is what CI always does.
+
+**The trap: a bare `go test ./...` runs neither the integration nor the
+end-to-end tests.** Both sit behind build tags, so it passes while testing
+almost nothing about the pipeline. That is deliberate (a fresh checkout with
+no database must not fail) but it means "the tests pass" needs qualifying.
+When you want the real answer, use `make test-integration`.
+
+### The three tiers, and what each is for
+
+| Tier | Build tag | Needs infra | What it proves |
+|---|---|---|---|
+| unit | none | no | one function or type in isolation. Pure logic: state transitions, the classifier's rules table, the commit tracker, action-to-port routing |
+| integration | `integration` | Postgres, Kafka | this service against the real database and broker, because the constraints and delivery semantics *are* the behaviour (`ENGINEERING.md` §1, "do not mock what you own") |
+| end-to-end | `e2e` | full stack | the whole pipeline, driven through the public HTTP API with the six real service binaries running as subprocesses |
+
+There are two end-to-end tests, and they are not redundant:
+
+- `test/e2e/walking_skeleton_test.go`: one record reaching `Recovered`. The
+  narrow, fast integration proof.
+- `test/e2e/smoke_test.go`: seven records, each settling where its own failure
+  code implies, covering the `Recovered`, `Escalated` and parked `Nudged`
+  branches, and calling `Audit.VerifyInvariants` over the batch. Branch
+  coverage is the point: a bug reachable only on the nudge path survived three
+  services landing individually green, and this is what caught it.
+
+Both share the stack bring-up in `test/e2e/harness_test.go`. Each gets its own
+stack with its own Kafka topics and consumer group rather than sharing one,
+because the Decision Engine's scheduler polls `RECORD_STATE` system-wide by
+design and two tests on one stack could claim each other's records.
+
+### Running one thing, and chasing flakes
+
+```bash
+# one end-to-end test, verbose, so you can watch the pipeline work
+go test -count=1 -tags='integration e2e' -run TestSmokeBatch -v ./test/e2e/
+
+# one service, integration tier
+go test -race -count=1 -tags=integration ./services/executor/...
+```
+
+For anything concurrent, a single green run is not evidence. See
+`ENGINEERING.md` §1 for the `GOMAXPROCS=2` loop and why `-race` alone does not
+catch ordering bugs. Two real bugs in this repo were found that way and only
+that way.
 
 ## Secrets and config
 
