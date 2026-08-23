@@ -36,8 +36,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
@@ -198,98 +196,12 @@ func merge(base map[string]string, extra map[string]string) map[string]string {
 }
 
 func TestWalkingSkeletonReachesRecovered(t *testing.T) {
-	root := repoRoot(t)
-	binDir := t.TempDir()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// Isolated topic + consumer group: earlier unit test runs have already
-	// published unrelated messages onto the shared raw.events topic for
-	// records that no longer exist in Postgres. A fresh decision-engine
-	// consumer group on that topic would replay them and fail on the very
-	// first one (record_state's foreign key to a deleted record), before
-	// ever reaching this test's message. See docs/INCIDENTS.md.
-	topic := "e2e-raw-events-" + uuid.NewString()
-	group := "e2e-decision-engine-" + uuid.NewString()
-	dlqTopic := "e2e-raw-events-dlq-" + uuid.NewString()
-	if err := kafkax.EnsureTopic(ctx, []string{kafkaBrokers}, topic, 1); err != nil {
-		t.Fatalf("EnsureTopic: %v", err)
-	}
-	if err := kafkax.EnsureTopic(ctx, []string{kafkaBrokers}, dlqTopic, 1); err != nil {
-		t.Fatalf("EnsureTopic (dlq): %v", err)
-	}
-
-	classifierBin := buildBinary(t, root, binDir, "classifier")
-	executorBin := buildBinary(t, root, binDir, "executor")
-	auditBin := buildBinary(t, root, binDir, "audit")
-	ingestionBin := buildBinary(t, root, binDir, "ingestion")
-	decisionEngineBin := buildBinary(t, root, binDir, "decision-engine")
-	apiGatewayBin := buildBinary(t, root, binDir, "api-gateway")
-
-	classifierPort, classifierMetrics := freePort(t), freePort(t)
-	executorPort, executorMetrics := freePort(t), freePort(t)
-	auditPort, auditMetrics := freePort(t), freePort(t)
-	ingestionPort, ingestionMetrics := freePort(t), freePort(t)
-	deGRPCPort, deMetrics := freePort(t), freePort(t) // unused but required config
-	gwPort, gwMetrics := freePort(t), freePort(t)
-	gwHTTPPort := freePort(t)
-
-	var procs []*process
-	stopAll := func() {
-		for i := len(procs) - 1; i >= 0; i-- {
-			procs[i].stop(t)
-		}
-	}
-	defer stopAll()
-
-	classifierAddr := fmt.Sprintf("127.0.0.1:%d", classifierPort)
-	executorAddr := fmt.Sprintf("127.0.0.1:%d", executorPort)
-	auditAddr := fmt.Sprintf("127.0.0.1:%d", auditPort)
-	ingestionAddr := fmt.Sprintf("127.0.0.1:%d", ingestionPort)
-	gwHTTPAddr := fmt.Sprintf("127.0.0.1:%d", gwHTTPPort)
-
-	procs = append(procs, startProcess(t, "classifier", classifierBin, commonEnv(classifierPort, classifierMetrics)))
-	procs = append(procs, startProcess(t, "executor", executorBin, commonEnv(executorPort, executorMetrics)))
-	procs = append(procs, startProcess(t, "audit", auditBin, commonEnv(auditPort, auditMetrics)))
-	procs = append(procs, startProcess(t, "ingestion", ingestionBin, merge(commonEnv(ingestionPort, ingestionMetrics), map[string]string{
-		"RAW_EVENTS_TOPIC": topic,
-	})))
-
-	readyCtx, readyCancel := context.WithTimeout(ctx, startupWindow)
-	defer readyCancel()
-	for _, addr := range []string{classifierAddr, executorAddr, auditAddr, ingestionAddr} {
-		if err := waitForTCP(readyCtx, addr); err != nil {
-			t.Fatalf("service did not become ready: %v", err)
-		}
-	}
-
-	procs = append(procs, startProcess(t, "decision-engine", decisionEngineBin, merge(commonEnv(deGRPCPort, deMetrics), map[string]string{
-		"CLASSIFIER_ADDR":           classifierAddr,
-		"EXECUTOR_ADDR":             executorAddr,
-		"CALL_TIMEOUT":              "5s",
-		"RAW_EVENTS_TOPIC":          topic,
-		"RAW_EVENTS_CONSUMER_GROUP": group,
-		"RAW_EVENTS_DLQ_TOPIC":      dlqTopic,
-		// Short and isolated: production's real cause-aware timing
-		// (ARCHITECTURE.md section 5a) is Phase 2 work, Phase 1's fixed
-		// delay defaults to 30s, comfortably longer than pipelineWait. A
-		// fresh topic per run avoids replaying another run's dead letters.
-		"RETRY_DELAY":             "1s",
-		"NUDGE_DELAY":             "1s",
-		"SCHEDULER_POLL_INTERVAL": "300ms",
-	})))
-
-	procs = append(procs, startProcess(t, "api-gateway", apiGatewayBin, merge(commonEnv(gwPort, gwMetrics), map[string]string{
-		"INGESTION_ADDR": ingestionAddr,
-		"API_KEY":        apiKey,
-		"HTTP_PORT":      strconv.Itoa(gwHTTPPort),
-		"CALL_TIMEOUT":   "5s",
-	})))
-
-	if err := waitForTCP(readyCtx, gwHTTPAddr); err != nil {
-		t.Fatalf("api-gateway did not become ready: %v", err)
-	}
+	stack := startStack(ctx, t, "1s")
+	gwHTTPAddr := stack.gatewayHTTP
+	auditAddr := stack.auditAddr
 
 	// --- Act: submit one batch of one record through the real HTTP contract. ---
 	reqBody := `{

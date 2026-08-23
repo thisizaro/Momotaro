@@ -295,9 +295,34 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       the empty-string branch would have matched. Fixed by comparing
       `batch_id::text = $1` instead of casting the parameter. See
       `docs/INCIDENTS.md`.
-- [ ] End-to-end smoke test: `POST /v1/batches` with a handful of records,
+- [x] End-to-end smoke test: `POST /v1/batches` with a handful of records,
       watch them reach `Recovered`/`Escalated`, confirm the audit trail is
-      complete → `PRD.md` §7, §8
+      complete → `PRD.md` §7, §8.
+      `test/e2e/smoke_test.go` submits seven records through the real HTTP API
+      and asserts each settles where its own failure code implies: retries and
+      insufficient-funds reach `Recovered`, a risk hold and an unrecognised
+      code reach `Escalated` without anything being executed, and a dead
+      instrument and an abandoned checkout park in `Nudged` awaiting Phase 5's
+      delayed-outcome callback. Per record it checks the trail chains, starts
+      at `NEW`, carries the classifier's rationale, and ends where the record
+      actually is; per batch it calls `Audit.VerifyInvariants` and requires
+      zero incomplete trails, zero impossible transitions and zero
+      stopping-rule violations, which is `PRD.md` §9/§10's claim checked by
+      the service whose job it is rather than re-derived by the test. Also
+      asserts logged spend is non-zero wherever an intervention actually ran.
+      The stack bring-up is now a shared harness (`test/e2e/harness_test.go`)
+      rather than duplicated. Note the stub's "attempt 2+ fails" branch is
+      deliberately not reachable end to end: Phase 1 has no retry budget, so
+      no record ever gets a second attempt, and faking one to exercise the
+      branch would test the fake rather than the pipeline. It is covered by
+      unit tests instead → `docs/INCIDENTS.md`
+- [x] (unplanned, found by the smoke test above on its first run) the nudge
+      path records a `Nudged -> Nudged` audit entry, because the scheduler
+      claims a due nudge into `Nudged` and the send's `PENDING` outcome maps
+      there too. The verifier rejected it. Allowed the edge rather than
+      dropping the entry, since that entry carries the attempt number and the
+      send's real cost, and losing it would put a hole in the spend history.
+      See `docs/INCIDENTS.md` → `ARCHITECTURE.md` §7
 
 Note: the full World Simulator (hidden ground truth, probabilistic
 outcomes, delayed-callback scheduling) is deliberately deferred to Phase 5,
