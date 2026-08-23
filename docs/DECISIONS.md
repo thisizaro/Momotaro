@@ -275,3 +275,19 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   submission has no webhook redelivery to guard against, and NULLs must not
   collide with each other. Additive only, own migration, ahead of the
   Ingestion service PR that depends on it, per `ARCHITECTURE.md` §12a.
+- 2026-08-23: Ingestion's `SubmitEvent` "implicit rolling batch"
+  (`proto/ingestion/v1/ingestion.proto`'s comment, otherwise unspecified
+  anywhere) is one long-lived `BATCH` row per environment, found by a fixed
+  `source` value (`ROLLING_BATCH_SOURCE`, `"webhook"` in production) and
+  created lazily on first use, not time-windowed (e.g. not one per day).
+  Reason: Phase 1 has no reporting need for finer-grained production
+  batching yet, and a single rolling batch is the smallest thing that
+  satisfies "every record is reportable." Revisit if/when Phase 5 reporting
+  wants production records grouped by time window instead. Two concurrent
+  first-ever calls can race and create two rolling batches; accepted as
+  benign (no record is lost or double-counted, later calls converge on the
+  older row by `ORDER BY created_at`), not worth a DB constraint for.
+  `rollingBatchSource` is a constructor parameter on
+  `services/ingestion/internal/server.New`, the same way `topic` already
+  was, so tests use an isolated value instead of colliding with each other
+  or accumulating junk in the production rolling batch.
