@@ -178,9 +178,44 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       dead-lettering. Not written as a `RecordState` value (none exists for
       it); left in whatever state it was claimed into, since a DLQ'd record
       is a processing failure, not a considered decision like `Escalated`.
-- [ ] Classifier: rules-only for now (`source=rules_fallback` always), the
-      LLM provider-chain interface stubbed but not wired to a real provider
-      yet → `ARCHITECTURE.md` §5, `PRD.md` §2a
+- [x] Classifier: real deterministic rules engine
+      (`services/classifier/internal/rules`) replacing the walking-skeleton
+      hardcoded response. Normalises `failure_code` (trim, uppercase,
+      collapse `-`/spaces to `_`), maps it to one of the seven
+      `RootCauseBucket` values via a checked-in table, and derives a
+      recommended action, an honest confidence and a rationale naming the
+      actual input from the bucket. An unrecognised or empty code falls
+      back to `record.type` (`CHECKOUT` → `ABANDONMENT`, `INVOICE` →
+      `OVERDUE`, otherwise `UNSPECIFIED` + `ESCALATE` + confidence 0),
+      never guessed at, and is not an `InvalidArgument` (an unclassifiable
+      record is still a valid one). Provider chain **skeleton** built
+      (`internal/provider`): an ordered list of rungs resolved from
+      `LLM_PROVIDER_CHAIN` at startup, an unknown name failing fast rather
+      than at request time, per-rung hop recording, and inter-rung
+      response validation (a bucket/action outside the enum or a
+      confidence outside `[0,1]` is a rung failure, `schema_invalid`, not
+      an answer). The rules engine is always the last rung and cannot
+      fail, so the chain always terminates in a valid answer.
+      `force_rules_only` skips every non-rules rung (the load generator's
+      cost-safety switch). `source` stays `SOURCE_RULES_FALLBACK` always in
+      Phase 1, since the rules engine is always what answers; provider
+      identity lives in `hops`, not a new proto field →
+      `ARCHITECTURE.md` §5, §5a, `PRD.md` §2a. Explicitly deferred: any
+      real LLM provider and circuit breakers (Phase 3); `ComposeNudge`
+      (Phase 5, no caller exists yet); Prometheus metrics (Phase 4's
+      shared gRPC interceptor work, not hand-wired per service — logs a
+      `Warn` per failed rung and per unknown-code classification instead);
+      economics/EV scoring and cause-aware retry timing (Decision Engine,
+      Phase 2). Restructured per `ENGINEERING.md` §14: `internal/rules`
+      (the failure-code table, the action/confidence table, rationale
+      composition, the rules `Provider`), `internal/provider` (the
+      `Provider` interface, the chain walk, hop recording, response
+      validation), `internal/server` (handler only: validate, delegate,
+      log). Stays entirely stateless: no Postgres connection, no clock,
+      `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` stay unread since nothing calls
+      them yet. Deleted `TestClassifyIsHardcodedRegardlessOfInput`
+      (walking skeleton only, asserted the exact property this task
+      removes).
 - [ ] Executor: **insert-before-execute** idempotency against the
       `UNIQUE (record_id, attempt_number)` constraint (the durable
       guarantee), Redis `SETNX` as the fast path only, calls a minimal
@@ -188,20 +223,6 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       `RecoveryActionPort`/`NotificationPort` interfaces, not the full
       `demo/world-simulator` yet, just enough to prove the state machine
       reaches a terminal state → `ARCHITECTURE.md` §11, upgraded in Phase 5
-- [x] (scope decision, recorded before the Executor work started) the
-      Executor item above says "Redis `SETNX` as the fast path only". That
-      one clause is deliberately deferred out of Phase 1, so the item's
-      checkbox must not be read as covering it. `ARCHITECTURE.md` §11 is
-      explicit that Redis here is "an optimisation only" and that the
-      `UNIQUE (record_id, attempt_number)` constraint is "the actual
-      guarantee", which is already built and tested, so nothing about
-      correctness waits on this. Deferred because
-      `github.com/redis/go-redis/v9` is not in `go.mod` and no
-      `internal/platform/redisx` exists, and the package's other two
-      consumers (Phase 2's cooldowns, Phase 5's delayed-outcome queue) make
-      it a shared-platform concern rather than an Executor-local one. Now
-      tracked as its own items in Phase 2 (the package) and Phase 6 (the
-      fast path) → `DECISIONS.md`, `services/executor/SPEC.md` §4.4, §10
 - [x] Audit Service: serves a record's audit trail, and runs the continuous
       invariant verifier exporting `stopping_rule_violation_total` and
       `incomplete_audit_trail_total`. It does **not** write audit rows, the
@@ -256,14 +277,6 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 
 - [ ] Idempotency proven end-to-end (duplicate Kafka delivery and duplicate
       gRPC retry both handled safely) → `ARCHITECTURE.md` §11
-- [ ] `internal/platform/redisx`: the shared Redis client helper, pinned to
-      `github.com/redis/go-redis/v9` (already named as the choice in
-      `internal/platform/pgx/doc.go`, never actually added to `go.mod`).
-      Needed here first by the cooldown/retry-budget keys below, then by
-      Phase 5's delayed-outcome queue and Phase 6's Executor fast path, so
-      it belongs in `internal/platform/` rather than inside whichever
-      service happens to need it first. Its three key namespaces and TTL
-      policies are already specified → `ARCHITECTURE.md` §10a
 - [ ] Retry budgets, cooldowns, contact caps enforced with automated tests
       → `PRD.md` §11
 - [ ] `configs/intervention_costs.yaml` and the `P(recovery)` prior table
@@ -364,17 +377,6 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       `raw.events` partition count set above expected pod count so the
       demo never hits the partition ceiling
       → `ARCHITECTURE.md` §8a, §12
-- [ ] Executor's Redis `SETNX` fast path, deferred out of Phase 1 (see the
-      scope-decision note there). Depends on `internal/platform/redisx`
-      (Phase 2). Lands here because its only benefit is the saved Postgres
-      round trip on an obvious duplicate, which is a throughput claim, so it
-      belongs with the load run that can actually measure it. Two rules from
-      `ARCHITECTURE.md` §11 are non-negotiable when it is built: Postgres
-      wins any disagreement, and an unreachable Redis must fall through to
-      the durable path rather than fail the request. Prove the second with a
-      test that runs every existing Executor idempotency test against a
-      deliberately broken Redis client
-      → `ARCHITECTURE.md` §11, `services/executor/SPEC.md` §4.4
 
 ## Phase 7: Kubernetes / minikube deployment
 

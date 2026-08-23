@@ -1,51 +1,71 @@
 // Package server implements the ClassifierService gRPC handlers.
+//
+// This file validates the request, delegates to the provider chain, and
+// logs the outcome (ENGINEERING.md section 14); the rules table lives in
+// internal/rules, the chain-walking logic in internal/provider.
 package server
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 
+	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
-	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
+// chain is the subset of *provider.Chain's behaviour this handler needs, so
+// a test can supply a fake without building a real chain.
+type chain interface {
+	Classify(ctx context.Context, req *classifierv1.ClassifyRequest) (*classifierv1.ClassifyResponse, error)
+}
+
 // Server implements classifierv1.ClassifierServiceServer.
-//
-// Walking skeleton (docs/PLAN.md): Classify returns a hardcoded diagnosis,
-// always via the rules fallback. No LLM, no provider chain yet, that is
-// Phase 3 (docs/ARCHITECTURE.md section 5).
 type Server struct {
 	classifierv1.UnimplementedClassifierServiceServer
+
+	chain chain
+	log   *slog.Logger
 }
 
-// New returns a Server ready to handle requests.
-func New() *Server {
-	return &Server{}
+// New returns a Server that answers Classify via chain. log must not be
+// nil.
+func New(c chain, log *slog.Logger) *Server {
+	return &Server{chain: c, log: log}
 }
 
-// Classify always returns the same diagnosis, regardless of the record: a
-// transient bank failure worth retrying, decided by the deterministic rules
-// fallback. Real diagnosis (hybrid rules+LLM) lands in Phase 3.
+// Classify validates the request, delegates to the provider chain, and logs
+// the outcome. failure_code being empty or unrecognised is not a request
+// error (SPEC.md section 5): it is classified via the unknown-code path and
+// returned as a normal response.
 func (s *Server) Classify(ctx context.Context, req *classifierv1.ClassifyRequest) (*classifierv1.ClassifyResponse, error) {
-	if req.GetRecord() == nil {
+	rec := req.GetRecord()
+	if rec == nil {
 		return nil, status.Error(codes.InvalidArgument, "record is required")
 	}
+	if rec.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "record.id is required")
+	}
 
-	return &classifierv1.ClassifyResponse{
-		Bucket:            commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK,
-		RecommendedAction: commonv1.ActionType_ACTION_TYPE_RETRY,
-		Rationale:         "walking skeleton: hardcoded classification, no LLM call made",
-		Confidence:        1.0,
-		Source:            commonv1.Source_SOURCE_RULES_FALLBACK,
-		Hops: []*commonv1.ProviderHop{
-			{Provider: "rules", Result: "ok"},
-		},
-	}, nil
+	resp, err := s.chain.Classify(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("classify record %s: %w", rec.GetId(), err)
+	}
+
+	logger.ForRecord(s.log, rec.GetId(), rec.GetBatchId()).Info("classified record",
+		logger.KeyBucket, resp.GetBucket().String(),
+		logger.KeyAction, resp.GetRecommendedAction().String(),
+		logger.KeySource, resp.GetSource().String(),
+		"confidence", resp.GetConfidence(),
+	)
+
+	return resp, nil
 }
 
-// ComposeNudge is out of scope for the walking skeleton (docs/PLAN.md
-// Phase 5); it answers rather than leaving a caller to hang or crash.
+// ComposeNudge is out of scope for Phase 1 (SPEC.md section 2): no caller
+// exists yet (Phase 5, ARCHITECTURE.md section 5b).
 func (s *Server) ComposeNudge(ctx context.Context, req *classifierv1.ComposeNudgeRequest) (*classifierv1.ComposeNudgeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "ComposeNudge: out of scope for the walking skeleton")
+	return nil, status.Error(codes.Unimplemented, "ComposeNudge: not implemented until Phase 5")
 }

@@ -421,6 +421,53 @@ environment: the first instinct here was to suspect the slower CI runner,
 which would have wasted the afternoon tuning timeouts that were never the
 problem.
 
+### 2026-08-23, an e2e flake from ephemeral port reuse in test/e2e's freePort()
+**What happened:** Verifying the Classifier's Phase 1 work (`SPEC.md`
+section 13 asks to run `make test-integration` more than once), the fourth
+of six consecutive `test/e2e` runs failed:
+`POST /v1/batches: net/http: HTTP/1.x transport connection broken:
+malformed HTTP response "\x00\x00\x06\x04\x00\x00\x00\x00\x00\x00\x05\x00\x00@\x00"`.
+The other five runs, before and after, were green with no code changes in
+between.
+
+**Root cause:** `walking_skeleton_test.go`'s `freePort()` opens a TCP
+listener on `:0`, reads the OS-assigned port, and closes the listener
+immediately ("standard for this kind of test" per its own comment), before
+the actual service binary binds it. The test calls `freePort()` thirteen
+times back to back, once per service's gRPC/metrics/HTTP port, before
+starting any subprocess. On a loaded machine, the OS's ephemeral port
+allocator can hand the same just-freed port number to a later `freePort()`
+call before the earlier call's owning process gets around to binding it.
+That is what happened here: the API Gateway's HTTP port and the
+Classifier's gRPC port collided, so the test's plain HTTP POST landed on
+the Classifier's HTTP/2 gRPC listener instead and got an HTTP/2 SETTINGS
+frame preamble back, which `net/http` correctly reports as a malformed
+response. Not a Classifier bug: those bytes are what any HTTP/1.1 client
+gets from any gRPC server, regardless of which two services happen to
+collide.
+
+**Fix:** Not applied here. `freePort()` and its thirteen call sites are
+`test/e2e/**`, outside this task's scope (`services/classifier/**` only,
+per `SPEC.md` section 10 and root `AGENTS.md`'s "stay inside your
+service"), so it is raised here and in the Classifier PR rather than
+touched directly. The actual fix belongs to whoever owns `test/e2e`: hold
+each port's listener open until immediately before its owning subprocess
+starts (pass the file descriptor via `net.FileListener`, or allocate and
+bind each service's ports immediately before starting that one subprocess
+instead of allocating all thirteen up front), so there is no window for
+the OS to reissue a number to a different service.
+
+**Prevention:** Confirmed via `git log` that this exact `freePort()`
+implementation is unchanged since the original walking-skeleton commit
+(`eb0029d`) and predates this task. Five of six runs were clean, including
+two immediately before and three immediately after the failure with
+identical code, which is what pins this on port-allocation timing rather
+than Classifier logic. Same lesson as the `ConsumeKeyed` flake above: test
+setup that allocates a shared, limited resource (here, TCP ports; there, a
+hash bucket) in bulk before use deserves the same suspicion as any other
+source of nondeterminism, verified by rerunning rather than trusted on a
+single green run, per `ENGINEERING.md` section 12 and `SPEC.md` section
+13's explicit instruction to run `make test-integration` more than once.
 ### 2026-08-23, ConsumeKeyed committed offsets out of order, redelivering records
 **What happened:** After the flaky-test fix above, the `integration` job kept
 failing on every push to `main` while every PR check passed. Three
