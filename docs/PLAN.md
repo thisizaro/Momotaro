@@ -188,10 +188,31 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       `RecoveryActionPort`/`NotificationPort` interfaces, not the full
       `demo/world-simulator` yet, just enough to prove the state machine
       reaches a terminal state → `ARCHITECTURE.md` §11, upgraded in Phase 5
-- [ ] Audit Service: serves a record's audit trail, and runs the continuous
+- [x] Audit Service: serves a record's audit trail, and runs the continuous
       invariant verifier exporting `stopping_rule_violation_total` and
       `incomplete_audit_trail_total`. It does **not** write audit rows, the
-      owning service does that transactionally → `ARCHITECTURE.md` §10a
+      owning service does that transactionally → `ARCHITECTURE.md` §10a.
+      `VerifyInvariants` scans RECORD_STATE + AUDIT_ENTRY (optionally scoped
+      to one batch) for two invariants that are meaningful today: an
+      incomplete trail (a state with no audit entry, or one whose last entry
+      disagrees with it) and an impossible transition (a broken chain or an
+      edge outside the state machine, `services/audit/internal/server/
+      statemachine.go`). `stopping_rule_violations` is always zero: no
+      retry/contact caps exist yet (Phase 2), so there is nothing to check
+      against, deliberately not faked. A background `Watcher`
+      (`watch.go`) calls the exact same `VerifyInvariants` path on a
+      configurable interval (`INVARIANT_CHECK_INTERVAL`) so the check runs
+      without anyone asking, logging violations rather than exporting
+      Prometheus metrics yet, that wiring is Phase 4's shared gRPC
+      interceptor work across every service, not Audit-only. Refactored the
+      existing `GetRecordAudit` into the same `store`/`statemachine`/
+      `verify`/`watch` split per `ENGINEERING.md` §14.
+- [x] (unplanned, found while building `scanRecords`) `WHERE $1 = '' OR
+      r.batch_id = $1::uuid` fails on Postgres for an empty `$1`: SQL does
+      not short-circuit `OR`, so the `::uuid` cast runs and errors even when
+      the empty-string branch would have matched. Fixed by comparing
+      `batch_id::text = $1` instead of casting the parameter. See
+      `docs/INCIDENTS.md`.
 - [ ] End-to-end smoke test: `POST /v1/batches` with a handful of records,
       watch them reach `Recovered`/`Escalated`, confirm the audit trail is
       complete → `PRD.md` §7, §8

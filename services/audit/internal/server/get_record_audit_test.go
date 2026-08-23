@@ -1,80 +1,29 @@
 //go:build integration
 
-// Audit's tests exercise real Postgres rather than a mock, per
-// docs/ENGINEERING.md section 1 ("do not mock what you own"). They therefore
-// need the docker-compose stack up, so they sit behind the `integration`
-// build tag: `go test ./...` on a bare checkout must not dial a database that
-// is not running. Run with `make test-integration`.
+// GetRecordAudit exercises real Postgres rather than a mock, per
+// docs/ENGINEERING.md section 1 ("do not mock what you own"). They
+// therefore need the docker-compose stack up, so they sit behind the
+// `integration` build tag. Run with `make test-integration`.
 
 package server
 
 import (
 	"context"
-	"os"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func dsn(t *testing.T) string {
-	t.Helper()
-	if v := os.Getenv("POSTGRES_DSN"); v != "" {
-		return v
-	}
-	return "postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable"
-}
-
-func testPool(t *testing.T) *pgxpkg.Pool {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	pool, err := pgxpkg.NewPool(ctx, dsn(t))
-	if err != nil {
-		t.Fatalf("NewPool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// seedRecord inserts batch+record rows and returns (batchID, recordID).
-func seedRecord(ctx context.Context, t *testing.T, pool *pgxpkg.Pool) (string, string) {
-	t.Helper()
-	batchID := uuid.NewString()
-	recordID := uuid.NewString()
-	if _, err := pool.Exec(ctx, `INSERT INTO batch (id, source) VALUES ($1, 'test')`, batchID); err != nil {
-		t.Fatalf("seed batch: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO record (id, batch_id, type, amount_paise, failure_code, instrument_ref)
-		VALUES ($1, $2, 'RECORD_TYPE_PAYMENT', 12345, 'BANK_TIMEOUT', 'card_1')`, recordID, batchID); err != nil {
-		t.Fatalf("seed record: %v", err)
-	}
-	t.Cleanup(func() {
-		bg := context.Background()
-		_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, recordID)
-		_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, recordID)
-		_, _ = pool.Exec(bg, `DELETE FROM record WHERE id = $1`, recordID)
-		_, _ = pool.Exec(bg, `DELETE FROM batch WHERE id = $1`, batchID)
-	})
-	return batchID, recordID
-}
-
 func TestGetRecordAuditReturnsRecordStateAndEntries(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO record_state (record_id, current_state, attempt_count)
-		VALUES ($1, 'RECORD_STATE_RECOVERED', 1)`, recordID); err != nil {
-		t.Fatalf("seed record_state: %v", err)
-	}
+	seedRecordState(ctx, t, pool, recordID, "RECORD_STATE_RECOVERED")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, rationale, source, actor, attempt_number, cost_paise)
 		VALUES
@@ -164,15 +113,5 @@ func TestGetRecordAuditWithNoStateYet(t *testing.T) {
 	}
 	if len(resp.Entries) != 0 {
 		t.Errorf("len(Entries) = %d, want 0", len(resp.Entries))
-	}
-}
-
-func TestVerifyInvariantsIsUnimplemented(t *testing.T) {
-	pool := testPool(t)
-	s := New(pool)
-
-	_, err := s.VerifyInvariants(context.Background(), &auditv1.VerifyInvariantsRequest{})
-	if status.Code(err) != codes.Unimplemented {
-		t.Fatalf("VerifyInvariants: err = %v, want Unimplemented", err)
 	}
 }
