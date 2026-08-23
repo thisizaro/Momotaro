@@ -4,6 +4,7 @@ package kafkax
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -177,7 +178,12 @@ func TestConsumeKeyedCommitsSoRedeliveryDoesNotHappen(t *testing.T) {
 	}
 	defer producer.Close()
 
-	const n = 10
+	// Deliberately more records than workers, and more than a handful: each
+	// contiguous-prefix advance is a separate commit, so a larger n means far
+	// more chances to catch a commit landing out of order. At n=10 this
+	// detected the real bug only about once in four runs, and only on a
+	// contended machine (docs/INCIDENTS.md 2026-08-23).
+	const n = 40
 	for i := 0; i < n; i++ {
 		if err := producer.Publish(ctx, topic, uuid.NewString(), []byte(fmt.Sprintf("%d", i))); err != nil {
 			t.Fatalf("publish %d: %v", i, err)
@@ -197,9 +203,13 @@ func TestConsumeKeyedCommitsSoRedeliveryDoesNotHappen(t *testing.T) {
 
 		consumeCtx, consumeCancel := context.WithCancel(ctx)
 		consumeReturned := make(chan struct{})
+		// Captured rather than discarded: a failed commit is reported through
+		// this return value, so throwing it away meant the test could call a
+		// pass on a run where committing had actually errored.
+		var consumeErr error
 		go func() {
 			defer close(consumeReturned)
-			_ = consumer.ConsumeKeyed(consumeCtx, 4, func(ctx context.Context, m Message) error {
+			consumeErr = consumer.ConsumeKeyed(consumeCtx, 4, func(ctx context.Context, m Message) error {
 				if atomic.AddInt32(&count, 1) == n {
 					closeOnce.Do(func() { close(allHandled) })
 				}
@@ -223,6 +233,12 @@ func TestConsumeKeyedCommitsSoRedeliveryDoesNotHappen(t *testing.T) {
 		case <-consumeReturned:
 		case <-ctx.Done():
 			t.Fatal("ConsumeKeyed did not return after cancellation")
+		}
+		// Cancellation is the expected way out; anything else means a fetch
+		// or a commit genuinely failed, and the redelivery check below would
+		// otherwise be measuring that instead of the commit logic.
+		if consumeErr != nil && !errors.Is(consumeErr, context.Canceled) {
+			t.Fatalf("ConsumeKeyed returned a real error, not cancellation: %v", consumeErr)
 		}
 	}()
 

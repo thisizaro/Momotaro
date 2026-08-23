@@ -27,6 +27,29 @@ exceptions for "this bit is obvious."
 - Tests must pass with `-race`. A test suite that only passes serially is
   telling you about a real bug in code that will run concurrently in
   production.
+- **`-race` alone is not enough for ordering bugs, and a green suite on your
+  machine is not evidence.** `-race` finds unsynchronised memory access. It
+  says nothing about correctly-locked operations whose *effects* land in the
+  wrong order, which is its own class of bug and one this repo has already
+  shipped once (see `INCIDENTS.md`, out-of-order Kafka commits). A developer
+  machine with many idle cores runs concurrent work close enough to in-order
+  to hide these; CI's two contended cores does not. So for anything
+  concurrent, run it repeatedly under constrained parallelism before calling
+  it done:
+
+  ```bash
+  for i in $(seq 1 20); do GOMAXPROCS=2 go test -count=1 -tags=integration \
+    -run 'TestName$' ./path/ || echo "FAIL $i"; done
+  ```
+
+  A test that fails 1 run in 5 will pass your first three attempts and then
+  block everyone's CI. If you are reaching for "it must be the CI runner",
+  measure the failure rate locally first.
+- **Beware instrumentation that hides the bug.** Adding a log line per
+  operation to diagnose a race often perturbs timing enough to make it stop
+  happening, which reads as "fixed" and is not. Record into memory and print
+  once at the end, or assert the invariant in-process, rather than doing I/O
+  inside the window you are trying to observe.
 - **Do not mock what you own.** Use the real Postgres, Kafka and Redis via
   `testcontainers`, or the docker-compose stack. Mock only true third
   parties (the LLM provider). A mocked Postgres tests your assumptions about

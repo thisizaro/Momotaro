@@ -406,3 +406,50 @@ have caused it, the failure is evidence about the *test*, not about the
 environment: the first instinct here was to suspect the slower CI runner,
 which would have wasted the afternoon tuning timeouts that were never the
 problem.
+
+### 2026-08-23, ConsumeKeyed committed offsets out of order, redelivering records
+**What happened:** After the flaky-test fix above, the `integration` job kept
+failing on every push to `main` while every PR check passed. Three
+consecutive merges (#12, #13, #14) and the Classifier's PR all failed the
+same way once the first bug was out of the picture:
+`TestConsumeKeyedCommitsSoRedeliveryDoesNotHappen`, reporting offset 8 or 9
+of 0..9 redelivered after what the test believed was a clean pass. So a
+second, unrelated bug was hiding behind the first, and the PR-versus-push
+pattern made it look environmental when it was not.
+**Root cause:** A real correctness bug in `ConsumeKeyed`, not a test problem.
+`commitTracker` correctly hands out strictly increasing offsets while holding
+its mutex, but each worker then called `CommitRecords` *itself*, concurrently,
+after releasing that mutex. Kafka offset commits are last-write-wins per
+partition, so a lower offset landing after a higher one moves the group's
+committed offset backwards and redelivers everything above it. Proved rather
+than inferred, by recording the order commits actually completed in:
+`commit-completion-order=[1 2 4 5 6 7 9 8]`, with no commit errors. Offset 9
+committed, then 8, so the group's committed offset ended at 9 instead of 10
+and record 9 came back. The contiguous-prefix design was sound; issuing its
+output in parallel threw the guarantee away.
+**Fix:** One dedicated committer goroutine. Workers hand finished records to a
+buffered channel, and a single goroutine folds them through the tracker and
+commits sequentially, which makes out-of-order commits structurally
+impossible rather than merely unlikely. It is also faster than before, since
+a worker no longer blocks on its own commit's network round trip. The
+committer keeps draining after a commit failure rather than returning, or a
+worker blocked sending to a channel nobody reads would deadlock
+`ConsumeKeyed`'s `wg.Wait`. Verified 20 for 20 at `GOMAXPROCS=2` against a
+test made four times more sensitive, where the old code failed 3 in 12.
+**Two things that made this take much longer than it should have:**
+First, the initial diagnosis attempt logged to stderr on every commit, which
+perturbed the timing enough that the bug stopped reproducing at all: ten
+clean runs, looking like the problem had gone away. Recording the sequence in
+memory and printing once at the end caught it on the first run. Second, the
+earlier flaky-test fix was reported as having resolved the CI failures on the
+strength of one green PR check, when the push run for that very merge had
+already failed for this different reason.
+**Prevention:** Three lessons, the first two now written into
+`ENGINEERING.md` section 1. `-race` does not find ordering bugs: it checks for
+unsynchronised access, not for correctly-locked operations whose effects land
+in the wrong order, so concurrent code needs repeated runs under
+`GOMAXPROCS=2` before it is called done. Diagnostic I/O inside the window you
+are observing can hide the very thing you are looking for. And when a fix is
+claimed to have resolved a CI failure, the evidence is a green run of the
+job that was failing, on the branch that failed, not a green run of a
+different job on a different ref. One green check is not a trend.
