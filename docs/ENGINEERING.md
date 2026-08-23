@@ -196,6 +196,8 @@ A plan item is not done until all of these are true. Do not mark a
 8. If it touches money: idempotency proven by a test that delivers the same
    action twice and asserts one effect.
 9. The doc updated if behaviour diverged from what was written down.
+10. Code organized per section 14: one job per file, one job per function,
+    no god-`Server` reaching past its collaborators into raw SQL or Kafka.
 
 ## 12. Record what breaks
 
@@ -222,3 +224,38 @@ documented design that turns out to be flawed is a normal thing to find
 mid-build. Silently diverging from it, in a repo where several agents are
 building against the same assumptions, is the thing that actually breaks the
 project.
+
+## 14. Structure: one job per file, one job per function
+
+A gRPC handler method is the easiest place in this codebase to accumulate
+validation, SQL, JSON marshalling, and Kafka publishing into one long
+function, because the proto-generated signature is the only thing forcing a
+shape on it. Resist that. The handler orchestrates; it should not be where
+the actual work is written.
+
+- **Split by concern, not by size.** Within a service's `internal/`, keep
+  request validation, persistence (SQL), outbound events (Kafka payloads and
+  publishing), and the gRPC handler itself in separate files
+  (`validate.go`, `store.go`, `events.go`, `server.go` or equivalent names
+  for what the service actually does). A file's name should tell you what's
+  in it without opening it.
+- **A handler method reads as a list of steps, not their implementation.**
+  `SubmitBatch` should look like "validate, create batch, insert records,
+  publish, respond", each a call to a named function, not an inline block of
+  SQL and JSON logic per step. If you can't summarise a function in one
+  sentence, it is doing more than one job.
+- **Extract the moment a function does two things.** A function that
+  validates *and* inserts is two functions that happen to run in sequence.
+  Split them even when nothing else calls the second one yet; the split is
+  for the reader, not for reuse.
+- **Small collaborators over a god-`Server`.** A `Server` struct should hold
+  the things it delegates to (a store, a publisher, a clock), not grow
+  methods that reach past them into raw SQL or a Kafka client directly. This
+  is also what makes each piece testable on its own instead of only through
+  the full gRPC handler.
+- **Name for the reader, not for you.** A function or file name should tell
+  the next agent what it does and why it exists as its own unit, without
+  them needing to read the body first.
+
+This is a normal Definition of Done item (section 11), not a separate
+cleanup pass: structure code this way while writing it, the same as tests.

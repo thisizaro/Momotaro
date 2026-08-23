@@ -291,3 +291,11 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `services/ingestion/internal/server.New`, the same way `topic` already
   was, so tests use an isolated value instead of colliding with each other
   or accumulating junk in the production rolling batch.
+- 2026-08-23: Added `ENGINEERING.md` section 14, "one job per file, one job
+  per function", and a matching Definition of Done item (section 11, #10).
+  Reason: the walking-skeleton gRPC handlers (e.g. Ingestion's `SubmitBatch`)
+  accumulate validation, SQL, and Kafka publishing into one long method
+  because the proto-generated signature is the only thing shaping them, and
+  nothing in this file said otherwise. Applies to every service, not just
+  the one that prompted it, so it landed here rather than as an unwritten
+  convention one agent applies and the rest don't know about.
