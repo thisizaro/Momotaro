@@ -299,3 +299,14 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   nothing in this file said otherwise. Applies to every service, not just
   the one that prompted it, so it landed here rather than as an unwritten
   convention one agent applies and the rest don't know about.
+- 2026-08-23: Added migration `00003_record_state_pending_action.sql`: a
+  nullable `record_state.pending_action` column. Reason: the Decision
+  Engine's scheduler worker (`ARCHITECTURE.md` §7a) resumes a record when
+  `due_at` passes, but `RECORD_STATE_NUDGE_SCHEDULED` alone does not say
+  whether the scheduled action was `ACTION_TYPE_NUDGE_METHOD_UPDATE` or
+  `ACTION_TYPE_NUDGE_REMINDER`. Rejected deriving it from
+  `root_cause_bucket` instead: that would work today but creates an implicit
+  bucket-to-action coupling that silently breaks if the classifier's mapping
+  ever changes, versus a column that says exactly what was scheduled.
+  Additive only, own migration ahead of the Decision Engine PR that depends
+  on it, per `ARCHITECTURE.md` §12a.
