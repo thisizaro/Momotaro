@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
@@ -29,15 +30,34 @@ import (
 
 const serviceName = "audit"
 
+// defaultInvariantCheckInterval is how often the continuous verifier
+// (services/audit/internal/server/watch.go) re-checks every batch.
+// Overridable via INVARIANT_CHECK_INTERVAL.
+const defaultInvariantCheckInterval = time.Minute
+
+// serviceConfig adds this service's own settings to the shared ones.
+type serviceConfig struct {
+	config.Common
+	InvariantCheckInterval time.Duration
+}
+
+func loadConfig() (serviceConfig, error) {
+	l := config.NewLoader()
+	cfg := serviceConfig{
+		Common:                 config.LoadCommon(l, serviceName),
+		InvariantCheckInterval: l.Duration("INVARIANT_CHECK_INTERVAL", defaultInvariantCheckInterval),
+	}
+	return cfg, l.Err()
+}
+
 func main() {
 	// Root context cancelled on SIGTERM/SIGINT so shutdown is graceful.
 	// ENGINEERING.md section 6: drain in-flight work, commit offsets, exit.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	l := config.NewLoader()
-	cfg := config.LoadCommon(l, serviceName)
-	if err := l.Err(); err != nil {
+	cfg, err := loadConfig()
+	if err != nil {
 		slogFallback().Error("fatal", "err", err)
 		os.Exit(1)
 	}
@@ -55,7 +75,7 @@ func slogFallback() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
 }
 
-func run(ctx context.Context, cfg config.Common, log *slog.Logger) error {
+func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	pool, err := pgxpkg.NewPool(connectCtx, cfg.PostgresDSN)
 	cancel()
@@ -63,6 +83,8 @@ func run(ctx context.Context, cfg config.Common, log *slog.Logger) error {
 		return fmt.Errorf("connect to postgres: %w", err)
 	}
 	defer pool.Close()
+
+	auditServer := server.New(pool)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 	if err != nil {
@@ -73,13 +95,19 @@ func run(ctx context.Context, cfg config.Common, log *slog.Logger) error {
 		interceptors.UnaryServerRecovery(),
 		interceptors.UnaryServerRequireDeadline(),
 	))
-	auditv1.RegisterAuditServiceServer(grpcServer, server.New(pool))
+	auditv1.RegisterAuditServiceServer(grpcServer, auditServer)
 
 	serveErr := make(chan error, 1)
 	go func() {
 		log.Info("grpc server listening", "port", cfg.GRPCPort)
 		serveErr <- grpcServer.Serve(lis)
 	}()
+
+	// The continuous invariant verifier: the other half of this service's
+	// job (services/audit/AGENTS.md), running independently of any caller.
+	watcher := server.NewWatcher(auditServer, clock.New(), cfg.InvariantCheckInterval, log)
+	go watcher.Run(ctx)
+	log.Info("invariant watcher started", "interval", cfg.InvariantCheckInterval)
 
 	select {
 	case err := <-serveErr:
