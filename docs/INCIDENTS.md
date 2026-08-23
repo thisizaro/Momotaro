@@ -346,12 +346,26 @@ rather than computing it, so `test/e2e/walking_skeleton_test.go`'s
 Audit's own `VerifyInvariants` tests seed their own records using transitions
 that are already in the allowed map, so they never exercise what the real
 pipeline emits.
-**Fix:** Not yet applied; recorded here and in `services/executor/SPEC.md`
-section 10 so the next agent in either service does not rediscover it or
-assume they caused it. Belongs to whoever owns the Audit service: add the two
-missing edges carrying the same `TEMPORARY` comment style the existing
-`NEW -> RECOVERED` edge already uses (they stop being produced once `Scoring`
-lands), and make `TrailComplete` an actual computation over the trail.
+**Fix:** Added the two missing edges, carrying the same `TEMPORARY` comment
+style the existing `NEW -> RECOVERED` edge already uses, to be removed
+together with it once `Scoring` lands. Made `trail_complete` an actual
+computation, running the same `incompleteTrail`/`impossibleTransition` checks
+`VerifyInvariants` aggregates rather than a second implementation that could
+drift from them. Verified against the live database: all four edges the
+pipeline has actually written are now accepted.
+**A second problem found while fixing the first:** the pre-existing
+`TestGetRecordAuditReturnsRecordStateAndEntries` fixture opened with a
+fabricated `UNSPECIFIED -> NEW` "ingested" audit entry. Nothing in the system
+writes that. Ingestion writes no audit rows at all (section 10a), the
+Decision Engine's first entry is always `NEW -> <state>`, and the state
+machine explicitly forbids `UNSPECIFIED` as a from-state, which
+`statemachine_test.go` even asserts. So that test had been asserting
+`TrailComplete == true` over a trail the system considers invalid, and passed
+only because the field was hardcoded. Making the field real turned it red
+immediately, which is the textbook "test that was passing for the wrong
+reason" from `ENGINEERING.md` section 12. Its fixture now uses the three
+transitions the pipeline genuinely produces (classify, claim, outcome), the
+same correction already applied to the end-to-end test.
 **Prevention:** Two lessons. A verifier whose expectations come from the
 target design rather than the current phase's behaviour will disagree with a
 correct system, so a phase-gated state machine needs its temporary edges
@@ -454,3 +468,49 @@ hash bucket) in bulk before use deserves the same suspicion as any other
 source of nondeterminism, verified by rerunning rather than trusted on a
 single green run, per `ENGINEERING.md` section 12 and `SPEC.md` section
 13's explicit instruction to run `make test-integration` more than once.
+### 2026-08-23, ConsumeKeyed committed offsets out of order, redelivering records
+**What happened:** After the flaky-test fix above, the `integration` job kept
+failing on every push to `main` while every PR check passed. Three
+consecutive merges (#12, #13, #14) and the Classifier's PR all failed the
+same way once the first bug was out of the picture:
+`TestConsumeKeyedCommitsSoRedeliveryDoesNotHappen`, reporting offset 8 or 9
+of 0..9 redelivered after what the test believed was a clean pass. So a
+second, unrelated bug was hiding behind the first, and the PR-versus-push
+pattern made it look environmental when it was not.
+**Root cause:** A real correctness bug in `ConsumeKeyed`, not a test problem.
+`commitTracker` correctly hands out strictly increasing offsets while holding
+its mutex, but each worker then called `CommitRecords` *itself*, concurrently,
+after releasing that mutex. Kafka offset commits are last-write-wins per
+partition, so a lower offset landing after a higher one moves the group's
+committed offset backwards and redelivers everything above it. Proved rather
+than inferred, by recording the order commits actually completed in:
+`commit-completion-order=[1 2 4 5 6 7 9 8]`, with no commit errors. Offset 9
+committed, then 8, so the group's committed offset ended at 9 instead of 10
+and record 9 came back. The contiguous-prefix design was sound; issuing its
+output in parallel threw the guarantee away.
+**Fix:** One dedicated committer goroutine. Workers hand finished records to a
+buffered channel, and a single goroutine folds them through the tracker and
+commits sequentially, which makes out-of-order commits structurally
+impossible rather than merely unlikely. It is also faster than before, since
+a worker no longer blocks on its own commit's network round trip. The
+committer keeps draining after a commit failure rather than returning, or a
+worker blocked sending to a channel nobody reads would deadlock
+`ConsumeKeyed`'s `wg.Wait`. Verified 20 for 20 at `GOMAXPROCS=2` against a
+test made four times more sensitive, where the old code failed 3 in 12.
+**Two things that made this take much longer than it should have:**
+First, the initial diagnosis attempt logged to stderr on every commit, which
+perturbed the timing enough that the bug stopped reproducing at all: ten
+clean runs, looking like the problem had gone away. Recording the sequence in
+memory and printing once at the end caught it on the first run. Second, the
+earlier flaky-test fix was reported as having resolved the CI failures on the
+strength of one green PR check, when the push run for that very merge had
+already failed for this different reason.
+**Prevention:** Three lessons, the first two now written into
+`ENGINEERING.md` section 1. `-race` does not find ordering bugs: it checks for
+unsynchronised access, not for correctly-locked operations whose effects land
+in the wrong order, so concurrent code needs repeated runs under
+`GOMAXPROCS=2` before it is called done. Diagnostic I/O inside the window you
+are observing can hide the very thing you are looking for. And when a fix is
+claimed to have resolved a CI failure, the evidence is a green run of the
+job that was failing, on the branch that failed, not a green run of a
+different job on a different ref. One green check is not a trend.

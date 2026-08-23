@@ -242,6 +242,21 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       interceptor work across every service, not Audit-only. Refactored the
       existing `GetRecordAudit` into the same `store`/`statemachine`/
       `verify`/`watch` split per `ENGINEERING.md` §14.
+- [x] (unplanned, found while writing `services/executor/SPEC.md`) the
+      invariant verifier above rejected every record the Phase 1 pipeline
+      produces. Its state machine had no `NEW -> RETRY_SCHEDULED` or
+      `NEW -> NUDGE_SCHEDULED` edge, because `ARCHITECTURE.md` §7's diagram
+      routes everything through `Scoring`, which is the Phase 2 economics
+      gate and does not exist, so Decision Engine schedules straight out of
+      `NEW`. Confirmed against the live database, then fixed by adding both
+      edges with the same `TEMPORARY` marking as the existing
+      `NEW -> RECOVERED` skeleton edge. Also made
+      `GetRecordAudit.trail_complete` an actual computation: it was
+      hardcoded `true`, so every assertion on it, including the e2e test's,
+      proved nothing, and one pre-existing Audit test turned out to be
+      asserting a completeness it never checked over a fabricated
+      `UNSPECIFIED -> NEW` entry the system never writes. See
+      `docs/INCIDENTS.md` 2026-08-23 → `ARCHITECTURE.md` §7, §10a
 - [x] (unplanned, found while building `scanRecords`) `WHERE $1 = '' OR
       r.batch_id = $1::uuid` fails on Postgres for an empty `$1`: SQL does
       not short-circuit `OR`, so the `::uuid` cast runs and errors even when

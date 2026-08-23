@@ -65,7 +65,7 @@ func (s *Server) GetRecordAudit(ctx context.Context, req *auditv1.GetRecordAudit
 		Record:        rec,
 		CurrentState:  currentState,
 		Entries:       entries,
-		TrailComplete: true,
+		TrailComplete: trailComplete(snapshotFor(req.GetRecordId(), currentState, entries)),
 	}, nil
 }
 

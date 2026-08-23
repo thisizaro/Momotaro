@@ -400,3 +400,49 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `ARCHITECTURE.md` §5a describes for Phase 2 costs/probabilities:
   classification confidence and economics cost data are different things
   that happen to both be numbers, and do not belong in the same file.
+- 2026-08-23: Deferred the Executor's Redis `SETNX` idempotency fast path
+  out of Phase 1, and moved the Redis client itself into
+  `internal/platform/` as its own tracked item. `ARCHITECTURE.md` §11 is
+  unusually explicit that Redis is "an optimisation only" here and that the
+  `UNIQUE (record_id, attempt_number)` constraint is "the actual
+  guarantee", so deferring it costs no correctness: the durable guard is
+  already built and proven by tests that deliver the same action twice,
+  including 8 concurrent duplicates. What it does cost is a saved Postgres
+  round trip on an obvious duplicate, which is a throughput claim that
+  cannot be evaluated before Phase 6's load run exists, and which nothing
+  in Phase 1 is close to needing. Against that, building it now meant
+  either adding `github.com/redis/go-redis/v9` (absent from `go.mod`
+  despite `internal/platform/pgx/doc.go` naming it as the pinned choice)
+  privately inside `services/executor`, which guarantees a second agent
+  duplicates it within two phases, since Phase 2's cooldown and
+  retry-budget keys and Phase 5's delayed-outcome queue both need the same
+  client; or creating `internal/platform/redisx` from inside a service PR,
+  which the per-service `AGENTS.md` files put squarely in "stop and
+  propose". So: `redisx` is now a Phase 2 item, where its first real
+  consumer lives, and the Executor fast path is a Phase 6 item, where the
+  measurement that justifies it lives. Recorded as an explicit
+  scope-decision line in `docs/PLAN.md` Phase 1 as well, so the Executor
+  checkbox is not later misread as having covered the Redis clause in its
+  own description. Detail and the two non-negotiable rules for whoever
+  builds it (Postgres wins any disagreement; an unreachable Redis falls
+  through rather than failing the request) are in
+  `services/executor/SPEC.md` §4.4 and §10.
+- 2026-08-23: Fixed the invariant verifier's disagreement with the Phase 1
+  pipeline by adding temporary state-machine edges rather than by changing
+  the Decision Engine. `ARCHITECTURE.md` §7's diagram routes every record
+  through `Scoring` before scheduling, but `Scoring` is the Phase 2
+  economics gate, so Phase 1 schedules straight out of `NEW` and the
+  verifier called all of it impossible. The alternative, making the Decision
+  Engine write a `Scoring` transition it does not actually perform, would
+  have put a fabricated state in the audit trail purely to satisfy a
+  checker: the trail would then claim an economics decision happened when
+  none did, which is exactly the kind of thing the trail exists to make
+  impossible to fake. So `NEW -> RETRY_SCHEDULED` and
+  `NEW -> NUDGE_SCHEDULED` are now marked `TEMPORARY` alongside the
+  walking skeleton's `NEW -> RECOVERED`, all three to be deleted together
+  when `Scoring` lands and stops them being produced. Related:
+  `trail_complete` now runs the same `incompleteTrail`/
+  `impossibleTransition` pair `VerifyInvariants` aggregates, instead of
+  getting its own implementation, so the RPC's per-record answer and the
+  system-wide metric can never disagree about what "complete" means. It was
+  previously hardcoded `true`. See `docs/INCIDENTS.md` 2026-08-23.
