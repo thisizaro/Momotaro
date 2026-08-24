@@ -537,3 +537,26 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Phase 1 has no retry budget and so never schedules a second attempt;
   fabricating one would test the fabrication rather than the pipeline, so it
   stays covered by unit tests until Phase 2 makes it reachable honestly.
+- 2026-08-24: `docs/PLAN.md`'s Phase 2 item for the `GROUND_TRUTH` isolation
+  test named only the Decision Engine. Widened the implementation to cover
+  all three decision-path services (Decision Engine, Classifier, Executor),
+  since `ARCHITECTURE.md` §5a states the rule as applying to "the decision
+  path," not to one service by name, and a guard watching only one of the
+  three services a record passes through before money is spent is a weaker
+  guarantee than the rule it exists to enforce. `services/reporting` and
+  `demo/world-simulator` are the two services the ownership table in §10a
+  permits to read `GROUND_TRUTH` and are deliberately excluded from the
+  scan. Implementation is `test/integrity/ground_truth_isolation_test.go`:
+  unit tier, no build tag (so it runs in `make test` on every CI pass, not
+  only when docker is up), parses each service's Go source with
+  `go/parser`/`go/ast` rather than grepping text, so a comment documenting
+  the rule (there is already one in
+  `services/executor/internal/ports/ports.go`) can never trip it, only a
+  real identifier or string literal naming the table can. Known gap, stated
+  rather than silently accepted: the scanner only reads source physically
+  inside the three service directories, it does not follow an import
+  transitively into `internal/platform` or elsewhere to check whether a
+  called function reads `GROUND_TRUTH` internally under an innocuous name,
+  nor does it catch a table name assembled at runtime (string
+  concatenation, an environment variable, decoded bytes) rather than
+  written as a literal in source.
