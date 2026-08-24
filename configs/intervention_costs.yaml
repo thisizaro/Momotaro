@@ -185,96 +185,143 @@ action_channel_policy:
 actions:
 
   RETRY:
-    # [SOURCED reasoning, ASSUMPTION on the blend] The UNCONDITIONAL cost of
-    # re-presenting a debit, which is much smaller than it looks.
+    # [SOURCED] The UNCONDITIONAL cost of re-presenting a debit, which is much
+    # smaller than it looks, and which comes from the rails, not the gateway.
     #
-    # Razorpay charges "2% per successful transaction", and its pricing page
-    # qualifies every fee line with "successful"
-    # (https://razorpay.com/pricing/, and the 13 Feb 2026 pricing blog states
-    # "charges apply only to successful transactions"). So a FAILED retry
-    # incurs no gateway fee at all. Razorpay publishes no per attempt and no
-    # per API call charge. Caveat: no Razorpay document affirmatively says
-    # "failed attempts are free"; this is an inference from the "per
-    # successful transaction" phrasing, strong but not explicit.
+    # NOT THE GATEWAY. Razorpay charges "2% per successful transaction" and
+    # qualifies every fee line on https://razorpay.com/pricing/ with
+    # "successful"; its 13 Feb 2026 pricing blog states "charges apply only to
+    # successful transactions". So a FAILED card retry incurs no gateway fee,
+    # and Razorpay publishes no per attempt and no per API call charge.
+    # Caveat: no Razorpay document affirmatively says "failed attempts are
+    # free". This is an inference from the "per successful transaction"
+    # phrasing. Strong, but an inference.
     #
-    # What IS unconditional is the notification. RBI's e-mandate framework
-    # (circular RBI/2020-21/118, 31 Mar 2021,
-    # https://www.rbi.org.in/Scripts/BS_CircularIndexDisplay.aspx?Id=12051)
-    # requires a pre-debit notification to the customer before a recurring
-    # debit. That is one SMS, sent whether the debit then succeeds or fails.
-    # So: direct_cost(RETRY) = one SMS = `channels.sms_paise` = 25 paise.
+    # THE RAILS DO CHARGE, AND CHARGE WIN OR LOSE. NPCI's NACH transaction
+    # charges are reported at 20 paise for an off-us debit and 5 paise on-us,
+    # plus 50 paise interchange to the destination bank on off-us, and
+    # critically "charges are applicable irrespective of acceptance or
+    # rejection by the destination bank". NPCI circular 032 of 2018-19:
+    # https://www.npci.org.in/PDF/nach/circular/2018-19/circular%20no.032%20on%20NACH%20charges%20for%20transaction%20and%20mandates.pdf
+    # Confidence MEDIUM: npci.org.in returns HTTP 403 to automated fetch, so
+    # the URL is citable but the contents were read only through search index
+    # summaries, and it is unconfirmed whether the 20/5 paise figures cover
+    # the debit leg or only credits. Verify by hand before the demo.
     #
-    # THREE HONEST WEAKNESSES.
-    # (1) I could not confirm whether a RETRY of a failed debit needs its own
-    #     fresh pre-debit notification or is covered by the original. If the
-    #     original covers it, this should be 0 for cards and mandates alike.
-    # (2) For RECORD_TYPE_PAYMENT (a one off card failure) there is no
-    #     mandate and no pre-debit notification, so 25 overcharges it.
-    # (3) For eNACH and NACH there are real per presentment and return
-    #     charges to the biller which would push this well ABOVE 25, and they
-    #     are NOT PUBLISHED: Razorpay's pricing page says eMandate/NACH
-    #     pricing is "available on request", and Razorpay's own 8 Jun 2026
-    #     blog concedes public recurring billing pricing is "notoriously
-    #     inconsistent" and marks its own 0.5% and 1.2% figures as
-    #     illustrative, not real prices.
-    # 25 is the blended midpoint across a mixed card and mandate book. It is
-    # the value in this file with the widest true range.
+    # 20 paise plus 18% GST is 23.6, rounded UP to 25 to cover the on-us and
+    # off-us mix.
     #
-    # SHAPE PROBLEM, not merely a value problem: the largest real cost of a
-    # retry is the MDR on the amount recovered, charged only on success and
-    # proportional to the amount. The section 5a formula charges direct cost
-    # unconditionally and credits recovery gross, so it cannot express that
-    # term at all. See `informational_not_in_formula` below and
-    # `configs/README.md`, "The MDR gap". This is the single most consequential
-    # finding of this work.
+    # WHAT THIS NUMBER IS NOT, and a correction. An earlier draft of this file
+    # justified 25 paise as the cost of the RBI mandated pre-debit
+    # notification. That reasoning is WITHDRAWN. RBI's E-mandate Framework
+    # 2026 puts the obligation on the ISSUER, not on the merchant: "An issuer
+    # shall send a pre-transaction notification to the customer, at least 24
+    # hours prior to the actual charge/debit."
+    # https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=13374
+    # (RBI/DPSS/2026-27/396, dated 21 Apr 2026, consolidating the earlier
+    # e-mandate circulars.) Whether the merchant ends up paying for that SMS
+    # is a commercial arrangement with the issuer, not a regulatory
+    # certainty, so it cannot be asserted as a merchant cost.
+    #
+    # RBI is also entirely SILENT on retries: it neither requires a fresh
+    # notification per re-presentment nor caps the number of attempts. The
+    # per debit wording ("prior to the actual charge/debit") implies each
+    # attempt needs its own, and one vendor source asserts exactly that, but
+    # no directive says so. If it turns out the merchant does bear a fresh
+    # notification per retry, add `channels.sms_paise` to this number.
+    #
+    # REMAINING WEAKNESSES.
+    # (1) For RECORD_TYPE_PAYMENT, a one off card failure, there is no NACH
+    #     leg at all and the true unconditional cost is near zero, so 25
+    #     overcharges it.
+    # (2) For eNACH there is NO published per debit price from ANY Indian
+    #     aggregator. Razorpay quotes it "on request", Cashfree publishes no
+    #     figure, and Razorpay's own 8 Jun 2026 blog concedes public recurring
+    #     billing pricing is "notoriously inconsistent", marking its own 0.5%
+    #     and 1.2% figures as illustrative rather than real prices.
+    # 25 is therefore the mandate rail figure and a card heavy book should be
+    # cheaper. It remains the value with the widest true range.
+    #
+    # DELIBERATELY EXCLUDED: the 150 to 750 rupee NACH return charge banks
+    # levy on a failed debit
+    # (https://bankofbaroda.bank.in/banking-mantra/digital/articles/ecs-nach-return-charges,
+    # 16 Jul 2025). It is levied on the PAYER, the customer whose account the
+    # debit failed against, not on the biller. It is not our cost, and
+    # including it would overstate retry cost roughly thirtyfold. It is still
+    # an excellent reason not to retry blindly, since it is the customer's
+    # money and their goodwill that pays for our optimism.
     direct_cost_paise: 25
 
-    # [ASSUMPTION] Authorization standing damage from one more failed
-    # re-presentment of the same instrument. Derivation, every input assumed:
+    # [ASSUMPTION on the level, SOURCED on the anchors] Standing damage from
+    # one more failed re-presentment of the same instrument.
+    #
+    # Derivation, every input assumed:
     #   a) Future legitimate volume still attached to this instrument over 12
     #      months: assume a monthly mandate at an average ticket of 500
     #      rupees, so 12 x 50000 = 600000 paise at stake.
-    #   b) Reduction in the issuer's approval propensity for this merchant
-    #      and instrument pair from one more decline on its history: assume
-    #      0.1 percentage points, i.e. 0.001.
+    #   b) Reduction in the issuer's approval propensity for this merchant and
+    #      instrument pair from one more decline on its history: assume 0.1
+    #      percentage points, i.e. 0.001.
     #   c) Expected damage = 600000 * 0.001 = 600 paise.
     #
-    # Input (b) has NO published source. I specifically looked for evidence
-    # that repeated failed authorizations degrade future issuer approval
-    # rates and did not find a study or an issuer statement quantifying it.
-    # The mechanism is universally asserted and nowhere measured. It is also
-    # the input that most determines behaviour, since at 600 paise the
-    # indirect term is 24x the direct term and therefore dominates the retry
-    # decision entirely. Sensitivity: 0.05pp gives 300 paise, 0.5pp gives
-    # 3000. Attack this number first.
+    # Input (b) has NO published source. I looked specifically for evidence
+    # that repeated failed authorizations degrade future issuer approval rates
+    # and found none: the mechanism is universally asserted and nowhere
+    # measured. It is also the input that most determines behaviour, since at
+    # 600 paise the indirect term is 24x the direct term and dominates the
+    # retry decision outright. Sensitivity: 0.05pp gives 300 paise, 0.5pp
+    # gives 3000. Attack this number first.
     #
-    # CROSS CHECK, and the reason 600 is defensible despite (b). The card
-    # networks put their own price on a retry they consider excessive:
-    #   Visa: 0.10 USD per domestic reattempt beyond the cap = 957 paise
-    #     ("VS RAF Excessive Reattempts Domestic"), plus 0.05 USD cross
-    #     border. Rule dated 1 Oct 2020, fees charged from 1 Apr 2021.
-    #     https://usa.visa.com/dam/VCOM/global/support-legal/documents/updates-to-rules-for-declined-transaction-resubmission-and-use-of-authorization-response-codes.pdf
-    #   Mastercard: 0.50 USD Excessive Authorization Attempt fee = 4785
-    #     paise, effective 1 Jan 2025, after 10 declines on one account from
-    #     one acceptor in 24 hours.
-    # So the networks themselves price a bad retry between 957 and 4785
-    # paise. 600 sits BELOW the cheapest of those, which is the conservative
-    # side to be on. Note we would not normally pay these fees, since our
-    # guardrails keep us far inside the caps; they are used here only as an
-    # independent anchor on what a bad retry is worth.
+    # THREE INDEPENDENT ANCHORS, and why 600 survives despite (b). Three
+    # separate rule setters each put their own price on a retry they consider
+    # excessive, and 600 sits inside the range they imply:
+    #
+    #   NPCI. The one that matters most, because it is Indian and it is
+    #   levied on the CREDITOR rather than on the customer: 1 rupee per return
+    #   transaction from 1 Apr 2024, raised to 5 rupees (500 paise) from
+    #   1 Jul 2024, for creditors whose return rate exceeds 50%, charged on
+    #   the quantum above that threshold. From 1 Oct 2024 such creditors
+    #   become INELIGIBLE TO REGISTER NEW MANDATES until they fall back under
+    #   50%. Circulars NPCI/2023-24/NACH/007, /012 and /014, documented at
+    #   https://docs.juspay.io/lotuspay/web/nach-debit-flow/ach-debit-penalty-charges-for-high-percentage-of-returns
+    #   Confidence MEDIUM-HIGH: a payment processor's production
+    #   documentation citing named NPCI circulars, but still secondary, since
+    #   npci.org.in blocks automated fetch.
+    #
+    #   Visa. 0.10 USD per domestic reattempt beyond the cap = 957 paise,
+    #   billing as "VS RAF Excessive Reattempts Domestic". Rule dated
+    #   1 Oct 2020, fees charged from 1 Apr 2021.
+    #   https://usa.visa.com/dam/VCOM/global/support-legal/documents/updates-to-rules-for-declined-transaction-resubmission-and-use-of-authorization-response-codes.pdf
+    #
+    #   Mastercard. 0.50 USD Excessive Authorization Attempt fee = 4785 paise,
+    #   effective 1 Jan 2025, after 10 declines on one account from one
+    #   acceptor in 24 hours.
+    #
+    # So the rule setters price a bad retry between 500 and 4785 paise. 600
+    # sits just above the Indian floor and far below the ceiling, which is the
+    # conservative place to stand. We would not normally PAY any of these,
+    # since the guardrails keep us well inside every cap; they are used purely
+    # as independent evidence of what a bad retry is worth to parties holding
+    # data we do not have.
+    #
+    # NPCI Phase III is also the sharpest available statement of the point
+    # docs/PRD.md section 2b makes about retry caps protecting an asset: past
+    # a 50% return rate the merchant loses the ability to register new
+    # mandates at all. That is not a fee, that is the business.
+    #
     # Conflicting evidence, flagged: PayPal's merchant resource centre
-    # (15 May 2026) states Visa allows 20 retries in 30 days and charges 0.25
+    # (15 May 2026) says Visa allows 20 retries in 30 days and charges 0.25
     # USD cross border, disagreeing with the processor documentation on both
-    # numbers. The retry CAP is disputed; the existence and rough size of the
+    # numbers. The retry CAP is disputed; the existence and rough size of a
     # per excess fee is not.
     #
     # KNOWN MODELLING LIMITATION: the honest version of this cost escalates
     # with attempt number, because the fourth re-presentment damages standing
-    # far more than the first. The formula's `indirect_cost(action)` takes
-    # only an action and cannot express attempt dependence. That escalation
-    # is instead absorbed by the steep attempt decay in
-    # `configs/recovery_priors.yaml`. Those are NOT equivalent. The signature
-    # change is recommended in `configs/README.md`.
+    # far more than the first, and NPCI's threshold model is explicitly RATE
+    # based rather than per attempt. `indirect_cost(action)` takes only an
+    # action and can express neither. That escalation is instead absorbed by
+    # the steep attempt decay in `configs/recovery_priors.yaml`. Those are NOT
+    # equivalent. The signature change is recommended in `configs/README.md`.
     indirect_cost_paise: 600
 
   NUDGE_METHOD_UPDATE:
@@ -283,20 +330,42 @@ actions:
     # this action over WhatsApp. Changes when the channel price changes.
     direct_cost_paise: 14
 
-    # [ASSUMPTION] Channel quality damage. Derivation:
-    #   a) Probability one transactional nudge provokes a block or report:
-    #      assume 0.2%, i.e. 0.002.
-    #   b) Amortized cost of one such event: assume 5000 paise. Meta's
-    #      quality rating is automated and a downgrade throttles the number's
-    #      messaging tier, so the cost is remediation plus lost throughput
-    #      across every other record queued behind it, not a fine.
-    #   c) 0.002 * 5000 = 10 paise, raised to 15 for WhatsApp because Meta's
-    #      quality enforcement is automatic and fast, whereas TRAI DLT
-    #      complaint handling against an SMS header is slower and needs a
-    #      pattern rather than a single report.
-    # Both inputs are unsourced. The term is small enough that it changes no
-    # decision on its own; it exists so that "a message is not free" is
-    # represented rather than assumed away.
+    # [ASSUMPTION on the level, SOURCED on the mechanism] Channel quality
+    # damage. Derivation:
+    #   a) Probability one transactional nudge provokes a valid complaint, a
+    #      block, or a report: assume 0.02%, i.e. 0.0002. Set low, and
+    #      deliberately, because TRAI's threshold is brutal: under the
+    #      TCCCPR Second Amendment 2025 (gazetted 12 Feb 2025,
+    #      https://www.trai.gov.in/sites/default/files/2025-02/Regulation_12022025.pdf)
+    #      just 5 valid complaints in 10 days triggers action against a
+    #      sender, cut from 10 in 7 days. At any real send volume a 0.2% rate
+    #      would put a sender permanently over that line, so the true valid
+    #      complaint rate on EXPECTED transactional messages must be an order
+    #      of magnitude lower than a marketing blast's.
+    #   b) Amortized cost of one such event: assume 50000 paise. No monetary
+    #      figure is published by Meta or TRAI for a quality downgrade or a
+    #      header block, so this is entirely constructed. The only quantified
+    #      consequence anyone publishes is structural: a WhatsApp number
+    #      Flagged for 7 days drops one messaging tier, and at the 100000 tier
+    #      that is a 90% capacity cut
+    #      (https://docs.aws.amazon.com/social-messaging/latest/userguide/understanding-phone-number-quality-rating.html,
+    #      mirroring Meta; tiers 250 / 2000 / 10000 / 100000 / Unlimited per
+    #      https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits).
+    #      On the SMS side the consequence is a 15 day bar on outgoing
+    #      services for a first offence and blacklisting for repeats.
+    #   c) 0.0002 * 50000 = 10 paise, raised to 15 for WhatsApp because Meta's
+    #      quality enforcement is automatic and evaluated continuously,
+    #      whereas TRAI complaint handling against an SMS header is slower and
+    #      needs a pattern rather than a single report.
+    #
+    # NOT USED: the 2 lakh / 5 lakh / 10 lakh TRAI financial disincentives.
+    # Those are levied on ACCESS PROVIDERS, the telcos, not on the sender.
+    # The merchant side consequence is deregistration and suspension, which is
+    # an operational kill rather than a fine, and pricing it as a fine would
+    # be wrong by orders of magnitude in both directions at once.
+    #
+    # This term is small enough to change no decision on its own. It exists so
+    # that "a message is not free" is represented rather than assumed away.
     indirect_cost_paise: 15
 
   NUDGE_REMINDER:
@@ -307,23 +376,77 @@ actions:
     indirect_cost_paise: 10
 
   ESCALATE:
-    # [ASSUMPTION] The human handling time an escalation consumes. Every
-    # input assumed; no salary or BPO rate card was obtained.
-    #   a) Fully loaded monthly cost of one Indian collections or support
-    #      agent: assume 30000 rupees = 3000000 paise. Roughly a 22000 rupee
-    #      base uplifted about 1.35x for employer PF and ESI, supervision,
-    #      seat and telephony.
-    #   b) Working minutes per month: 22 days x 8 hours x 60 = 10560.
-    #   c) Cost per agent minute = 3000000 / 10560 = 284 paise.
-    #   d) Handling time for one payment recovery case: assume 8 minutes to
-    #      read the history, contact the customer, and log an outcome.
-    #   e) 284 * 8 = 2272 paise, rounded to 2300.
+    # [SOURCED inputs, ASSUMPTION on two of them] The human handling time an
+    # escalation consumes. Derivation:
+    #
+    #   a) Base monthly salary. Five published India figures, each carrying a
+    #      sample size and an update date:
+    #        Customer Service Representative  21717  n=2200  14 Aug 2026
+    #        Customer Support Representative  19340  n=39    16 Apr 2026
+    #        Collection Agent                 16858  n=1200  14 Jul 2026
+    #        Telecaller                       16058  n=2400  3 Jul 2026
+    #        Customer Care Executive          21391  n=116   25 Nov 2025
+    #      https://in.indeed.com/career/customer-service-representative/salaries
+    #      https://in.indeed.com/career/collections-executive/salaries
+    #      https://in.indeed.com/career/telecaller/salaries
+    #      https://www.payscale.com/research/IN/Job=Customer_Care_Executive/Salary
+    #      Median of the five = 19340 rupees per month, triangulated rather
+    #      than cherry picked. Note the most role apt figure, Collection Agent
+    #      at 16858, is among the lowest, so the median errs high.
+    #      Glassdoor India was NOT used: it blocks automated fetch and the
+    #      available snippets were internally inconsistent (a monthly figure
+    #      labelled as annual).
+    #
+    #   b) Statutory employer on-costs: EPF at 12% of basic plus DA
+    #      (https://www.epfindia.gov.in/site_docs/PDFs/MiscPDFs/ContributionRate.pdf)
+    #      and ESI at 3.25% of gross, employer share, unchanged since
+    #      1 Jul 2019. Together 1.1525x. This is the ONLY defensible cited
+    #      loading for India: the familiar 1.25x to 1.40x "fully loaded"
+    #      multiplier is a US context rule of thumb with no Indian dataset
+    #      behind it, so it is not applied, which again errs low on cost.
+    #      19340 * 1.1525 = 22290 rupees = 2229000 paise per month.
+    #
+    #   c) Paid minutes per month: 22 days x 8 hours x 60 = 10560.
+    #      2229000 / 10560 = 211 paise per PAID minute.
+    #
+    #   d) [ASSUMPTION] Occupancy. A paid minute is not a handled minute.
+    #      Contact centre occupancy runs well under 100% and no published
+    #      Indian occupancy benchmark was found. Assume 70%, giving
+    #      211 / 0.70 = 301 paise per HANDLED minute.
+    #
+    #   e) [ASSUMPTION] Handling time for one payment recovery case: assume 6
+    #      minutes to read the history, contact the customer and log an
+    #      outcome. Published AHT benchmarks exist only for adjacent work
+    #      (overall 6m10s, financial services 4m45s, telecom billing 2 to 4
+    #      minutes, https://kayako.com/blog/average-handle-time-industry-standard/,
+    #      6 Apr 2026) and those are vendor blogs citing vendor blogs. NO AHT
+    #      benchmark for collections or payment recovery specifically was
+    #      found. 6 minutes sits at the top of the billing range because a
+    #      recovery case means reading a history, not answering a question.
+    #
+    #   f) 301 * 6 = 1806 paise, rounded to 1800.
     #
     # This is the number that makes "not worth chasing" mean something. At
-    # 2300 paise an escalation is obviously right on a 5000 rupee invoice and
+    # 1800 paise an escalation is obviously right on a 5000 rupee invoice and
     # obviously absurd on a 50 rupee one, which is exactly the discrimination
     # the product claims to have.
-    direct_cost_paise: 2300
+    #
+    # CROSS CHECK THAT DOES NOT AGREE, and it is worth knowing about. The
+    # build-versus-buy price for the same minute is an Indian BPO seat, and
+    # published benchmark ranges are 6 to 14 USD per agent hour for voice
+    # (https://www.theoctopustech.com/call-center-outsourcing-pricing-in-india/,
+    # 25 Apr 2026, which states plainly that these are industry benchmark
+    # ranges and NOT the vendor's rate card). At 95.70 INR/USD the floor of
+    # that range is 957 paise per minute, roughly 3x the 301 paise derived
+    # above, which would put an escalation near 5700 paise rather than 1800.
+    # The gap is real and is mostly BPO margin, management, QA, infrastructure
+    # and a lower assumed utilisation. The in-house derivation is used here
+    # because its inputs are individually cited and this merchant is assumed
+    # to run its own small team. A merchant OUTSOURCING recovery should raise
+    # this to roughly 5700, and that 3x materially changes where escalation
+    # stops being economic: the break-even amount moves up by about the same
+    # factor. Flagged in configs/README.md as a sensitivity, not resolved.
+    direct_cost_paise: 1800
 
     # Deliberately zero, and not for want of thinking about it. The tempting
     # indirect cost is queue displacement: escalating a low value record
@@ -427,13 +550,14 @@ executor_reconciliation:
       change_needed: true
       note: >-
         Overstated against the only unconditional cost identified. Razorpay
-        charges per successful transaction, so a failed retry has no gateway
-        fee; what remains is the RBI mandated pre-debit notification, one SMS.
-        Lowering this RAISES reported net recovered, so it flatters the agent
-        and should be scrutinised rather than taken on trust. It should move
-        UP again, possibly well above 200, once real eNACH and NACH per
-        presentment pricing is obtained, since that is quoted on request and
-        is not public.
+        charges per successful transaction, so a failed retry carries no
+        gateway fee; what remains is the NPCI NACH switching fee, reported at
+        20 paise off-us and charged irrespective of rejection, which grosses
+        up to 25 with GST. Lowering this RAISES reported net recovered, so it
+        flatters the agent and should be scrutinised rather than taken on
+        trust. It should move UP again, possibly well above 200, once real
+        eNACH per debit pricing is obtained, since no Indian aggregator
+        publishes one and Razorpay quotes it on request.
   defects_raised:
     - "channelCostPaise's default branch charges CHANNEL_EMAIL the SMS rate of 25 paise. Correct for CHANNEL_UNSPECIFIED, wrong for EMAIL, priced here at 2 paise. Unreachable today because channelFor never returns EMAIL."
     - "StubRecovery charges retryCostPaise on BOTH the success and failure branches, with the comment 'the rail is charged for the attempt either way'. On the sourced Razorpay pricing that is backwards: the rail is charged only on success, and then as a percentage of the amount, not a flat fee. The success branch understates real cost badly and the failure branch overstates it."
