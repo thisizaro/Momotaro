@@ -40,3 +40,7 @@ tmp/
 # Vite local env overrides
 .env.local
 .env.*.local
+
+# Local agent tooling. Agent definitions are local-only by choice: they are
+# tooling, not project knowledge. What was built and why lives in docs/.
+.claude/

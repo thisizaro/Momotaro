@@ -547,3 +547,37 @@ verifier and the system disagree, the useful question is which of them is
 wrong: here the verifier was, but that was only clear after checking what the
 disputed audit entry actually contained. Reflexively silencing either side
 would have been wrong in a way that was hard to notice later.
+
+## 2026-08-24: wiring the guardrails silently escalated every record
+
+**What broke.** Adding the guardrail layer to `HandleMessage` turned three
+green Decision Engine integration tests red at once, all of them asserting a
+record reached `RETRY_SCHEDULED` or `NUDGE_SCHEDULED` and all of them finding
+`ESCALATED` instead. The log line said it plainly:
+`guardrail_downgrade="recovery window closed: record is 14.8ms old, window is 0s"`.
+
+**Why.** `GuardrailConfig` was added as a new field on `engine.Config`, and
+every existing caller kept compiling while leaving it at its zero value. A
+`RecoveryWindow` of `0` makes `age < window` false for every record ever
+created, so a fresh record is already past its window, every spending action is
+removed, and `permittedOrEscalate` downgrades all of them. The system does not
+crash or log an error: it escalates 100% of records and reports success.
+
+**Why it matters more than the test failure.** The tests caught this because
+they assert specific states. Production would not have. A missing env var
+would have produced an agent that looked healthy, processed every record, and
+quietly did nothing, which is a worse outcome than refusing to start. The zero
+value of a safety config is not a harmless default, it is the most restrictive
+setting available.
+
+**Fixed by** adding `GuardrailConfig.Validate`, rejecting any non-positive
+field, and calling it in `loadConfig` at startup so a misconfigured deployment
+fails loudly instead of silently (`ENGINEERING.md` §11 item 6, config validated
+at startup). The test helper now sets the guardrails explicitly, with a comment
+saying why leaving them out is not neutral.
+
+**What to take from it.** Adding a field to a config struct is a source-
+compatible change that is not a behaviour-compatible one. Every existing caller
+silently opts into the zero value, so for anything whose zero value is
+meaningful, the new field needs validation in the same change that introduces
+it, not later.

@@ -189,3 +189,39 @@ func nullIfUnspecified(a commonv1.ActionType) any {
 	}
 	return a.String()
 }
+
+// loadAttemptHistory reads what has already been spent on one record, for the
+// guardrails to judge (guardrails.go). The counts are derived here rather than
+// stored as columns on RECORD_STATE so they cannot drift from
+// INTERVENTION_ATTEMPT, which is the history the audit trail is the source of
+// truth for. INTERVENTION_ATTEMPT is the Executor's table and the Decision
+// Engine is a permitted reader of it (docs/ARCHITECTURE.md section 10a).
+//
+// In-flight attempts count, and that is deliberate: the Executor inserts its
+// attempt row BEFORE performing the side effect (section 11), so an action
+// already under way consumes budget rather than racing a second one.
+func (s *store) loadAttemptHistory(ctx context.Context, recordID string) (attemptHistory, error) {
+	nudges := []string{
+		commonv1.ActionType_ACTION_TYPE_NUDGE_METHOD_UPDATE.String(),
+		commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER.String(),
+	}
+
+	var h attemptHistory
+	// COUNT(ia.id) rather than COUNT(*): the LEFT JOIN yields one all-NULL row
+	// for a record with no attempts, and COUNT(*) would score that as 1.
+	err := s.pool.QueryRow(ctx, `
+		SELECT r.created_at,
+		       COUNT(ia.id) FILTER (WHERE ia.action_type = $2),
+		       COUNT(ia.id) FILTER (WHERE ia.action_type = ANY($3)),
+		       MAX(ia.executed_at) FILTER (WHERE ia.action_type = ANY($3))
+		FROM record r
+		LEFT JOIN intervention_attempt ia ON ia.record_id = r.id
+		WHERE r.id = $1
+		GROUP BY r.created_at`,
+		recordID, commonv1.ActionType_ACTION_TYPE_RETRY.String(), nudges,
+	).Scan(&h.RecordCreatedAt, &h.Retries, &h.Contacts, &h.LastContactAt)
+	if err != nil {
+		return attemptHistory{}, fmt.Errorf("load attempt history for %s: %w", recordID, err)
+	}
+	return h, nil
+}
