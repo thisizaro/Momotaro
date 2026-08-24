@@ -657,3 +657,112 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `docs/DECISIONS.md` (2026-08-23) had said redisx was a Phase 2 item while
   Phase 2's checklist never actually carried that checkbox, and this is the
   kind of gap that gets silently skipped.
+- 2026-08-24: `configs/intervention_costs.yaml` reconciled against
+  `services/executor/internal/ports/cost.go`, and the drift between them
+  closed with a test rather than a one-time fix, because the two priced the
+  same three things and disagreed.
+
+  WHAT THE COST MODEL CONTAINS. `configs/intervention_costs.yaml` is the
+  checked-in `direct_cost`/`indirect_cost` term source for section 5a's EV
+  formula: `channels.*` (marginal per-message cost for SMS, WhatsApp
+  Utility, email), `action_channel_policy` (which channel each nudge action
+  uses, mirroring `route.go`'s `channelFor`), `actions.*` (`direct_cost_paise`
+  and `indirect_cost_paise` per `ActionType`), and an
+  `informational_not_in_formula` block recording Razorpay's success-fee MDR,
+  which the section 5a formula cannot express today because it is
+  conditional on success and proportional to amount rather than a flat
+  unconditional cost. Every number in the file is one of three tags:
+  `[SOURCED]` (published price, URL inline), `[ASSUMPTION]` (reasoned
+  estimate, derivation shown inline so it can be argued input by input), or
+  `[UNVERIFIED]` (believed roughly right, no citation obtained, treat as a
+  placeholder). The file itself states which tag each number carries; this
+  entry does not repeat every one, only the ones load-bearing for the
+  reconciliation below.
+
+  THE RECONCILIATION. The YAML already carried its own
+  `executor_reconciliation` block naming the disagreement and the required
+  fix, written by whoever produced the cost model before they were stopped.
+  That block's numbers were verified against `cost.go` directly and matched
+  the file's own comparison exactly:
+
+  | Cost | YAML value (tag) | Go constant (was) | Agreed? | Fix |
+  |---|---|---|---|---|
+  | SMS, one message | `channels.sms_paise` = 25 paise [SOURCED] | `smsCostPaise` = 25 | Yes | none |
+  | WhatsApp, one message | `channels.whatsapp_utility_paise` = 14 paise [SOURCED, rate-card citation caveat noted in file] | `whatsappCostPaise` = 60 | No, overstated 4.3x, and wrong direction (WhatsApp is cheaper than SMS on these sourced rates, not dearer) | `whatsappCostPaise` -> 14 |
+  | Retry, one attempt | `actions.RETRY.direct_cost_paise` = 25 paise [SOURCED] (NPCI NACH switching fee, charged win or lose; Razorpay charges only on success so a failed retry has no gateway fee) | `retryCostPaise` = 200 | No, overstated 8x | `retryCostPaise` -> 25 |
+
+  `services/executor/internal/ports/cost.go` was edited to match: both
+  disagreeing constants now carry the YAML's sourced values, with comments
+  pointing at the YAML and at the new test rather than restating the
+  derivation. The YAML values themselves were not touched; the mandate was
+  "the checked-in file is the source of truth, fix the code", not
+  "re-derive the numbers".
+
+  COLLATERAL FIX, NOT PART OF THE MANDATE. Lowering `whatsappCostPaise`
+  below `smsCostPaise` broke `TestChannelCosts` in
+  `services/executor/internal/ports/stub_test.go`, which asserted WhatsApp
+  must cost more than SMS "because proto/notifier/v1 says it should be".
+  That assumption was itself the thing the YAML's reconciliation block
+  flags as backwards for India: `route.go`'s `channelFor` sends the
+  higher-value nudge (`NUDGE_METHOD_UPDATE`) over WhatsApp on the theory
+  that it is the pricier, better-read-rate channel, but on sourced Indian
+  rates WhatsApp Utility is cheaper than SMS. The test's inequality
+  assertion was removed; it now only checks every channel costs something
+  positive. Actually changing which channel each nudge action prefers is a
+  separate, undecided behavioural change (the YAML calls it a "RECOMMENDED
+  CHANGE, owned by services/executor") and was deliberately not made here.
+
+  THE DRIFT GUARD. `cost_reconciliation_test.go` (new, same package as
+  `cost.go`) reads `configs/intervention_costs.yaml` off disk (path found by
+  walking up from the test file's own `runtime.Caller` location, not by
+  assuming a working directory) and asserts `smsCostPaise`,
+  `whatsappCostPaise`, and `retryCostPaise` still equal the YAML's
+  `channels.sms_paise`, `channels.whatsapp_utility_paise`, and
+  `actions.RETRY.direct_cost_paise`. Parsing is a small targeted regex scan,
+  not a YAML library: `go.mod` carries no YAML parser today and this task
+  was explicitly out of bounds to add one for three integers. Verified by
+  deliberately setting `whatsappCostPaise` back to 60 and re-running the
+  test: it failed with `whatsappCostPaise vs channels.whatsapp_utility_paise:
+  Executor constant = 60 paise, configs/intervention_costs.yaml = 14 paise`,
+  then the constant was reverted and the test passed again.
+
+  WHAT REMAINS `[UNVERIFIED]` OR OTHERWISE UNRESOLVED, so the next agent
+  does not have to re-derive this from the YAML's comments:
+  - The Gupshup per-message BSP markup (~10 paise, additive to the WhatsApp
+    figure if a merchant is on a per-message BSP rather than a flat-fee
+    one) is tagged `[UNVERIFIED]`: Gupshup's own pricing URL 404s. Not used
+    by any reconciled constant today.
+  - The RETRY NPCI NACH figures (20 paise off-us, 5 paise on-us) are sourced
+    from a processor's documentation citing named NPCI circulars, not from
+    npci.org.in directly, which returns HTTP 403 to automated fetch. The
+    file itself flags this as "verify by hand before the demo".
+  - The retry `indirect_cost_paise` (600, authorization-rate damage from a
+    repeated decline) is `[ASSUMPTION] on the level, [SOURCED] on the
+    anchors`: its most load-bearing input (issuer approval-rate degradation
+    per additional decline, assumed 0.1 percentage points) has no published
+    source at all. Not part of this reconciliation since `cost.go` has no
+    indirect-cost concept yet; that is Phase 2's economics scorer's job.
+  - `configs/intervention_costs.yaml` references `configs/README.md` four
+    times (for why costs and priors are two files, for the MDR gap, for the
+    escalation cost sensitivity) and that file does not exist in the repo.
+    Not created as part of this task since it was not asked for and its
+    scope is unclear; flagged here so it is not lost.
+  - Not fixed, and out of scope here: `channelCostPaise`'s `default` branch
+    charges `CHANNEL_EMAIL` the SMS rate; `StubRecovery` charges
+    `retryCostPaise` on both its success and failure branches even though
+    Razorpay's success-fee model implies those should differ; and
+    `proto/worldsim/v1`'s `SimulateOutcomeResponse` carries no cost field at
+    all, so Phase 5's real World Simulator swap has no source for retry
+    cost unless it comes from this YAML. All three are named in the YAML's
+    own `executor_reconciliation.defects_raised` list.
+  - Not fixed, and flagged as a real finding: `docs/PRD.md` section 9's
+    "net recovered" is gross recovered minus logged intervention spend, and
+    the YAML's `informational_not_in_formula` block states plainly that
+    Razorpay's success-fee MDR (roughly 2.36% to 3.42% of the recovered
+    amount) is the single largest real cost of recovery and is currently
+    absent from that headline number entirely, dwarfing every messaging
+    cost reconciled above. Not this task's mandate to fix (it is a formula
+    change, not a constant-agreement fix), but worth surfacing loudly:
+    the headline metric under-costs recovery by roughly two orders of
+    magnitude relative to messaging spend, independent of anything fixed
+    here.

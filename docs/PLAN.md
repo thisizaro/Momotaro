@@ -349,9 +349,21 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       Phase 4, which already carries the stopping-rule-violation alert.
       The economics scorer then picks from the permitted set instead of the
       current fall back to escalation.
-- [ ] `configs/intervention_costs.yaml` and the `P(recovery)` prior table
+- [x] `configs/intervention_costs.yaml` and the `P(recovery)` prior table
       checked in, with the assumed values documented and defensible
       → `ARCHITECTURE.md` §5a
+      Both files carry a provenance tag on every number
+      (`[SOURCED]`/`[ASSUMPTION]`/`[UNVERIFIED]`) with the derivation or URL
+      inline, so each is arguable input by input rather than taken on trust.
+      `intervention_costs.yaml` also reconciled against
+      `services/executor/internal/ports/cost.go`, which had drifted from it
+      on two of three constants (`docs/DECISIONS.md` 2026-08-24); the Go
+      constants now match the YAML and a test
+      (`cost_reconciliation_test.go`) keeps them from silently diverging
+      again. Remaining `[UNVERIFIED]` figures (the Gupshup BSP markup; the
+      NPCI NACH rate, sourced from a processor citing NPCI rather than
+      npci.org.in directly) are named in that same DECISIONS.md entry as
+      needing firming up, not resolved by this checkbox.
 - [ ] Economics scorer in Decision Engine: `Scoring` state, EV computed per
       allowed action, `ClosedUneconomic` terminal state when no action has
       positive EV → `ARCHITECTURE.md` §5a, §7, `PRD.md` §2b

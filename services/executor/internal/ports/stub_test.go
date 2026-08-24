@@ -103,9 +103,14 @@ func TestChannelCosts(t *testing.T) {
 	whatsapp := channelCostPaise(notifierv1.Channel_CHANNEL_WHATSAPP)
 	unspecified := channelCostPaise(notifierv1.Channel_CHANNEL_UNSPECIFIED)
 
-	if whatsapp <= sms {
-		t.Errorf("whatsapp %d is not dearer than sms %d, but proto/notifier/v1 says it should be", whatsapp, sms)
-	}
+	// This used to assert whatsapp > sms, on the assumption that WhatsApp is
+	// the premium, better-read-rate channel. That assumption is false on the
+	// sourced Indian rates in `configs/intervention_costs.yaml`: WhatsApp
+	// Utility pricing (14 paise) is cheaper than SMS (25 paise), not dearer.
+	// See that file's `executor_reconciliation` block, which flags
+	// `route.go`'s channel policy rationale as inverted for India. Fixing
+	// that policy is a separate, undecided change; this test only stops
+	// asserting a direction the cost model no longer supports.
 	for name, cost := range map[string]int64{"sms": sms, "whatsapp": whatsapp, "unspecified": unspecified} {
 		if cost <= 0 {
 			t.Errorf("%s costs %d: a free intervention makes Phase 2's expected-value maths meaningless", name, cost)
