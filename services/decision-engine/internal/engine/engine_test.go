@@ -19,7 +19,10 @@ import (
 )
 
 func testConfig(dlqTopic string) Config {
-	return Config{CallTimeout: 2 * time.Second, RetryDelay: time.Minute, NudgeDelay: time.Minute, DLQTopic: dlqTopic}
+	// Guardrails must be set explicitly: the zero value blocks every action
+	// (see GuardrailConfig.Validate), which would silently turn every test
+	// below into an assertion about escalation.
+	return Config{CallTimeout: 2 * time.Second, RetryDelay: time.Minute, NudgeDelay: time.Minute, DLQTopic: dlqTopic, Guardrails: testGuardrails}
 }
 
 func TestHandleMessageSchedulesRetry(t *testing.T) {

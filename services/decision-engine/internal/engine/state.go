@@ -19,7 +19,16 @@ import (
 // record_state.pending_action so the scheduler knows what to resume without
 // re-classifying, docs/DECISIONS.md).
 func decideAfterClassify(resp *classifierv1.ClassifyResponse) (state commonv1.RecordState, pendingAction commonv1.ActionType, reason string) {
-	switch action := resp.GetRecommendedAction(); action {
+	return decideForAction(resp.GetRecommendedAction())
+}
+
+// decideForAction is decideAfterClassify's body, split out because the action
+// that gets scheduled is not always the one the Classifier recommended: the
+// guardrails (guardrails.go) may have removed it, in which case the caller
+// passes the downgraded action here instead (docs/ARCHITECTURE.md section 5a,
+// guardrails filter between classification and the decision).
+func decideForAction(action commonv1.ActionType) (state commonv1.RecordState, pendingAction commonv1.ActionType, reason string) {
+	switch action {
 	case commonv1.ActionType_ACTION_TYPE_RETRY:
 		return commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, action, "classified, retry scheduled"
 	case commonv1.ActionType_ACTION_TYPE_NUDGE_METHOD_UPDATE, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER:
