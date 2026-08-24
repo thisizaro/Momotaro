@@ -334,8 +334,21 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 
 - [ ] Idempotency proven end-to-end (duplicate Kafka delivery and duplicate
       gRPC retry both handled safely) → `ARCHITECTURE.md` §11
-- [ ] Retry budgets, cooldowns, contact caps enforced with automated tests
+- [x] Retry budgets, cooldowns, contact caps enforced with automated tests
       → `PRD.md` §11
+      Enforced in the Decision Engine between classification and scheduling,
+      the fixed order in `ARCHITECTURE.md` §5a. Counters are derived from
+      `INTERVENTION_ATTEMPT` rather than stored, and evaluated in Postgres
+      rather than a cache, for the reason in `DECISIONS.md` (2026-08-24).
+      Also covers the recovery window and the automatic downgrade to
+      "needs human" that `PRD.md` §11 requires so a record never loops.
+      Scope note on the Definition of Done (`ENGINEERING.md` §11 item 3):
+      structured logs carry the recommended action, the scheduled action and
+      the guardrail reason, but no Prometheus metric is exported, because no
+      service exports one yet. That lands with the rest of observability in
+      Phase 4, which already carries the stopping-rule-violation alert.
+      The economics scorer then picks from the permitted set instead of the
+      current fall back to escalation.
 - [ ] `configs/intervention_costs.yaml` and the `P(recovery)` prior table
       checked in, with the assumed values documented and defensible
       → `ARCHITECTURE.md` §5a

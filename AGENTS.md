@@ -120,9 +120,18 @@ measured recovered revenue against a hidden ground truth.
   `GROUND_TRUTH`. Recovery probabilities come from a checked-in prior table
   blended with the agent's own observed outcomes, never from the sealed
   answer key. There is a test for this. `docs/ARCHITECTURE.md` §5a, §6.
-- **Storage**: Postgres (state, audit log, ground truth), Redis (idempotency
-  locks, retry/cooldown counters, dashboard cache, World Simulator's
-  delayed-outcome queue).
+- **Storage**: Postgres (state, audit log, ground truth), Redis (dashboard
+  cache, World Simulator's delayed-outcome queue, and idempotency locks as a
+  fast path only). **Guardrail enforcement is Postgres, not Redis.** Retry
+  budgets, contact caps and cooldowns are evaluated inside the same
+  transaction as the state change they gate, and their counters are derived
+  from `INTERVENTION_ATTEMPT` rather than held as a separate counter that can
+  drift. An earlier version of this bullet listed "retry/cooldown counters"
+  under Redis; that was amended, and the reasoning is in `docs/DECISIONS.md`
+  (2026-08-24). Short version: a cap enforced by a cache is not enforced,
+  because the documented behaviour for an unreachable Redis is to fall
+  through, and falling through a *cap check* produces exactly the
+  stopping-rule violation `docs/PRD.md` §9 calls impossible.
 - **Deployment target**: Kubernetes, demoed via minikube, built and proven
   locally first, containerized/deployed last.
 - **Proto contracts are written and merged before the service that

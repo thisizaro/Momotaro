@@ -44,6 +44,11 @@ type Config struct {
 	RetryDelay time.Duration
 	NudgeDelay time.Duration
 	DLQTopic   string
+	// Guardrails are the hard limits from docs/PRD.md section 11: retry
+	// budget, contact cap, contact cooldown and recovery window. They filter
+	// the Classifier's recommendation before it is scheduled
+	// (docs/ARCHITECTURE.md section 5a) and can only ever remove options.
+	Guardrails GuardrailConfig
 }
 
 // Engine consumes raw.events: classify a fresh record and schedule its
@@ -111,8 +116,24 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 		return e.deadLetterEvent(ctx, evt, fmt.Sprintf("classify failed after %d attempts: %v", maxClassifyAttempts, err))
 	}
 
-	state, pendingAction, reason := decideAfterClassify(classifyResp)
 	now := e.clock.Now()
+
+	// Classify, then guardrails filter, then (Phase 2) economics decides. The
+	// order is fixed (docs/ARCHITECTURE.md section 5a) and is what lets us say
+	// the model proposes but never decides how money is spent.
+	history, err := e.store.loadAttemptHistory(ctx, evt.RecordID)
+	if err != nil {
+		return err
+	}
+	recommended := classifyResp.GetRecommendedAction()
+	action, downgrade := permittedOrEscalate(recommended, applyGuardrails(history, e.cfg.Guardrails, now))
+
+	state, pendingAction, reason := decideForAction(action)
+	if downgrade != "" {
+		// The guardrail's own words become the audit trail's justification for
+		// the downgrade, so the trail answers "why did it not retry?".
+		reason = fmt.Sprintf("guardrail blocked %s: %s", recommended, downgrade)
+	}
 	dueAt := e.dueAtFor(state, now)
 
 	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), state, pendingAction, reason, classifyResp.GetRationale(), classifyResp.GetSource(), dueAt, now); err != nil {
@@ -120,7 +141,8 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 	}
 
 	log.Info("record classified and scheduled",
-		logger.KeyState, state.String(), logger.KeyBucket, classifyResp.GetBucket().String(), logger.KeySource, classifyResp.GetSource().String())
+		logger.KeyState, state.String(), logger.KeyBucket, classifyResp.GetBucket().String(), logger.KeySource, classifyResp.GetSource().String(),
+		"recommended_action", recommended.String(), "scheduled_action", action.String(), "guardrail_downgrade", downgrade)
 	return nil
 }
 

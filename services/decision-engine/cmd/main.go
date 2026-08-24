@@ -57,6 +57,26 @@ type serviceConfig struct {
 	RetryDelay   time.Duration
 	NudgeDelay   time.Duration
 	PollInterval time.Duration
+	// Guardrails: the hard limits from docs/PRD.md section 11. MaxRetries
+	// mirrors NPCI-style mandate debit limits. The two durations are scaled
+	// by DEMO_TIME_SCALE like every other wall-clock wait, because a 7 day
+	// recovery window would otherwise never close inside a demo.
+	MaxRetries      int
+	MaxContacts     int
+	ContactCooldown time.Duration
+	RecoveryWindow  time.Duration
+}
+
+// guardrailsFrom builds the engine's guardrail limits from the loaded config.
+// The two durations are scaled like every other wall-clock wait, or a 7 day
+// recovery window would never close inside a demo.
+func guardrailsFrom(cfg serviceConfig) engine.GuardrailConfig {
+	return engine.GuardrailConfig{
+		MaxRetries:      cfg.MaxRetries,
+		MaxContacts:     cfg.MaxContacts,
+		ContactCooldown: cfg.Scale(cfg.ContactCooldown),
+		RecoveryWindow:  cfg.Scale(cfg.RecoveryWindow),
+	}
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -73,8 +93,21 @@ func loadConfig() (serviceConfig, error) {
 		RetryDelay:     l.Duration("RETRY_DELAY", 30*time.Second),
 		NudgeDelay:     l.Duration("NUDGE_DELAY", 30*time.Second),
 		PollInterval:   l.Duration("SCHEDULER_POLL_INTERVAL", 2*time.Second),
+
+		MaxRetries:      l.Int("MAX_RETRIES", 3),
+		MaxContacts:     l.Int("MAX_CONTACTS", 3),
+		ContactCooldown: l.Duration("CONTACT_COOLDOWN", 24*time.Hour),
+		RecoveryWindow:  l.Duration("RECOVERY_WINDOW", 7*24*time.Hour),
 	}
-	return cfg, l.Err()
+	if err := l.Err(); err != nil {
+		return cfg, err
+	}
+	// Guardrails are validated here rather than trusted, because their zero
+	// value silently escalates every record instead of failing visibly.
+	if err := guardrailsFrom(cfg).Validate(); err != nil {
+		return cfg, fmt.Errorf("guardrail config: %w", err)
+	}
+	return cfg, nil
 }
 
 func main() {
@@ -141,6 +174,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		RetryDelay:  cfg.Scale(cfg.RetryDelay),
 		NudgeDelay:  cfg.Scale(cfg.NudgeDelay),
 		DLQTopic:    cfg.DLQTopic,
+		Guardrails:  guardrailsFrom(cfg),
 	}
 	eng := engine.New(pool,
 		classifierv1.NewClassifierServiceClient(classifierConn),

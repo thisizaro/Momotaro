@@ -624,3 +624,36 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   the specific `go:embed`-shaped hole QA found; it does not turn the
   scanner into a general dependency or data-flow analysis, which was never
   the intent.
+- 2026-08-24: Guardrail enforcement (retry budgets, contact caps, cooldowns)
+  is Postgres-transactional, not Redis-backed, reversing the "retry/cooldown
+  counters" clause of the Storage bullet in `AGENTS.md`, which has been
+  amended rather than left to contradict this. The reversal is small but
+  load-bearing, so the reasoning is recorded in full. `ARCHITECTURE.md` §11
+  is explicit that Redis here is "an optimisation only", and the rule written
+  into `services/executor/SPEC.md` §10 is that an unreachable Redis falls
+  through rather than failing the request. That rule is correct for an
+  idempotency *fast path*, where Postgres still holds the real guarantee. It
+  is actively wrong for a *cap check*, where falling through means the cap is
+  simply not enforced, and TTL expiry or eviction silently resets a counter
+  besides. `PRD.md` §9 makes "zero stopping-rule violations" a headline
+  metric and §10 says a violation should be paged on because it should be
+  impossible; that claim cannot rest on a cache. So a cap is now evaluated
+  inside the same transaction as the state change it gates, which is the same
+  reasoning as §10a's rule that a state change and its audit entry are
+  written together: a check performed outside the transaction that acts on it
+  has a window, and a window is a bug. Two consequences worth stating.
+  First, the counters are **derived** from `INTERVENTION_ATTEMPT`
+  (`COUNT(*)` filtered by `action_type`) rather than stored as columns, so
+  they cannot drift from the history that the audit trail is the source of
+  truth for, no migration is needed, and in-flight attempts are counted
+  correctly for free because the Executor inserts its attempt row before
+  executing. `ARCHITECTURE.md` §10a already lists the Decision Engine as a
+  permitted reader of that table, so this crosses no ownership boundary.
+  Second, `internal/platform/redisx` is therefore **not** a Phase 2
+  dependency at all; nothing in Phase 2's eleven items needs it. Its first
+  real consumer is Phase 5's delayed-outcome queue alongside Reporting's
+  cache-aside layer, and the Executor fast path stays a Phase 6 item where
+  the load measurement that would justify it lives. Recorded because
+  `docs/DECISIONS.md` (2026-08-23) had said redisx was a Phase 2 item while
+  Phase 2's checklist never actually carried that checkbox, and this is the
+  kind of gap that gets silently skipped.
