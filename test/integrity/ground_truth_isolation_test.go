@@ -19,6 +19,15 @@
 // architectural invariant that only runs when docker is up is a weak
 // guard, since it would not run on every CI pass the way the rest of the
 // unit suite does.
+//
+// Two scanners, not one, because a query can reach the decision path
+// without ever being Go source: .go files are parsed with go/parser and
+// go/ast so that a comment documenting the rule can never trip the test
+// (only a real identifier or string literal can); everything else that can
+// carry a query into the compiled binary without being a .go file itself
+// (.sql via //go:embed, at minimum, plus .yaml/.yml/.json/.tmpl) is checked
+// with a plain normalized text match, since there is no AST for a SQL file.
+// See docs/DECISIONS.md for what still is not covered even after that.
 package integrity
 
 import (
@@ -139,6 +148,80 @@ func scanForGroundTruthReferences(root string) (fileCount int, violations []viol
 	return fileCount, violations, nil
 }
 
+// nonGoTextExtensions are the non-Go file types checked for a plain
+// (non-AST) text reference to GROUND_TRUTH: anything that can carry a
+// query or a table name into the compiled binary without ever being a .go
+// file itself, most concretely a SQL file pulled in with //go:embed. This
+// is deliberately not exhaustive, see the test's own doc comment and
+// docs/DECISIONS.md for what is and is not covered.
+//
+// .md is deliberately excluded even though it is plausible: both
+// services/classifier/SPEC.md and services/executor/SPEC.md already carry
+// a "hard boundary: no ground truth" section that names GROUND_TRUTH in
+// prose, exactly the documentation case the AST path exists to leave
+// alone for .go files. Scanning .md as plain text would flag that
+// legitimate documentation as a violation, which is the wrong trade.
+var nonGoTextExtensions = map[string]bool{
+	".sql":  true,
+	".yaml": true,
+	".yml":  true,
+	".json": true,
+	".tmpl": true,
+}
+
+// scanNonGoTextFilesForGroundTruthReferences walks root looking at files
+// whose extension is in nonGoTextExtensions for a plain, normalized text
+// match against GROUND_TRUTH. There is no AST for a .sql or .yaml file, so
+// unlike the .go scan above, a comment inside one of these files (a SQL
+// "-- " comment, for instance) is not distinguished from code: a plain
+// text match is the right and honest tool here, not a limitation snuck in
+// silently. See the package doc comment and docs/DECISIONS.md.
+func scanNonGoTextFilesForGroundTruthReferences(root string) (fileCount int, violations []violation, err error) {
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk %s: %w", path, walkErr)
+		}
+		if d.IsDir() || !nonGoTextExtensions[strings.ToLower(filepath.Ext(path))] {
+			return nil
+		}
+		fileCount++
+
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", path, readErr)
+		}
+		content := string(src)
+		if !hasGroundTruthMarker(content) {
+			return nil
+		}
+
+		line, snippet := firstMatchingLine(content)
+		violations = append(violations, violation{
+			pos:  token.Position{Filename: path, Line: line},
+			kind: fmt.Sprintf("text reference (%s)", filepath.Ext(path)),
+			text: snippet,
+		})
+		return nil
+	})
+	if walkErr != nil {
+		return fileCount, violations, walkErr
+	}
+	return fileCount, violations, nil
+}
+
+// firstMatchingLine returns the 1-based line number and trimmed text of the
+// first line in content that itself contains the marker, for a readable
+// violation message. Falls back to line 1 if the marker only appears when
+// spanning a line break (a real table name never does this in practice).
+func firstMatchingLine(content string) (int, string) {
+	for i, line := range strings.Split(content, "\n") {
+		if hasGroundTruthMarker(line) {
+			return i + 1, strings.TrimSpace(line)
+		}
+	}
+	return 1, strings.TrimSpace(content)
+}
+
 // repoRoot locates the repository root relative to this test file's own
 // path, so the test works regardless of the working directory `go test`
 // is invoked from.
@@ -176,7 +259,7 @@ func TestDecisionPathHasNoGroundTruthQueryPath(t *testing.T) {
 				t.Fatalf("service directory %s not found: %v (has the repo layout changed under this test?)", dir, statErr)
 			}
 
-			fileCount, violations, err := scanForGroundTruthReferences(dir)
+			goFileCount, violations, err := scanForGroundTruthReferences(dir)
 			if err != nil {
 				t.Fatalf("scan %s: %v", tc.service, err)
 			}
@@ -184,10 +267,31 @@ func TestDecisionPathHasNoGroundTruthQueryPath(t *testing.T) {
 			// A scanner that silently walks zero files passes forever and
 			// guards nothing. This is what would have hidden a typo'd
 			// path or a directory that moved out from under this test.
-			if fileCount == 0 {
+			if goFileCount == 0 {
 				t.Fatalf("scanned zero .go files under %s; this test would pass vacuously and prove nothing", tc.service)
 			}
-			t.Logf("scanned %d .go file(s) under %s", fileCount, tc.service)
+			t.Logf("scanned %d .go file(s) under %s", goFileCount, tc.service)
+
+			// QA found that a query can also ship in the binary via a
+			// non-Go file (their repro: a .sql file pulled in with
+			// //go:embed), which the .go-only scan above never opens.
+			textFileCount, textViolations, err := scanNonGoTextFilesForGroundTruthReferences(dir)
+			if err != nil {
+				t.Fatalf("scan non-Go text files under %s: %v", tc.service, err)
+			}
+			if textFileCount == 0 {
+				// Not a vacuous pass: no .sql/.yaml/.yml/.json/.tmpl file
+				// exists in this service today, so zero is the honest,
+				// expected count, not a sign the walk silently found
+				// nothing it should have. The scanner's ability to catch a
+				// real match in these file types is proven independently,
+				// against a synthetic fixture, by
+				// TestNonGoTextScanCatchesGroundTruthInEmbeddedFile.
+				t.Logf("scanned 0 non-Go text file(s) (.sql/.yaml/.yml/.json/.tmpl) under %s: none exist in this service today", tc.service)
+			} else {
+				t.Logf("scanned %d non-Go text file(s) under %s", textFileCount, tc.service)
+			}
+			violations = append(violations, textViolations...)
 
 			if len(violations) > 0 {
 				lines := make([]string, len(violations))
@@ -253,4 +357,108 @@ func joinViolations(violations []violation) string {
 		lines[i] = v.String()
 	}
 	return strings.Join(lines, "\n")
+}
+
+// writeEmbeddedSQLFixture reproduces QA's reported gap as a fixture: a Go
+// file that pulls a query in with //go:embed, where the actual query text,
+// and the actual GROUND_TRUTH reference, lives in a .sql file the Go-only
+// scanner never opens. fetch.go itself names no GROUND_TRUTH anything, only
+// a relative file path.
+func writeEmbeddedSQLFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "queries"), 0o755); err != nil {
+		t.Fatalf("make queries dir: %v", err)
+	}
+
+	goSrc := `package fixture
+
+import _ "embed"
+
+// lookupQuery is compiled into the binary at build time; the query text
+// lives in queries/lookup.sql, not in this file.
+//go:embed queries/lookup.sql
+var lookupQuery string
+`
+	sqlSrc := "-- looks up whether a record is truly recoverable\n" +
+		"SELECT truly_recoverable FROM ground_truth WHERE record_id = $1\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "fetch.go"), []byte(goSrc), 0o644); err != nil {
+		t.Fatalf("write fetch.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "queries", "lookup.sql"), []byte(sqlSrc), 0o644); err != nil {
+		t.Fatalf("write lookup.sql: %v", err)
+	}
+	return dir
+}
+
+// TestNonGoTextScanCatchesGroundTruthInEmbeddedFile is QA's reported gap,
+// reproduced as a fixture rather than as real files added to a service
+// tree. Before scanNonGoTextFilesForGroundTruthReferences existed, the
+// only scanner was the .go-suffix AST scan above, which sees fetch.go (no
+// GROUND_TRUTH reference at all, only a relative file path) and never
+// opens queries/lookup.sql, where the actual violating query lives. It
+// compiled, the query shipped in the binary, and the old scanner stayed
+// green. Confirmed as a real regression before this fix: running the
+// go-only scan alone here finds nothing, which is exactly the gap; the
+// combined scan below is what closes it.
+func TestNonGoTextScanCatchesGroundTruthInEmbeddedFile(t *testing.T) {
+	dir := writeEmbeddedSQLFixture(t)
+
+	goFiles, goViolations, err := scanForGroundTruthReferences(dir)
+	if err != nil {
+		t.Fatalf("scan go source: %v", err)
+	}
+	if goFiles != 1 {
+		t.Fatalf("expected to scan exactly 1 .go file, scanned %d", goFiles)
+	}
+	if len(goViolations) != 0 {
+		t.Fatalf("expected the .go-only scan to find nothing on its own (the reference lives in the embedded .sql file, not in Go source): the gap this test exists to close, got %d: %s",
+			len(goViolations), joinViolations(goViolations))
+	}
+
+	textFiles, textViolations, err := scanNonGoTextFilesForGroundTruthReferences(dir)
+	if err != nil {
+		t.Fatalf("scan non-Go text files: %v", err)
+	}
+	if textFiles != 1 {
+		t.Fatalf("expected to scan exactly 1 non-Go text file, scanned %d", textFiles)
+	}
+	if len(textViolations) != 1 {
+		t.Fatalf("expected the embedded lookup.sql to be caught as exactly 1 violation, got %d: %s",
+			len(textViolations), joinViolations(textViolations))
+	}
+	if !strings.Contains(textViolations[0].text, "ground_truth") {
+		t.Fatalf("violation text %q does not contain the actual matched line", textViolations[0].text)
+	}
+}
+
+// TestNonGoTextScanIgnoresUnlistedExtensions proves the .sql/.yaml/.yml/
+// .json/.tmpl allowlist is not accidentally wide open to every file: a
+// GROUND_TRUTH reference sitting in, say, a .txt or .md file (documentation
+// prose is exactly this case, see services/classifier/SPEC.md and
+// services/executor/SPEC.md's "hard boundary: no ground truth" sections)
+// must not be flagged.
+func TestNonGoTextScanIgnoresUnlistedExtensions(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"notes.md":   "GROUND_TRUTH must never be read from the decision path.",
+		"README.txt": "See ground_truth for the answer key.",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	fileCount, violations, err := scanNonGoTextFilesForGroundTruthReferences(dir)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if fileCount != 0 {
+		t.Fatalf("expected .md/.txt files to be skipped entirely, but scanned %d", fileCount)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected no violations from unlisted extensions, got %d: %s", len(violations), joinViolations(violations))
+	}
 }
