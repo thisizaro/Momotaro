@@ -537,6 +537,93 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Phase 1 has no retry budget and so never schedules a second attempt;
   fabricating one would test the fabrication rather than the pipeline, so it
   stays covered by unit tests until Phase 2 makes it reachable honestly.
+- 2026-08-24: `docs/PLAN.md`'s Phase 2 item for the `GROUND_TRUTH` isolation
+  test named only the Decision Engine. Widened the implementation to cover
+  all three decision-path services (Decision Engine, Classifier, Executor),
+  since `ARCHITECTURE.md` §5a states the rule as applying to "the decision
+  path," not to one service by name, and a guard watching only one of the
+  three services a record passes through before money is spent is a weaker
+  guarantee than the rule it exists to enforce. `services/reporting` and
+  `demo/world-simulator` are the two services the ownership table in §10a
+  permits to read `GROUND_TRUTH` and are deliberately excluded from the
+  scan. Implementation is `test/integrity/ground_truth_isolation_test.go`:
+  unit tier, no build tag (so it runs in `make test` on every CI pass, not
+  only when docker is up), parses each service's Go source with
+  `go/parser`/`go/ast` rather than grepping text, so a comment documenting
+  the rule (there is already one in
+  `services/executor/internal/ports/ports.go`) can never trip it, only a
+  real identifier or string literal naming the table can. Known gap, stated
+  rather than silently accepted: the scanner only reads source physically
+  inside the three service directories, it does not follow an import
+  transitively into `internal/platform` or elsewhere to check whether a
+  called function reads `GROUND_TRUTH` internally under an innocuous name,
+  nor does it catch a table name assembled at runtime (string
+  concatenation, an environment variable, decoded bytes) rather than
+  written as a literal in source.
+- 2026-08-24: QA independently verified the `GROUND_TRUTH` isolation test
+  above (red/green reproduced across all three services and four violation
+  shapes, file counts confirmed, the comment-blindness confirmed against
+  the real comment in `services/executor/internal/ports/ports.go`) and
+  found one real gap in the original implementation: the scanner only
+  looked at `.go` files. QA built a working exploit, a
+  `queries/lookup.sql` file containing `SELECT truly_recoverable FROM
+  ground_truth WHERE record_id = $1`, pulled into a Go file with
+  `//go:embed`. The `.go` file itself names no `GROUND_TRUTH` anything,
+  only a relative file path, so it compiled, the query shipped in the
+  binary, and the test stayed green. Nothing in this repo uses
+  `go:embed` today, so the hole was latent, not active, but moving SQL
+  into `.sql` files is an entirely ordinary refactor and the original
+  description ("parses every Go file") reasonably read as if this were
+  already covered.
+
+  Fixed by adding a second scanner,
+  `scanNonGoTextFilesForGroundTruthReferences`, that plain-text-matches
+  (normalized, same as the `.go` scanner's identifier/string check) any
+  `.sql`, `.yaml`, `.yml`, `.json`, or `.tmpl` file under each of the three
+  service directories. `.md` is deliberately excluded: both
+  `services/classifier/SPEC.md` and `services/executor/SPEC.md` already
+  carry a "hard boundary: no ground truth" section that names
+  `GROUND_TRUTH` in prose, which is exactly the legitimate-documentation
+  case the AST path exists to leave alone for `.go` files, and there is no
+  AST for a `.md` file to make that same distinction. A plain text match
+  over `.sql`/`.yaml`/`.yml`/`.json`/`.tmpl` also means a comment inside
+  one of those files (a SQL `-- ` comment, for instance) is not
+  distinguished from code the way a `.go` comment is; that is a real,
+  stated trade, not an oversight, and is the honest cost of using a text
+  match where no AST exists.
+
+  Confirmed red-then-green the same way as the original test: a fixture
+  reproducing QA's exact repro (`fetch.go` with `//go:embed
+  queries/lookup.sql`, plus `queries/lookup.sql` containing the violating
+  query) was scanned with only the old `.go`-only scanner first, which
+  found zero violations, a real `t.Fatalf` failure demonstrating the gap
+  with an actual assertion, not a compile error. After adding the new
+  scanner and wiring it into `TestDecisionPathHasNoGroundTruthQueryPath`,
+  the same fixture is caught (`TestNonGoTextScanCatchesGroundTruthInEmbeddedFile`).
+  A companion test,
+  `TestNonGoTextScanIgnoresUnlistedExtensions`, proves `.md`/`.txt` files
+  carrying the same words are not flagged, protecting the two `SPEC.md`
+  files above from becoming false positives.
+
+  Today, zero `.sql`/`.yaml`/`.yml`/`.json`/`.tmpl` files exist in any of
+  the three service directories, so the new scanner's file count is
+  honestly zero in the real repo; that is logged explicitly in the test
+  output as expected, not silently treated as a pass, and the scanner's
+  ability to catch a real match in these file types is proven separately
+  against the synthetic fixture, not by the real repo's current absence of
+  such files.
+
+  Evasions that still survive after this fix, stated plainly: any file
+  extension not in the checked list (`.csv`, `.txt`, `.proto`, an
+  extensionless file, or any future format), a table name assembled at
+  runtime rather than written as a literal (string concatenation, an
+  environment variable, base64 or otherwise encoded bytes), and the
+  already-stated gap of following an import transitively into
+  `internal/platform` or elsewhere to check whether a called function
+  reads `GROUND_TRUTH` internally under an innocuous name. This fix closes
+  the specific `go:embed`-shaped hole QA found; it does not turn the
+  scanner into a general dependency or data-flow analysis, which was never
+  the intent.
 - 2026-08-24: Guardrail enforcement (retry budgets, contact caps, cooldowns)
   is Postgres-transactional, not Redis-backed, reversing the "retry/cooldown
   counters" clause of the Storage bullet in `AGENTS.md`, which has been

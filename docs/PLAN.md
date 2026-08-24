@@ -373,8 +373,14 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 - [ ] `cost_paise` + EV snapshot persisted per attempt, so net recovered is
       computed from real logged spend, not estimated
       → `ARCHITECTURE.md` §10
-- [ ] Test asserting the Decision Engine has **no** query path to
-      `GROUND_TRUTH`, the integrity rule from `ARCHITECTURE.md` §5a
+- [x] Test asserting the Decision Engine has **no** query path to
+      `GROUND_TRUTH`, the integrity rule from `ARCHITECTURE.md` §5a.
+      Widened to cover all three decision-path services (Decision Engine,
+      Classifier, Executor), since §5a states the rule for "the decision
+      path," not one service. `test/integrity/ground_truth_isolation_test.go`,
+      unit tier, no build tag, parses each service's Go source with
+      `go/parser`/`go/ast` so comments are never matched, only real
+      identifiers and string literals.
 - [ ] Correctness invariant tests over a batch run: zero stopping-rule
       violations, 100% audit trail completeness → `PRD.md` §9, §10
 - [ ] Re-run safety test: replay the same batch twice, confirm identical
