@@ -1,0 +1,546 @@
+# P(recovery) prior table, Tier 1 of the two tier probability model
+# (docs/ARCHITECTURE.md section 5a, docs/PRD.md section 2b).
+#
+# The probability term of:
+#
+#   EV(action) = P(recovery | action, root_cause, attempt_no) * amount_at_risk
+#                - direct_cost(action) - indirect_cost(action)
+#
+# Costs live in `configs/intervention_costs.yaml`. Why these are two files is
+# argued in `configs/README.md`.
+#
+# ===========================================================================
+# READ THIS BEFORE USING A NUMBER FROM THIS FILE. Three definitions are load
+# bearing, and section 5a states none of them. Getting any one wrong makes
+# every EV in the system wrong in a way that will not look wrong.
+# ===========================================================================
+#
+# 1. UNITS ARE INTEGER BASIS POINTS, not floats and not percentages.
+#    10000 bps = 1.0 = certainty. 100 bps = 1%.
+#    Chosen so the money path never touches a float, per
+#    docs/ENGINEERING.md section 8. EV is then computable in pure int64:
+#
+#        ev_paise = (p_bps * amount_paise) / 10000 - direct - indirect
+#
+#    with one integer division at the end. Overflow headroom is ample: a one
+#    crore rupee record is 1e9 paise, and 1e9 * 10000 = 1e13, against an
+#    int64 ceiling near 9.2e18. Use truncating division and accept the sub
+#    paise loss; it is deterministic and it rounds against us, which is the
+#    safe direction for a spend authorisation.
+#
+# 2. THESE ARE INCREMENTAL LIFT, NOT ABSOLUTE RECOVERY RATES.
+#    Each value is the increase in probability that the record ends up paid
+#    that is ATTRIBUTABLE TO TAKING THIS ACTION NOW, over the probability it
+#    would have been paid had we done nothing.
+#
+#    This is forced, not a preference. `NONE` is in the action menu, and
+#    section 5a says both "pick the argmax over allowed actions" and "if
+#    max(EV) <= 0, terminate as ClosedUneconomic". Those two rules agree only
+#    if EV(NONE) is identically 0. If this table held ABSOLUTE probabilities
+#    then P(NONE) would be the passive recovery rate, which is not zero, so
+#    EV(NONE) would be positive for every record, no record would ever be
+#    uneconomic, and on large amounts "do nothing" would beat every real
+#    action. The ClosedUneconomic branch of the state machine would be dead
+#    code. So lift it is.
+#
+#    Practical consequence, and it is the whole reason this design exists:
+#    an overdue B2B invoice has a HIGH absolute recovery rate because many
+#    get paid without any chasing at all. Scoring a reminder against that
+#    absolute rate would credit the agent for money that was arriving anyway.
+#    The lift is much smaller than the absolute rate, and the lift is what
+#    the merchant is actually buying.
+#
+# 3. `attempt_no` IS A PER ACTION KIND ORDINAL, NOT
+#    `INTERVENTION_ATTEMPT.attempt_number`.
+#    Section 5a writes `attempt_no` without saying which counter it means,
+#    and the obvious reading is wrong. `INTERVENTION_ATTEMPT.attempt_number`
+#    is a RECORD GLOBAL sequence: it is what `UNIQUE (record_id,
+#    attempt_number)` is declared on, so it increments across every action
+#    kind alike. Under that reading, a record that received two nudges and is
+#    now considering its FIRST retry would look up "retry, attempt 3" and be
+#    charged a decay it has not earned.
+#
+#    The decay that physically exists is per action kind: the third
+#    re-presentment of the same card, the third message to the same person.
+#    So the scorer must derive the ordinal by counting history:
+#
+#      RETRY               ordinal = (count of prior RETRY attempts) + 1
+#      NUDGE_METHOD_UPDATE ordinal = (count of prior attempts of EITHER
+#      NUDGE_REMINDER                nudge action) + 1
+#      ESCALATE            ordinal = always 1 (Escalated is terminal)
+#      NONE                ordinal = irrelevant, always 0 bps
+#
+#    The two nudge actions SHARE one contact ordinal deliberately. Message
+#    fatigue belongs to the person, not to the template: a customer who has
+#    already had two messages this week is equally tired of the third
+#    whichever wording it carries. Counting them separately would let the
+#    agent send six messages while believing it had sent three of each.
+
+schema_version: 1
+
+# Short keys map one to one onto proto enum values: the proto name with its
+# enum prefix stripped. Nothing may name an action outside
+# `momotaro.common.v1.ActionType` or a bucket outside `RootCauseBucket`.
+enum_mapping:
+  actions:  # proto/common/v1/common.proto, enum ActionType
+    RETRY: ACTION_TYPE_RETRY
+    NUDGE_METHOD_UPDATE: ACTION_TYPE_NUDGE_METHOD_UPDATE
+    NUDGE_REMINDER: ACTION_TYPE_NUDGE_REMINDER
+    ESCALATE: ACTION_TYPE_ESCALATE
+    NONE: ACTION_TYPE_NONE
+  buckets:  # proto/common/v1/common.proto, enum RootCauseBucket
+    TRANSIENT_BANK: ROOT_CAUSE_BUCKET_TRANSIENT_BANK
+    INSUFFICIENT_FUNDS: ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS
+    HARD_DECLINE: ROOT_CAUSE_BUCKET_HARD_DECLINE
+    USER_ACTION_NEEDED: ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED
+    RISK_HOLD: ROOT_CAUSE_BUCKET_RISK_HOLD
+    ABANDONMENT: ROOT_CAUSE_BUCKET_ABANDONMENT
+    OVERDUE: ROOT_CAUSE_BUCKET_OVERDUE
+    UNSPECIFIED: ROOT_CAUSE_BUCKET_UNSPECIFIED
+
+# Any (action, bucket, ordinal) not listed below scores this. Zero, so that
+# running past the deepest modelled attempt makes every action non positive
+# and the record closes as ClosedUneconomic rather than being chased on an
+# extrapolated guess.
+#
+# This is a MODELLING stop, not a compliance stop. It is not a substitute for
+# the hard retry and contact caps that docs/PRD.md section 11 requires and
+# that docs/ARCHITECTURE.md section 17 still lists as an open item needing
+# real NPCI and RBI numbers. Guardrails run BEFORE the scorer and must
+# independently refuse a capped action. If this zero is ever the only thing
+# stopping a fourth retry, the guardrails are broken.
+beyond_listed_attempts_bps: 0
+
+# ---------------------------------------------------------------------------
+# Passive recovery baselines. [ASSUMPTION] throughout.
+#
+# NOT used in the EV formula. Present for exactly one reason: Tier 2.
+#
+# Section 5a says Tier 2 computes "observed rates from this system's own
+# INTERVENTION_ATTEMPT history" and blends them over these priors. But an
+# observed rate derived from that table is an ABSOLUTE conditional rate,
+# successes divided by attempts, whereas this table holds LIFT. Blending one
+# into the other directly is an apples to oranges average that would silently
+# corrupt the priors as volume grows, and it would corrupt them UPWARD, which
+# flatters the agent.
+#
+# Measuring lift properly needs a holdout: a randomised slice of records that
+# get NONE, whose recovery rate is the baseline. Nothing in the design does
+# that today. Until it does, Tier 2 must convert before blending:
+#
+#     observed_lift_bps = max(0, observed_absolute_bps - baseline_bps)
+#
+# using the baseline for that bucket below. That is an approximation, since
+# the baseline is itself assumed rather than measured, and it should be
+# replaced by a real holdout arm before anyone claims these priors are
+# calibrated. Recorded in configs/README.md as required follow up.
+passive_recovery_baseline_bps:
+  TRANSIENT_BANK: 1500      # some rails re-present automatically, some customers retry unprompted
+  INSUFFICIENT_FUNDS: 1200  # salary lands, customer pays unprompted
+  HARD_DECLINE: 300         # rare: customer independently notices and re-pays on a new instrument
+  USER_ACTION_NEEDED: 500
+  RISK_HOLD: 500            # review releases some holds without anyone chasing
+  ABANDONMENT: 800          # a share of abandoned carts return unprompted
+  OVERDUE: 3000             # the big one: B2B invoices frequently get paid with no chasing at all
+  UNSPECIFIED: 500
+
+# ---------------------------------------------------------------------------
+# THE TABLE. Lookup is priors_bps[ACTION][BUCKET] -> ordinal map.
+#
+# A cell is either:
+#   all_attempts: N   applies at every ordinal, used for structural zeros
+# or:
+#   attempt_1..attempt_N   with anything higher taking
+#                          `beyond_listed_attempts_bps`
+# Both forms present in one cell is a validation error.
+#
+# ZEROS ARE EXACT AND DELIBERATE. Two kinds, labelled in every cell:
+#   IMPOSSIBLE  the action physically or contractually cannot produce a
+#               recovery in this bucket. Not "unlikely", not "small".
+#   POLICY      the action might well work and we still assign zero, because
+#               succeeding would be the wrong outcome. Distinguishing these
+#               matters: a POLICY zero is a business rule that a future
+#               reader could otherwise "fix" by putting a plausible number in.
+#
+# CALIBRATION NOTE ON CONSERVATISM. Where published evidence gives a range,
+# these values sit at or below its floor, and they are lift rather than
+# absolute so they are already well under the headline rates vendors publish.
+# A prior table that assumed the agent's own success is precisely the
+# criticism this design exists to defeat, so the bias is deliberately toward
+# under claiming. If the agent is better than this table, Tier 2 will find
+# out from its own outcomes and raise it. That is the safe direction: an
+# understated prior loses a little recoverable revenue, an overstated one
+# spends real money chasing records that were never coming back.
+#
+# INTEGRITY NOTE. docs/ARCHITECTURE.md section 6 illustrates the World
+# Simulator's hidden profiles with concrete numbers ("resolves on retry with
+# 80% probability", "hard decline only resolves if nudged and even then only
+# 15% of the time"). Those are the ANSWER KEY's parameters. They are not used
+# here, and no value below was chosen to match them. Copying them would be
+# the agent grading its own exam by proxy, which is what section 5a's
+# integrity rule exists to prevent, even though those particular figures
+# appear in a public document rather than the sealed GROUND_TRUTH table.
+# Where a number here lands near one of them it is arrival by a different
+# road, and it is a lift rather than an absolute in any case.
+# ---------------------------------------------------------------------------
+priors_bps:
+
+  RETRY:
+    # Non zero for exactly two buckets. That agrees with the Classifier's own
+    # `bucketToAction` table (services/classifier/internal/rules/actions.go),
+    # which recommends RETRY only for TRANSIENT_BANK and INSUFFICIENT_FUNDS.
+    # The two tables were derived independently and are worth keeping in
+    # agreement; a divergence means one of them has a bug.
+
+    TRANSIENT_BANK:
+      # [SOURCED shape, conservative level] The classic recoverable case: the
+      # funds were there and the rail was busy, so a re-presentment is doing
+      # the one thing that can work.
+      # Level: Recurly reports baseline retry logic recovers about 53% of
+      # failed payments and optimised strategies about 71%
+      # (https://recurly.com/blog/failed-payment-recovery-data-based-strategy/,
+      # 30 Apr 2026, network data, no sample size disclosed). Against an
+      # assumed 1500 bps passive baseline that implies 38 to 56 points of
+      # lift for soft declines generally, and a bank timeout should sit at
+      # the favourable end of that. 3000 is set well UNDER it, both for
+      # conservatism and because Indian rails perform worse than the mostly
+      # US and EU books these figures come from: NPCI data reported via
+      # Moneycontrol has UPI Autopay approval falling from about 50% in Jan
+      # 2024 to about 30% in Nov 2025.
+      # Decay shape: roughly 40% of attempt 1 at attempt 2, 17% at attempt 3.
+      # That tracks, slightly more steeply than, the only per attempt
+      # breakdown found (attempt 1 recovers 40-60% of soft declines, attempt
+      # 2 a further 15-25% of what remains, attempt 3 a further 10-15%,
+      # https://www.slickerhq.com/resources/blog/failed-subscription-payment-retry-attempts,
+      # 22 Jun 2026). That source cites only "research from subscription
+      # billing providers" and names nobody, so it is treated as evidence of
+      # SHAPE only and not of level. Corroborating the urgency: Recurly
+      # reports 90% of recovered transactions occur within 10 days of the
+      # failure.
+      attempt_1: 3000
+      attempt_2: 1200
+      attempt_3: 500
+
+    INSUFFICIENT_FUNDS:
+      # [SOURCED shape, conservative level] Recoverable, but markedly less so
+      # than a timeout, and in India less so again. The instrument is valid
+      # and the balance is not there yet, so the entire value of the action
+      # is in its timing: section 5a schedules this to the salary credit
+      # window rather than a fixed backoff, and these numbers assume that
+      # scheduling is working. Retrying an empty account tomorrow is close to
+      # a guaranteed loss and the prior would not justify it.
+      # Level: insufficient funds is reported as the largest single cause of
+      # recurring payment failure at about 53%, attributed to Forrester in
+      # secondary sources; the underlying report could not be located, so
+      # treat the share as directional only. Indian evidence is unusually
+      # concrete and unusually bleak: more than 20 million UPI Autopay
+      # mandates are revoked every month over insufficient customer balances
+      # (https://www.business-standard.com/amp/finance/news/upi-autopay-revocations-hit-20-mn-monthly-over-low-customer-balances-125090700500_1.html,
+      # 7 Sep 2025). 2000 bps of lift is deliberately below the soft decline
+      # evidence for that reason.
+      attempt_1: 2000
+      attempt_2: 1000
+      attempt_3: 400
+
+    HARD_DECLINE:
+      # IMPOSSIBLE. Zero, exactly, at every attempt.
+      # The instrument is expired, blocked or invalid. common.proto states it
+      # outright: "A retry cannot succeed; only a method update can." So does
+      # section 5a: "a retry here is pure cost with zero recovery
+      # probability."
+      # It is also worse than futile, which is worth stating because it makes
+      # the zero robust rather than merely tidy: Visa classes these as
+      # Decline Category 1, "the issuer will never approve", and ANY
+      # reattempt is a rule violation carrying a fee that bills as "VI NEVER
+      # APPROVE REATTEMPT FEE"
+      # (https://usa.visa.com/dam/VCOM/global/support-legal/documents/updates-to-rules-for-declined-transaction-resubmission-and-use-of-authorization-response-codes.pdf,
+      # 1 Oct 2020). Mastercard's equivalent is Merchant Advice Code 03, "do
+      # not try again". So a non zero value here would not merely waste money
+      # on a doomed attempt, it would buy a penalty.
+      all_attempts: 0
+
+    USER_ACTION_NEEDED:
+      # IMPOSSIBLE. The debit cannot authorise until the customer re-auths or
+      # re-registers the mandate. Re-presenting before they act reproduces
+      # the same decline for the same reason. Same logic as HARD_DECLINE: the
+      # blocker is not the timing, it is a missing authorisation, and no
+      # number of attempts creates one.
+      all_attempts: 0
+
+    RISK_HOLD:
+      # POLICY. Never auto-retried, stated twice in the design
+      # (AGENTS.md locked decisions, section 5a's scheduling table: "do not
+      # retry, escalate to human"). A retry around a live fraud review might
+      # genuinely succeed, and that is the problem: a successfully collected
+      # fraudulent payment is a chargeback and a loss dressed as a recovery.
+      # Zero here is a business rule, not an estimate of difficulty.
+      all_attempts: 0
+
+    ABANDONMENT:
+      # IMPOSSIBLE. The customer left before completing checkout, so no
+      # authorisation was ever obtained. There is no prior debit to
+      # re-present. RETRY is not a weak choice here, it is undefined.
+      all_attempts: 0
+
+    OVERDUE:
+      # IMPOSSIBLE as the bucket is defined. common.proto: "Invoice simply
+      # overdue, no technical failure." Nothing failed, so there is nothing
+      # to re-present.
+      # FLAGGED for review: if an OVERDUE record can ever carry a live
+      # mandate that simply has not been presented yet, then presenting it is
+      # a real and possibly good action, and this zero becomes wrong. The
+      # bucket's own definition says otherwise today. Revisit if ingestion
+      # starts attaching instruments to invoice records.
+      all_attempts: 0
+
+    UNSPECIFIED:
+      # POLICY. The zero value of the enum, meaning the classifier could not
+      # determine a cause. It is reachable in practice, not theoretical: the
+      # Classifier maps an unrecognised failure code to UNSPECIFIED with
+      # confidence 0 and recommends ESCALATE. Spending money re-presenting a
+      # debit whose failure we do not understand is the definition of
+      # chasing blind. A human should look at it instead.
+      all_attempts: 0
+
+  NUDGE_METHOD_UPDATE:
+    # Asking the customer to fix the instrument. Delivered over WhatsApp per
+    # the channel policy in configs/intervention_costs.yaml.
+    # General level anchor for all customer contact actions: Baremetrics
+    # reports per touchpoint dunning recovery of 11% to 14%, with the day of
+    # failure message the strongest single touch at 13.25%
+    # (https://baremetrics.com/blog/improve-dunning-recovery-rate). Those are
+    # ABSOLUTE recovery rates on an email channel, so lift values here sit
+    # below them. Also relevant to the split between this action and RETRY:
+    # roughly half of all payment recovery comes from retries alone and the
+    # other half requires customer action such as a card update, per the same
+    # source. Confidence medium: figures taken from search snippets, the page
+    # was not fetched directly.
+
+    TRANSIENT_BANK:
+      # POLICY. The instrument is fine; the rail was busy. Asking a customer
+      # to replace a working card is a pointless demand that spends a
+      # contact, spends channel goodwill, and invites them to churn the very
+      # instrument we want to keep on file. RETRY is the answer here.
+      all_attempts: 0
+
+    INSUFFICIENT_FUNDS:
+      # Small but genuinely non zero: an empty account today does not mean an
+      # empty wallet, and some customers will pay from another card or a UPI
+      # handle if asked. Kept well below NUDGE_REMINDER for this bucket,
+      # since the useful message is "top up and we will retry", not "your
+      # payment method is broken", which it is not.
+      attempt_1: 500
+      attempt_2: 200
+      attempt_3: 100
+
+    HARD_DECLINE:
+      # This is the action this bucket exists for, and the only thing that
+      # can work. Level derived from the Baremetrics per touchpoint band of
+      # 11-14% absolute against an assumed 300 bps passive baseline, giving
+      # roughly 8 to 11 points, then set at 1500 because a hard decline
+      # message is far better targeted than a generic dunning email: the
+      # customer genuinely cannot pay until they act, so the ask is
+      # unambiguous and the alternative is losing the service.
+      # Deliberately NOT set to match section 6's illustrative 15% ground
+      # truth figure. This is 15 points of LIFT over a 3% baseline, implying
+      # about 18% absolute, and it was reached from the dunning evidence
+      # above rather than from the simulator's parameters.
+      attempt_1: 1500
+      attempt_2: 600
+      attempt_3: 250
+
+    USER_ACTION_NEEDED:
+      # Also the right action, and slightly stronger than HARD_DECLINE: the
+      # customer usually still wants the service and the required step is
+      # procedural (re-auth, re-register the mandate) rather than requiring
+      # them to obtain a new instrument. Under RBI's e-mandate framework
+      # (RBI/DPSS/2026-27/396, 21 Apr 2026,
+      # https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=13374)
+      # recurring debits may be authorised without additional factor
+      # authentication only "up to 15,000/- per transaction", and above that
+      # "shall be subject to AFA" on every debit. The 1,00,000 limit is NOT
+      # general: it covers only insurance premiums, mutual fund subscriptions
+      # and credit card bills. So for a generic merchant every record over
+      # 15,000 rupees structurally lands in this bucket on every cycle, the
+      # ask is one the customer is used to completing, and the amounts
+      # involved are by definition the large ones. Both facts push this cell
+      # up, and it is the highest nudge value in the table for that reason.
+      attempt_1: 1600
+      attempt_2: 700
+      attempt_3: 250
+
+    RISK_HOLD:
+      # POLICY. Same reasoning as RETRY against RISK_HOLD, with an extra
+      # edge: prompting someone under active fraud review to supply a
+      # different payment instrument is close to coaching them around the
+      # control. Never act around a risk decision.
+      all_attempts: 0
+
+    ABANDONMENT:
+      # IMPOSSIBLE as an ask. Nothing failed and no method needs updating;
+      # the customer simply left. A "fix your payment method" message to
+      # someone whose payment method is fine is incoherent and would read as
+      # a phishing attempt. NUDGE_REMINDER is the action here.
+      all_attempts: 0
+
+    OVERDUE:
+      # IMPOSSIBLE as an ask, same reasoning: no technical failure occurred,
+      # so no instrument needs fixing.
+      all_attempts: 0
+
+    UNSPECIFIED:
+      # POLICY. Do not tell a customer their payment method is broken when we
+      # cannot say what went wrong. If we are mistaken we have caused churn
+      # on a working instrument for no reason.
+      all_attempts: 0
+
+  NUDGE_REMINDER:
+    # A plain reminder to complete or pay. Delivered over SMS per the channel
+    # policy, which configs/intervention_costs.yaml recommends changing since
+    # WhatsApp is both cheaper and better read in India.
+
+    TRANSIENT_BANK:
+      # Small and non zero, and non zero on purpose. This combination is
+      # dominated by RETRY and the scorer will pick RETRY, but "we told the
+      # customer their payment failed and some of them went and paid" is a
+      # real effect, not an impossible one. It gets a small number rather
+      # than a zero precisely so the difference between "structurally
+      # impossible" and "possible but a poor choice" stays visible in this
+      # file. Collapsing that distinction is how a zero stops meaning
+      # anything.
+      attempt_1: 400
+      attempt_2: 150
+      attempt_3: 50
+
+    INSUFFICIENT_FUNDS:
+      # The strongest nudge case among the failure buckets: the ask is
+      # concrete, cheap to act on, and inside the customer's control ("keep a
+      # balance, we will try again"). Paired with salary window retry timing
+      # this is the workhorse combination for the largest failure bucket in
+      # the book.
+      attempt_1: 800
+      attempt_2: 350
+      attempt_3: 120
+
+    HARD_DECLINE:
+      # Possible, and strictly dominated by NUDGE_METHOD_UPDATE, which is
+      # both cheaper and far more effective here. Non zero because a customer
+      # told "your payment did not go through" may work out for themselves
+      # that the card is dead and pay another way. Kept at a fifth of the
+      # method update value so the scorer never prefers it.
+      attempt_1: 300
+      attempt_2: 100
+      attempt_3: 40
+
+    USER_ACTION_NEEDED:
+      # Non zero but well under NUDGE_METHOD_UPDATE. The customer must
+      # perform a specific step, and a message that does not name that step
+      # mostly generates confusion and a support contact, which costs more
+      # than the nudge saved.
+      attempt_1: 500
+      attempt_2: 200
+      attempt_3: 60
+
+    RISK_HOLD:
+      # POLICY. Do not contact a customer about a payment held for fraud
+      # review before a human has looked at it. Consistent with every other
+      # RISK_HOLD cell.
+      all_attempts: 0
+
+    ABANDONMENT:
+      # The action this bucket exists for. Level held down hard because the
+      # passive baseline is already 800 bps: a meaningful share of abandoned
+      # carts come back with no prompting at all, and crediting the reminder
+      # with those returns is exactly the self flattery this table is built
+      # to avoid. 900 bps of lift over that baseline implies about 17%
+      # absolute, which is at the sober end of published cart recovery
+      # claims.
+      attempt_1: 900
+      attempt_2: 350
+      attempt_3: 120
+
+    OVERDUE:
+      # The action this bucket exists for, and the clearest illustration of
+      # why this table holds lift. The passive baseline here is 3000 bps, the
+      # highest in the file, because B2B invoices routinely get paid without
+      # anyone chasing. An absolute rate would credit the agent with all of
+      # that. 1200 bps of lift implies about 42% absolute, of which only the
+      # 12 points are ours.
+      attempt_1: 1200
+      attempt_2: 500
+      attempt_3: 180
+
+    UNSPECIFIED:
+      # POLICY. A reminder is the most harmless action available and it still
+      # gets a zero, because we cannot compose an honest message about a
+      # failure we have not diagnosed, and section 5b forbids the model
+      # inventing the substance of one. Escalate instead.
+      all_attempts: 0
+
+  ESCALATE:
+    # Hand to a human. Non zero in every bucket, because a competent human
+    # can attempt something almost anywhere, and expensive everywhere at 1800
+    # paise, so the EV comparison turns almost entirely on amount_at_risk.
+    # That is the intended behaviour and it is the clearest demonstration of
+    # the whole thesis: the same record is worth a human's attention at 5000
+    # rupees and is not at 50.
+    #
+    # ALL VALUES [ASSUMPTION]. No published data on human collections
+    # effectiveness by decline reason was found, and I looked. The relative
+    # ordering is reasoned: a human is worth most where the blocker is
+    # conversational (an overdue B2B invoice, a customer who must be walked
+    # through re-auth, a risk hold needing judgement) and worth least where
+    # the blocker is mechanical and a machine has already tried the only
+    # thing that works (a bank timeout).
+    #
+    # Only ordinal 1 is listed. `Escalated` is a terminal state in section 7,
+    # so a second escalation of the same record is unreachable; the fall
+    # through to `beyond_listed_attempts_bps` of 0 is a safety net, not a
+    # modelled decay.
+    #
+    # REACHABILITY WARNING. Section 7's state machine has no
+    # `Scoring -> Escalated` edge at all: Scoring goes only to
+    # RetryScheduled, NudgeScheduled or ClosedUneconomic. So a scorer that
+    # faithfully implements section 5a can select ESCALATE as the argmax and
+    # then have nowhere to put the record. These priors are correct and
+    # currently mostly unreachable. Raised in configs/README.md.
+
+    TRANSIENT_BANK:
+      attempt_1: 800   # a human adds little a retry has not already tried
+    INSUFFICIENT_FUNDS:
+      attempt_1: 900   # a human can negotiate timing, but cannot create a balance
+    HARD_DECLINE:
+      attempt_1: 1900  # a call can obtain a new instrument where a message went unread
+    USER_ACTION_NEEDED:
+      attempt_1: 1800  # a human can walk the customer through the exact step
+    RISK_HOLD:
+      attempt_1: 2000  # the only permitted action, and review releases genuine false positives
+    ABANDONMENT:
+      attempt_1: 600   # little to discuss, and almost never worth 2300 paise
+    OVERDUE:
+      attempt_1: 1800  # a human chasing a B2B invoice is genuinely effective
+    UNSPECIFIED:
+      attempt_1: 1000  # a human can at least establish what actually happened
+
+  NONE:
+    # Zero everywhere, at every bucket and every ordinal, by definition.
+    #
+    # NONE is the numeraire. Because its costs are zero in
+    # configs/intervention_costs.yaml and its lift is zero here, EV(NONE) is
+    # identically 0, which is what makes section 5a's argmax rule and its
+    # "max(EV) <= 0 means ClosedUneconomic" rule the same statement instead
+    # of two rules that can disagree.
+    #
+    # This is NOT a claim that untouched records never get paid. Many do, and
+    # that rate is exactly `passive_recovery_baseline_bps` above. It is the
+    # claim that doing nothing has no lift over doing nothing, which is true
+    # by construction. Any non zero value here breaks the identity and kills
+    # the ClosedUneconomic branch.
+    TRANSIENT_BANK:     { all_attempts: 0 }
+    INSUFFICIENT_FUNDS: { all_attempts: 0 }
+    HARD_DECLINE:       { all_attempts: 0 }
+    USER_ACTION_NEEDED: { all_attempts: 0 }
+    RISK_HOLD:          { all_attempts: 0 }
+    ABANDONMENT:        { all_attempts: 0 }
+    OVERDUE:            { all_attempts: 0 }
+    UNSPECIFIED:        { all_attempts: 0 }
