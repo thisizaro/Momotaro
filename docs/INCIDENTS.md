@@ -615,3 +615,47 @@ since the harness was written and would have surfaced eventually, most likely
 during a demo rehearsal. Also worth noting: config validation turned a silent
 port clash into a loud refusal, which is the only reason this was diagnosable
 at all.
+
+### 2026-08-25, flaky test: kafkax.TestProducerSetsKeyToRecordID — UNRESOLVED, needs pickup
+**Status: open.** This entry is a report only, no fix or test change has been
+applied. Whoever picks up Phase 2/3 Kafka work should claim it, write the
+regression test first per `ENGINEERING.md` §1, then the fix.
+
+**What happened:** During a full verification run of the merged main branch
+(`go test -race -tags='integration e2e' ./...` against a live docker-compose
+stack), `TestProducerSetsKeyToRecordID` failed once:
+```
+Publish: publish to kafkax-test-<id> (key=<uuid>): UNKNOWN_TOPIC_OR_PARTITION:
+This server does not host this topic-partition.
+```
+Every other package in the same run passed, including the e2e suite. Rerun
+three times in isolation immediately after (`-run TestProducerSetsKeyToRecordID`),
+it passed all three times. Flaky, not consistently broken.
+
+**Suspected root cause, unconfirmed:** the test calls `ensureTopic` (an admin
+`CreateTopic` call) and then immediately constructs a producer and publishes,
+with no wait for the new topic's metadata/leadership to propagate. This is a
+known Kafka timing race, producing right after creating a topic can outrun
+the broker's own metadata cache, and is more visible on a single-broker KRaft
+setup like this repo's `docker-compose.yml` than it would be on a
+multi-broker cluster. Same shape of bug as this file's
+`freePort`/`TestConcurrentClassifierCalls` entry: a resource assumed ready
+the instant its creation call returns.
+
+**Not fixed, deliberately.** Whoever addresses it should decide between:
+- retrying `Publish` on `UNKNOWN_TOPIC_OR_PARTITION` a bounded number of times
+  inside the test (or inside `kafkax.Producer` itself, if the same race could
+  hit production code path on a freshly-created topic), or
+- having `ensureTopic` poll until the topic is visible via metadata before
+  returning, rather than returning as soon as the admin call acknowledges.
+
+The second option is more likely correct for production `kafkax` code too,
+not just the test, since anything that creates a topic and immediately
+produces to it (the walking skeleton does exactly this shape at startup) is
+theoretically exposed to the same race, just not yet observed there.
+
+**Why this is logged rather than fixed on sight:** a flaky infra test is
+exactly the kind of thing worth a deliberate regression test before a fix,
+not a quick patch, per `ENGINEERING.md` §1 ("every bug you fix gets a
+regression test first"). Logging it here so it is not lost, rather than
+fixing it silently mid-verification.
