@@ -38,21 +38,31 @@ func (s *store) recordStateExists(ctx context.Context, recordID string) (bool, e
 // record and its NEW -> state audit entry, in one transaction
 // (docs/ARCHITECTURE.md section 10a). attempt_count starts at 0: scheduling
 // is not itself an execution attempt.
-func (s *store) scheduleNew(ctx context.Context, evt RawEvent, bucket commonv1.RootCauseBucket, state commonv1.RecordState, pendingAction commonv1.ActionType, reason, rationale string, source commonv1.Source, dueAt *time.Time, now time.Time) error {
+func (s *store) scheduleNew(ctx context.Context, evt RawEvent, bucket commonv1.RootCauseBucket, steps []stateStep, pendingAction commonv1.ActionType, rationale string, source commonv1.Source, dueAt *time.Time, now time.Time) error {
+	if len(steps) == 0 {
+		return fmt.Errorf("schedule %s: no transitions to record", evt.RecordID)
+	}
+	final := steps[len(steps)-1].To
+
 	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO record_state (record_id, current_state, attempt_count, root_cause_bucket, pending_action, due_at, last_action_at, updated_at)
 			VALUES ($1, $2, 0, $3, $4, $5, $6, $6)`,
-			evt.RecordID, state.String(), bucket.String(), nullIfUnspecified(pendingAction), dueAt, now,
+			evt.RecordID, final.String(), bucket.String(), nullIfUnspecified(pendingAction), dueAt, now,
 		); err != nil {
 			return fmt.Errorf("insert record_state: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, rationale, source, actor, attempt_number)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'system', 0)`,
-			evt.RecordID, evt.BatchID, now, commonv1.RecordState_RECORD_STATE_NEW.String(), state.String(), reason, rationale, source.String(),
-		); err != nil {
-			return fmt.Errorf("insert audit_entry: %w", err)
+		// Every step gets its own audit row, in the same transaction as the
+		// state change, so there is no window in which a record moved without
+		// a record of why (docs/ARCHITECTURE.md section 10a).
+		for _, step := range steps {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, rationale, source, actor, attempt_number)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'system', 0)`,
+				evt.RecordID, evt.BatchID, now, step.From.String(), step.To.String(), step.Reason, rationale, source.String(),
+			); err != nil {
+				return fmt.Errorf("insert audit_entry %s -> %s: %w", step.From, step.To, err)
+			}
 		}
 		return nil
 	})

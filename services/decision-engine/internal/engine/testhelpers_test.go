@@ -6,9 +6,13 @@
 package engine
 
 import (
+	"path/filepath"
+	"runtime"
+
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -179,11 +183,38 @@ func retryClassifier() *fakeClassifier {
 // recommending action, for tests that only care about the resulting state
 // transition.
 func classifyResponseWithAction(action commonv1.ActionType) *classifierv1.ClassifyResponse {
+	return classifyResponseFor(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, action)
+}
+
+// classifyResponseFor builds a classification with an explicit bucket. The
+// bucket matters more than the recommendation now: the scorer prices actions
+// from the prior table, which is keyed on it, so a test that wants a specific
+// action chosen has to put the record in a bucket where that action actually
+// wins on expected value.
+func classifyResponseFor(bucket commonv1.RootCauseBucket, action commonv1.ActionType) *classifierv1.ClassifyResponse {
 	return &classifierv1.ClassifyResponse{
-		Bucket:            commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK,
+		Bucket:            bucket,
 		RecommendedAction: action,
 		Rationale:         "test rationale",
 		Confidence:        1,
 		Source:            commonv1.Source_SOURCE_RULES_FALLBACK,
 	}
+}
+
+// testEconomics loads the real checked-in cost model and priors rather than a
+// fixture. The scorer's job is to price actions using those exact numbers, so
+// a fixture here would test the arithmetic while leaving the thing that
+// actually decides in production unexercised.
+func testEconomics(t *testing.T) *economics.Model {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
+	m, err := economics.Load(filepath.Join(root, "configs", "intervention_costs.yaml"), filepath.Join(root, "configs", "recovery_priors.yaml"))
+	if err != nil {
+		t.Fatalf("load economics config: %v", err)
+	}
+	return m
 }

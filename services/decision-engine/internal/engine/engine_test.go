@@ -32,7 +32,7 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := retryClassifier()
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -66,8 +66,11 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_entry WHERE record_id=$1`, recordID).Scan(&entryCount); err != nil {
 		t.Fatalf("query audit_entry: %v", err)
 	}
-	if entryCount != 1 {
-		t.Errorf("audit_entry rows = %d, want 1", entryCount)
+	// Two, not one: a scheduled record passes through the economics gate, so
+	// its trail is New -> Scoring then Scoring -> RetryScheduled. Both rows are
+	// written in the same transaction as the state change.
+	if entryCount != 2 {
+		t.Errorf("audit_entry rows = %d, want 2 (New -> Scoring, Scoring -> RetryScheduled)", entryCount)
 	}
 	if classifier.calls != 1 {
 		t.Errorf("classifier called %d times, want 1", classifier.calls)
@@ -80,8 +83,11 @@ func TestHandleMessageSchedulesNudge(t *testing.T) {
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
-	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	// A hard decline is the bucket where a nudge genuinely wins: a retry
+	// against an expired instrument has zero probability and cannot pay for
+	// itself, while a method-update nudge is the only thing that can work.
+	classifier := &fakeClassifier{resp: classifyResponseFor(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE, commonv1.ActionType_ACTION_TYPE_NUDGE_METHOD_UPDATE)}
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_CHECKOUT", AmountPaise: 5000, FailureCode: "ABANDONED"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -95,8 +101,8 @@ func TestHandleMessageSchedulesNudge(t *testing.T) {
 	if state != commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED.String() {
 		t.Errorf("current_state = %q, want NUDGE_SCHEDULED", state)
 	}
-	if pendingAction != commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER.String() {
-		t.Errorf("pending_action = %q, want ACTION_TYPE_NUDGE_REMINDER", pendingAction)
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_NUDGE_METHOD_UPDATE.String() {
+		t.Errorf("pending_action = %q, want ACTION_TYPE_NUDGE_METHOD_UPDATE", pendingAction)
 	}
 }
 
@@ -107,7 +113,7 @@ func TestHandleMessageEscalatesOnExplicitEscalateAction(t *testing.T) {
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "RISK_HOLD"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -147,7 +153,7 @@ func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 	}
 
 	classifier := retryClassifier()
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -169,7 +175,7 @@ func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 func TestHandleMessageDeadLettersMalformedPayload(t *testing.T) {
 	pool := testPool(t)
 	dlqProducer, dlqTopic := testDLQ(t)
-	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	raw := "not json"
 	msg := kafkax.Message{Topic: "raw.events", Key: "bad-key", Value: []byte(raw)}
@@ -193,7 +199,7 @@ func TestHandleMessageDeadLettersAfterClassifyRetriesExhausted(t *testing.T) {
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{err: errors.New("classifier unavailable")}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -228,7 +234,7 @@ func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) 
 	classifier.err = errors.New("transient")
 	classifier.failN = maxClassifyAttempts - 1 // fails all but the last attempt
 
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
 		t.Fatalf("HandleMessage: %v", err)
@@ -250,10 +256,84 @@ func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) 
 func TestHandleMessageRejectsMalformedPayloadIsNeverFatal(t *testing.T) {
 	pool := testPool(t)
 	dlqProducer, dlqTopic := testDLQ(t)
-	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := kafkax.Message{Topic: "raw.events", Key: "bad", Value: []byte("{not valid json")}
 	if err := e.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatalf("HandleMessage: %v, want nil", err)
+	}
+}
+
+// The heart of docs/ARCHITECTURE.md section 5a: the Classifier proposes, but
+// economics decides. Here the Classifier asks for a reminder on a transient
+// bank failure worth 500 rupees, and the scorer overrides it with a retry,
+// because a retry buys 3000 bps of lift against a reminder's 400.
+//
+// This is the concrete answer to "does the model decide how money is spent?".
+// It does not. It says what went wrong, and the numbers do the rest.
+func TestScorerOverridesTheClassifierRecommendationOnExpectedValue(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	batchID, recordID := seedRecord(ctx, t, pool)
+
+	classifier := &fakeClassifier{resp: classifyResponseFor(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER)}
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+
+	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 50000, FailureCode: "BANK_TIMEOUT"})
+	if err := e.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	var pendingAction string
+	if err := pool.QueryRow(ctx, `SELECT pending_action FROM record_state WHERE record_id=$1`, recordID).Scan(&pendingAction); err != nil {
+		t.Fatalf("query record_state: %v", err)
+	}
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_RETRY.String() {
+		t.Errorf("pending_action = %q, want ACTION_TYPE_RETRY: the scorer must override a lower-EV recommendation", pendingAction)
+	}
+}
+
+// Every record that reaches the economics gate passes THROUGH Scoring, so the
+// trail replays the state diagram rather than summarising it.
+func TestScoredRecordsRecordTheScoringHopInTheTrail(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	batchID, recordID := seedRecord(ctx, t, pool)
+
+	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_RETRY)}
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+
+	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 50000, FailureCode: "BANK_TIMEOUT"})
+	if err := e.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `SELECT from_state, to_state FROM audit_entry WHERE record_id=$1 ORDER BY id`, recordID)
+	if err != nil {
+		t.Fatalf("query audit_entry: %v", err)
+	}
+	defer rows.Close()
+
+	var got [][2]string
+	for rows.Next() {
+		var from, to string
+		if err := rows.Scan(&from, &to); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, [2]string{from, to})
+	}
+	want := [][2]string{
+		{commonv1.RecordState_RECORD_STATE_NEW.String(), commonv1.RecordState_RECORD_STATE_SCORING.String()},
+		{commonv1.RecordState_RECORD_STATE_SCORING.String(), commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String()},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("trail = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("trail[%d] = %v, want %v", i, got[i], want[i])
+		}
 	}
 }

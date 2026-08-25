@@ -33,6 +33,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,14 +82,49 @@ func buildBinary(t *testing.T, root, dir, name string) string {
 // freePort asks the OS for an unused TCP port, then releases it. There is a
 // small unavoidable race until the child process binds it, standard for
 // this kind of test.
+// issuedPorts remembers every port freePort has handed out in this process.
+//
+// Asking the kernel for :0 and immediately closing the listener leaves the
+// port genuinely free, so a later call can be given the SAME one. A stack
+// needs thirteen ports, and a service that receives its own metrics port for
+// gRPC refuses to start with "GRPC_PORT and METRICS_PORT must differ", which
+// then surfaces as an unrelated-looking readiness timeout. That collision
+// really happened in CI (docs/INCIDENTS.md).
+var (
+	issuedPortsMu sync.Mutex
+	issuedPorts   = map[int]bool{}
+)
+
 func freePort(t *testing.T) int {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("allocate free port: %v", err)
+
+	issuedPortsMu.Lock()
+	defer issuedPortsMu.Unlock()
+
+	// Hold every listener until a fresh port appears, so the kernel cannot
+	// offer the same one twice within this attempt, then release them all.
+	var held []net.Listener
+	defer func() {
+		for _, lis := range held {
+			lis.Close()
+		}
+	}()
+
+	for attempt := 0; attempt < 64; attempt++ {
+		lis, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("allocate free port: %v", err)
+		}
+		held = append(held, lis)
+
+		port := lis.Addr().(*net.TCPAddr).Port
+		if !issuedPorts[port] {
+			issuedPorts[port] = true
+			return port
+		}
 	}
-	defer lis.Close()
-	return lis.Addr().(*net.TCPAddr).Port
+	t.Fatal("could not find an unused port in 64 attempts")
+	return 0
 }
 
 // process wraps a running service subprocess.
@@ -315,15 +351,21 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 	if !auditResp.GetTrailComplete() {
 		t.Error("audit TrailComplete = false")
 	}
-	// Three transitions now, not one: NEW -> RETRY_SCHEDULED (classify),
+	// Four transitions now: NEW -> SCORING (classified, guardrails applied),
+	// SCORING -> RETRY_SCHEDULED (the economics gate chose a retry),
 	// RETRY_SCHEDULED -> RETRYING (the scheduler claiming the due record),
 	// RETRYING -> RECOVERED (the execute outcome). Every transition is its
-	// own AUDIT_ENTRY row by design (docs/ARCHITECTURE.md section 7), the
-	// walking skeleton's single collapsed step was the Phase 1 depth work's
-	// starting point, not the final shape.
+	// own AUDIT_ENTRY row by design (docs/ARCHITECTURE.md section 7), so the
+	// trail reads as a replay of the state diagram rather than a summary of
+	// where the record ended up. The walking skeleton's single collapsed step
+	// was the starting point, not the final shape, and the Scoring hop is the
+	// Phase 2 economics gate every record now passes through.
 	entries := auditResp.GetEntries()
-	if len(entries) != 3 {
-		t.Fatalf("audit entries = %d, want 3 (classify, claim, outcome)", len(entries))
+	if len(entries) != 4 {
+		t.Fatalf("audit entries = %d, want 4 (classify, score, claim, outcome)", len(entries))
+	}
+	if got := entries[1].GetFromState(); got != commonv1.RecordState_RECORD_STATE_SCORING {
+		t.Errorf("entry[1] FromState = %v, want SCORING: every record passes through the economics gate", got)
 	}
 
 	classify := entries[0]

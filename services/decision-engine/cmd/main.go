@@ -26,6 +26,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/engine"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -61,6 +62,11 @@ type serviceConfig struct {
 	// mirrors NPCI-style mandate debit limits. The two durations are scaled
 	// by DEMO_TIME_SCALE like every other wall-clock wait, because a 7 day
 	// recovery window would otherwise never close inside a demo.
+	// Paths to the checked-in economics config. Files rather than compiled-in
+	// constants so a judge can read and argue with the numbers.
+	InterventionCostsPath string
+	RecoveryPriorsPath    string
+
 	MaxRetries      int
 	MaxContacts     int
 	ContactCooldown time.Duration
@@ -93,6 +99,9 @@ func loadConfig() (serviceConfig, error) {
 		RetryDelay:     l.Duration("RETRY_DELAY", 30*time.Second),
 		NudgeDelay:     l.Duration("NUDGE_DELAY", 30*time.Second),
 		PollInterval:   l.Duration("SCHEDULER_POLL_INTERVAL", 2*time.Second),
+
+		InterventionCostsPath: l.StrDefault("INTERVENTION_COSTS_PATH", "configs/intervention_costs.yaml"),
+		RecoveryPriorsPath:    l.StrDefault("RECOVERY_PRIORS_PATH", "configs/recovery_priors.yaml"),
 
 		MaxRetries:      l.Int("MAX_RETRIES", 3),
 		MaxContacts:     l.Int("MAX_CONTACTS", 3),
@@ -169,6 +178,17 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	// Scale applies DEMO_TIME_SCALE (docs/ARCHITECTURE.md section 17): every
 	// wall-clock wait in the system compresses through this one knob, and
 	// these Phase 1 fixed delays are wall-clock waits like any other.
+	// Loaded before anything starts consuming: a Decision Engine that cannot
+	// price its actions must not run at all, because the failure mode is
+	// silent. Every action would score zero and every record would close as
+	// uneconomic, which looks exactly like a healthy agent that has decided
+	// nothing is ever worth doing.
+	model, err := economics.Load(cfg.InterventionCostsPath, cfg.RecoveryPriorsPath)
+	if err != nil {
+		return fmt.Errorf("load economics config: %w", err)
+	}
+	log.Info("economics config loaded", "costs", cfg.InterventionCostsPath, "priors", cfg.RecoveryPriorsPath)
+
 	engCfg := engine.Config{
 		CallTimeout: cfg.CallTimeout,
 		RetryDelay:  cfg.Scale(cfg.RetryDelay),
@@ -179,7 +199,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	eng := engine.New(pool,
 		classifierv1.NewClassifierServiceClient(classifierConn),
 		executorv1.NewExecutorServiceClient(executorConn),
-		dlqProducer, clock.New(), engCfg)
+		dlqProducer, clock.New(), model, engCfg)
 
 	schedCfg := engine.SchedulerConfig{CallTimeout: cfg.CallTimeout, PollInterval: cfg.Scale(cfg.PollInterval), DLQTopic: cfg.DLQTopic}
 	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), schedCfg)

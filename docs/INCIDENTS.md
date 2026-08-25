@@ -581,3 +581,37 @@ compatible change that is not a behaviour-compatible one. Every existing caller
 silently opts into the zero value, so for anything whose zero value is
 meaningful, the new field needs validation in the same change that introduces
 it, not later.
+
+## 2026-08-25: two services handed the same port by the e2e harness
+
+**What broke.** `TestSmokeBatchReachesExpectedTerminalStates` failed in CI with
+a readiness timeout, `waiting for 127.0.0.1:45671: context deadline exceeded`.
+The real cause was three lines earlier in the captured output:
+`executor ... "invalid configuration: GRPC_PORT and METRICS_PORT must differ,
+both are 45671"`.
+
+**Why.** `freePort` asked the kernel for `127.0.0.1:0`, read the assigned port,
+and closed the listener before returning. That leaves the port genuinely free,
+so a later call can be handed the same one. A stack needs thirteen ports, so
+the chance of a collision is not small. The Executor received its own metrics
+port for gRPC, refused to start (correctly, its config validation is doing its
+job), and the harness then reported the readiness timeout rather than the
+refusal.
+
+**Why it was easy to misread.** The visible failure named a port and a
+timeout, which looks like a slow service or a busy CI runner. Nothing in it
+points at port allocation, and it appeared in the same CI run as two genuine,
+expected failures from the economics scorer landing, so the obvious first
+reading was that the scorer had broken the pipeline. It had not. Two of the
+three failures were real, this one was pre-existing and unrelated.
+
+**Fixed by** having `freePort` remember every port it has issued in the
+process and hold each candidate listener open until a fresh port appears, so
+the kernel cannot offer the same one twice inside one call.
+
+**What to take from it.** A test helper that returns a resource it has already
+released is handing out a promise it cannot keep. This one had been latent
+since the harness was written and would have surfaced eventually, most likely
+during a demo rehearsal. Also worth noting: config validation turned a silent
+port clash into a loud refusal, which is the only reason this was diagnosable
+at all.
