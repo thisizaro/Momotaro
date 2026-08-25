@@ -66,8 +66,11 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_entry WHERE record_id=$1`, recordID).Scan(&entryCount); err != nil {
 		t.Fatalf("query audit_entry: %v", err)
 	}
-	if entryCount != 1 {
-		t.Errorf("audit_entry rows = %d, want 1", entryCount)
+	// Two, not one: a scheduled record passes through the economics gate, so
+	// its trail is New -> Scoring then Scoring -> RetryScheduled. Both rows are
+	// written in the same transaction as the state change.
+	if entryCount != 2 {
+		t.Errorf("audit_entry rows = %d, want 2 (New -> Scoring, Scoring -> RetryScheduled)", entryCount)
 	}
 	if classifier.calls != 1 {
 		t.Errorf("classifier called %d times, want 1", classifier.calls)

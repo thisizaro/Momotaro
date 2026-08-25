@@ -351,15 +351,21 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 	if !auditResp.GetTrailComplete() {
 		t.Error("audit TrailComplete = false")
 	}
-	// Three transitions now, not one: NEW -> RETRY_SCHEDULED (classify),
+	// Four transitions now: NEW -> SCORING (classified, guardrails applied),
+	// SCORING -> RETRY_SCHEDULED (the economics gate chose a retry),
 	// RETRY_SCHEDULED -> RETRYING (the scheduler claiming the due record),
 	// RETRYING -> RECOVERED (the execute outcome). Every transition is its
-	// own AUDIT_ENTRY row by design (docs/ARCHITECTURE.md section 7), the
-	// walking skeleton's single collapsed step was the Phase 1 depth work's
-	// starting point, not the final shape.
+	// own AUDIT_ENTRY row by design (docs/ARCHITECTURE.md section 7), so the
+	// trail reads as a replay of the state diagram rather than a summary of
+	// where the record ended up. The walking skeleton's single collapsed step
+	// was the starting point, not the final shape, and the Scoring hop is the
+	// Phase 2 economics gate every record now passes through.
 	entries := auditResp.GetEntries()
-	if len(entries) != 3 {
-		t.Fatalf("audit entries = %d, want 3 (classify, claim, outcome)", len(entries))
+	if len(entries) != 4 {
+		t.Fatalf("audit entries = %d, want 4 (classify, score, claim, outcome)", len(entries))
+	}
+	if got := entries[1].GetFromState(); got != commonv1.RecordState_RECORD_STATE_SCORING {
+		t.Errorf("entry[1] FromState = %v, want SCORING: every record passes through the economics gate", got)
 	}
 
 	classify := entries[0]

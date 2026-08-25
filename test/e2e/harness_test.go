@@ -17,6 +17,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -115,6 +116,14 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 		// Short and isolated: production's real cause-aware timing
 		// (ARCHITECTURE.md section 5a) is Phase 2 work, and Phase 1's fixed
 		// delay defaults to 30s, which is not under pipelineWait.
+		// Absolute paths: the binaries run from a temp directory, so the
+		// service's default relative path finds no configs/ and the Decision
+		// Engine refuses to start. It is right to refuse (an engine that
+		// cannot price its actions would close every record as uneconomic
+		// while looking healthy), so the harness supplies real paths rather
+		// than the service being made lenient.
+		"INTERVENTION_COSTS_PATH": filepath.Join(root, "configs", "intervention_costs.yaml"),
+		"RECOVERY_PRIORS_PATH":    filepath.Join(root, "configs", "recovery_priors.yaml"),
 		"RETRY_DELAY":             retryDelay,
 		"NUDGE_DELAY":             retryDelay,
 		"SCHEDULER_POLL_INTERVAL": "300ms",
