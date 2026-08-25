@@ -129,7 +129,7 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 
 	steps, pendingAction, score := e.decide(classifyResp, history, evt.AmountPaise, now)
 	final := steps[len(steps)-1].To
-	dueAt := e.dueAtFor(final, now)
+	dueAt := dueAtFor(final, e.cfg.RetryDelay, e.cfg.NudgeDelay, now)
 
 	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), dueAt, now); err != nil {
 		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)
@@ -162,52 +162,8 @@ func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHist
 		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, "classifier recommended escalation"), none, economics.Score{}
 	}
 
-	verdict := applyGuardrails(history, e.cfg.Guardrails, now)
-	permitted := permittedActions(verdict)
-
-	candidates := make([]economics.Candidate, 0, len(permitted))
-	for _, action := range permitted {
-		candidates = append(candidates, economics.Candidate{Action: action, AttemptNo: attemptNumberFor(action, history)})
-	}
-
-	best, worthDoing := e.economics.Best(candidates, resp.GetBucket(), amountPaise)
-	if !worthDoing {
-		// ClosedUneconomic is a deliberate decision, not a failure, and it is
-		// reported separately from escalation (docs/PRD.md section 9).
-		return scoringPath(commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC, uneconomicReason(permitted, verdict)), none, economics.Score{}
-	}
-
-	state, pendingAction, _ := decideForAction(best.Action)
-	reason := fmt.Sprintf("best expected value: %s worth %.0f paise (p=%.4f, cost=%d paise, at risk=%d paise)",
-		best.Action, best.EVPaise, best.PRecovery, best.CostPaise, amountPaise)
-	return scoringPath(state, reason), pendingAction, best
-}
-
-// uneconomicReason explains a closure in the audit trail's own words, because
-// "nothing was worth doing" has two very different causes and a finance team
-// reading the trail needs to know which one applied.
-func uneconomicReason(permitted []commonv1.ActionType, v guardrailVerdict) string {
-	if len(permitted) == 0 {
-		return fmt.Sprintf("no action permitted: %s", v.reason(commonv1.ActionType_ACTION_TYPE_RETRY))
-	}
-	return "no permitted action has positive expected value"
-}
-
-// dueAtFor computes when a newly scheduled record should first become
-// actionable, or nil for a state that is not waiting on the scheduler
-// (docs/ARCHITECTURE.md section 7a: due_at is what the scheduler polls).
-func (e *Engine) dueAtFor(state commonv1.RecordState, now time.Time) *time.Time {
-	var delay time.Duration
-	switch state {
-	case commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED:
-		delay = e.cfg.RetryDelay
-	case commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED:
-		delay = e.cfg.NudgeDelay
-	default:
-		return nil
-	}
-	due := now.Add(delay)
-	return &due
+	state, pendingAction, reason, score := scoreAndRoute(e.economics, e.cfg.Guardrails, resp.GetBucket(), history, amountPaise, now)
+	return scoringPath(state, reason), pendingAction, score
 }
 
 // classifyWithRetry retries a failing Classify call up to

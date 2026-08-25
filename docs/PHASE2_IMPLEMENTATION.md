@@ -30,8 +30,8 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | A | Guardrails: retry budget, contact cap, cooldown, recovery window | **merged** | E, H |
 | B | Cost model and recovery priors | **merged** | D |
 | C | `GROUND_TRUTH` isolation test | **merged** | nothing |
-| D | Economics scorer, `Scoring`, `ClosedUneconomic` | **in review** | E, F, G, M |
-| E | Retry loop: re-entry to `Scoring` after a failed attempt | not started | F, H, M |
+| D | Economics scorer, `Scoring`, `ClosedUneconomic` | **merged** | E, F, G, M |
+| E | Retry loop: re-entry to `Scoring` after a failed attempt | **merged** | F, H, M |
 | F | Cause-aware retry timing | not started | nothing |
 | G | EV snapshot persisted per attempt | not started | nothing |
 | H | Batch correctness invariants | not started | nothing |
@@ -41,7 +41,7 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | L | Scheduler fake-clock test | not started | nothing |
 | M | Delete the `TEMPORARY` state machine edges | not started | nothing |
 
-**3 of 13 merged. 1 in review. 9 remaining.**
+**5 of 13 merged. 8 remaining.** F, H and M are now unblocked.
 
 Units A, B and C map to three `PLAN.md` checkboxes. D and E together are the
 "economics scorer" checkbox. M is cleanup that Phase 2 unlocks and that
@@ -68,7 +68,7 @@ parallel, today.
 
 ## Unit D: Economics scorer
 
-**Status**: in review, PR #28.
+**Status**: merged, PR #28.
 **Depends on**: A, B (both merged).
 **Branch**: `svc/decision-engine/economics-scorer`.
 
@@ -115,7 +115,7 @@ Merged, CI green including the integration and e2e tiers.
 
 ## Unit E: Retry loop, re-entry to Scoring
 
-**Status**: not started. **This is the most important remaining unit.**
+**Status**: merged.
 **Depends on**: D merged.
 **Branch**: `svc/decision-engine/retry-loop`.
 **Files owned**: `services/decision-engine/internal/engine/state.go`,

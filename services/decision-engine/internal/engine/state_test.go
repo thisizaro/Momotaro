@@ -1,11 +1,34 @@
 package engine
 
 import (
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 )
+
+// loadEconomicsModel loads the real checked-in cost model and priors, same as
+// testhelpers_test.go's testEconomics, but without the integration build tag:
+// economics.Load only reads local YAML files, no Postgres or Kafka needed, so
+// scoreAndRoute's unit tests can run under `make test`.
+func loadEconomicsModel(t *testing.T) *economics.Model {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
+	m, err := economics.Load(filepath.Join(root, "configs", "intervention_costs.yaml"), filepath.Join(root, "configs", "recovery_priors.yaml"))
+	if err != nil {
+		t.Fatalf("load economics config: %v", err)
+	}
+	return m
+}
 
 func TestDecideAfterClassify(t *testing.T) {
 	tests := []struct {
@@ -116,6 +139,127 @@ func TestDecideAfterExecute(t *testing.T) {
 			}
 			if reason == "" {
 				t.Error("reason must not be empty, it lands in the audit trail verbatim")
+			}
+		})
+	}
+}
+
+// scoreAndRoute is the economics gate itself, shared by the New path and the
+// re-entry path after a failed attempt (docs/PHASE2_IMPLEMENTATION.md Unit
+// E). These tests exercise it directly, against the real checked-in
+// cost/prior config, with no Postgres involved: guardrails and economics are
+// both pure once loaded.
+func TestScoreAndRoutePicksTheHighestEVPermittedAction(t *testing.T) {
+	model := loadEconomicsModel(t)
+	const amountPaise = 500000 // 5000 rupees, big enough that RETRY clearly wins
+
+	state, pendingAction, reason, score := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), amountPaise, testNow)
+
+	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
+		t.Errorf("state = %v, want RETRY_SCHEDULED", state)
+	}
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_RETRY {
+		t.Errorf("pendingAction = %v, want RETRY", pendingAction)
+	}
+	if score.EVPaise <= 0 {
+		t.Errorf("EVPaise = %v, want strictly positive for the chosen action", score.EVPaise)
+	}
+	if reason == "" {
+		t.Error("reason must not be empty, it lands in the audit trail verbatim")
+	}
+}
+
+// The compliance stop: once the guardrails refuse every spending action
+// (here, both the retry budget and the contact cap are spent), the record
+// must escalate, and it must do so because applyGuardrails said so, not
+// because of a hardcoded attempt-count check duplicated here.
+func TestScoreAndRouteEscalatesWhenGuardrailsRefuseEveryAction(t *testing.T) {
+	model := loadEconomicsModel(t)
+
+	h := freshHistory()
+	h.Retries = testGuardrails.MaxRetries
+	h.Contacts = testGuardrails.MaxContacts
+
+	state, pendingAction, reason, score := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+
+	if state != commonv1.RecordState_RECORD_STATE_ESCALATED {
+		t.Errorf("state = %v, want ESCALATED", state)
+	}
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_UNSPECIFIED {
+		t.Errorf("pendingAction = %v, want UNSPECIFIED for an escalated record", pendingAction)
+	}
+	if score != (economics.Score{}) {
+		t.Errorf("score = %+v, want the zero value: escalation is not a priced action", score)
+	}
+	if !strings.Contains(reason, "guardrails permit no action") {
+		t.Errorf("reason = %q, want it to name the guardrail refusal rather than fall through the economics branch", reason)
+	}
+}
+
+// The economics stop: the guardrails still permit a retry (the cap is far
+// away), but the priors have decayed past the deepest modelled attempt
+// (docs/ARCHITECTURE.md section 5a: an unmodelled attempt falls to
+// beyondListedAttemptsBps, which the checked-in config sets to 0), so
+// nothing has positive expected value and the record closes as
+// ClosedUneconomic rather than cycling forever.
+func TestScoreAndRouteClosesUneconomicWhenPriorsRunOutPastGuardrailReach(t *testing.T) {
+	model := loadEconomicsModel(t)
+
+	guardrails := GuardrailConfig{MaxRetries: 10, MaxContacts: 1, ContactCooldown: 24 * time.Hour, RecoveryWindow: 7 * 24 * time.Hour}
+	h := freshHistory()
+	h.Retries = 3  // three retries already spent: attempt 4 is unmodelled
+	h.Contacts = 1 // contact cap already reached, so a nudge cannot rescue this
+
+	state, pendingAction, reason, score := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+
+	if state != commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC {
+		t.Errorf("state = %v, want CLOSED_UNECONOMIC: a retry budget of 10 has not been exhausted, only the modelled priors have", state)
+	}
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_UNSPECIFIED {
+		t.Errorf("pendingAction = %v, want UNSPECIFIED", pendingAction)
+	}
+	if score != (economics.Score{}) {
+		t.Errorf("score = %+v, want the zero value", score)
+	}
+	if reason != "no permitted action has positive expected value" {
+		t.Errorf("reason = %q, want the economics-stop reason, not a fallback from some other branch", reason)
+	}
+}
+
+func TestGuardrailRefusalReasonNamesTheBlockingRule(t *testing.T) {
+	h := freshHistory()
+	h.Retries = testGuardrails.MaxRetries
+	h.Contacts = testGuardrails.MaxContacts
+	v := applyGuardrails(h, testGuardrails, testNow)
+
+	if got := guardrailRefusalReason(v); got == "" || got == "no reason recorded" {
+		t.Errorf("guardrailRefusalReason = %q, want a specific rule named", got)
+	}
+}
+
+func TestDueAtFor(t *testing.T) {
+	now := testNow
+	const retryDelay, nudgeDelay = time.Minute, time.Hour
+
+	tests := []struct {
+		name  string
+		state commonv1.RecordState
+		want  *time.Time
+	}{
+		{name: "retry scheduled waits RetryDelay", state: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, want: timePtr(now.Add(retryDelay))},
+		{name: "nudge scheduled waits NudgeDelay", state: commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, want: timePtr(now.Add(nudgeDelay))},
+		{name: "escalated is terminal, no due_at", state: commonv1.RecordState_RECORD_STATE_ESCALATED, want: nil},
+		{name: "closed uneconomic is terminal, no due_at", state: commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC, want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dueAtFor(tt.state, retryDelay, nudgeDelay, now)
+			if (got == nil) != (tt.want == nil) {
+				t.Fatalf("dueAtFor(%v) = %v, want %v", tt.state, got, tt.want)
+			}
+			if got != nil && !got.Equal(*tt.want) {
+				t.Errorf("dueAtFor(%v) = %v, want %v", tt.state, *got, *tt.want)
 			}
 		})
 	}

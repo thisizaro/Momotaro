@@ -71,13 +71,14 @@ func (s *store) scheduleNew(ctx context.Context, evt RawEvent, bucket commonv1.R
 // claimedRecord is one record the scheduler just claimed: enough to call
 // Execute and, afterward, record the outcome without a second round trip.
 type claimedRecord struct {
-	RecordID      string
-	BatchID       string
-	FromState     commonv1.RecordState
-	ClaimedState  commonv1.RecordState
-	PendingAction commonv1.ActionType
-	AttemptCount  int // before this attempt; the attempt about to run is AttemptCount+1
-	AmountPaise   int64
+	RecordID        string
+	BatchID         string
+	FromState       commonv1.RecordState
+	ClaimedState    commonv1.RecordState
+	PendingAction   commonv1.ActionType
+	AttemptCount    int // before this attempt; the attempt about to run is AttemptCount+1
+	AmountPaise     int64
+	RootCauseBucket commonv1.RootCauseBucket // needed to re-score a failed attempt without re-classifying
 }
 
 // claimDue finds up to limit records whose due_at has passed and claims
@@ -91,7 +92,7 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 	var claimed []claimedRecord
 	err := pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise
+			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket
 			FROM record_state rs
 			JOIN record r ON r.id = rs.record_id
 			WHERE rs.due_at IS NOT NULL AND rs.due_at <= $1
@@ -112,11 +113,12 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 			recordID, batchID, currentState, pendingAction string
 			attemptCount                                   int
 			amountPaise                                    int64
+			rootCauseBucket                                *string
 		}
 		var scanned []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise); err != nil {
+			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise, &r.rootCauseBucket); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan due record: %w", err)
 			}
@@ -148,14 +150,19 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 				return fmt.Errorf("insert claim audit_entry for %s: %w", r.recordID, err)
 			}
 
+			bucket := commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_UNSPECIFIED
+			if r.rootCauseBucket != nil {
+				bucket = commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[*r.rootCauseBucket])
+			}
 			claimed = append(claimed, claimedRecord{
-				RecordID:      r.recordID,
-				BatchID:       r.batchID,
-				FromState:     fromState,
-				ClaimedState:  toState,
-				PendingAction: commonv1.ActionType(commonv1.ActionType_value[r.pendingAction]),
-				AttemptCount:  r.attemptCount,
-				AmountPaise:   r.amountPaise,
+				RecordID:        r.recordID,
+				BatchID:         r.batchID,
+				FromState:       fromState,
+				ClaimedState:    toState,
+				PendingAction:   commonv1.ActionType(commonv1.ActionType_value[r.pendingAction]),
+				AttemptCount:    r.attemptCount,
+				AmountPaise:     r.amountPaise,
+				RootCauseBucket: bucket,
 			})
 		}
 		return nil
@@ -185,6 +192,48 @@ func (s *store) recordOutcome(ctx context.Context, c claimedRecord, toState comm
 			c.RecordID, c.BatchID, now, c.ClaimedState.String(), toState.String(), reason, attemptNumber, costPaise,
 		); err != nil {
 			return fmt.Errorf("insert outcome audit_entry for %s: %w", c.RecordID, err)
+		}
+		return nil
+	})
+}
+
+// recordRescore is scheduleNew's counterpart for the re-entry edges in
+// docs/ARCHITECTURE.md section 7: a failed attempt that still has budget
+// left moves ClaimedState -> Scoring -> wherever the re-priced economics
+// sent it, in one transaction, exactly like a fresh record's New -> Scoring
+// -> ... trail. attemptNumber is the attempt that just failed: both the
+// updated attempt_count and the audit entries are attributed to it, since
+// this is the aftermath of that one attempt, not a new one.
+func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stateStep, pendingAction commonv1.ActionType, dueAt *time.Time, attemptNumber int, costPaise int64, now time.Time) error {
+	if len(steps) == 0 {
+		return fmt.Errorf("rescore %s: no transitions to record", c.RecordID)
+	}
+	final := steps[len(steps)-1].To
+
+	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE record_state SET current_state=$1, attempt_count=$2, pending_action=$3, due_at=$4, last_action_at=$5, updated_at=$5
+			WHERE record_id=$6`,
+			final.String(), attemptNumber, nullIfUnspecified(pendingAction), dueAt, now, c.RecordID,
+		); err != nil {
+			return fmt.Errorf("update record_state for %s: %w", c.RecordID, err)
+		}
+		// The cost of the attempt that just ran belongs on the first step
+		// (ClaimedState -> Scoring, the actual aftermath of that attempt);
+		// the second step (Scoring -> next state) is a pure decision and
+		// costs nothing itself.
+		for i, step := range steps {
+			cost := int64(0)
+			if i == 0 {
+				cost = costPaise
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, actor, attempt_number, cost_paise)
+				VALUES ($1, $2, $3, $4, $5, $6, 'system', $7, $8)`,
+				c.RecordID, c.BatchID, now, step.From.String(), step.To.String(), step.Reason, attemptNumber, cost,
+			); err != nil {
+				return fmt.Errorf("insert rescore audit_entry %s -> %s: %w", step.From, step.To, err)
+			}
 		}
 		return nil
 	})

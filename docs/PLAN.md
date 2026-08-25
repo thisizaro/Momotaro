@@ -372,13 +372,14 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       bucket and the numbers decide. Escalation deliberately bypasses
       economics: a risk hold is a safety call, and pricing it would imply it
       were negotiable.
-      **Scope note**: `ARCHITECTURE.md` §7 also has a record RE-ENTER
-      `Scoring` after a failed attempt. That is not in this checkbox's text
-      and is not built yet; it is Unit E in
-      `docs/PHASE2_IMPLEMENTATION.md`. It matters more than it sounds:
-      until it lands nothing retries twice, so the guardrail caps never
-      bind and the batch invariant test below would pass while proving
-      nothing.
+      Re-entry to `Scoring` after a failed attempt (`ARCHITECTURE.md` §7)
+      is now built too, as Unit E in `docs/PHASE2_IMPLEMENTATION.md`. A
+      failed attempt is re-priced with one more attempt spent rather than
+      escalated, so the guardrail caps finally bind and the decaying priors
+      do real work. Termination is proven against both independent stops:
+      the guardrails refusing a capped action, and the priors falling to
+      zero past the deepest modelled attempt. Both were verified by
+      breaking them on purpose and confirming the tests go red.
 - [ ] Cause-aware retry scheduling (salary-window for insufficient_funds,
       short backoff for bank_timeout, no retry for hard_decline/risk_hold)
       → `ARCHITECTURE.md` §5a
