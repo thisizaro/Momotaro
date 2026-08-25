@@ -201,8 +201,15 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		executorv1.NewExecutorServiceClient(executorConn),
 		dlqProducer, clock.New(), model, engCfg)
 
-	schedCfg := engine.SchedulerConfig{CallTimeout: cfg.CallTimeout, PollInterval: cfg.Scale(cfg.PollInterval), DLQTopic: cfg.DLQTopic}
-	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), schedCfg)
+	schedCfg := engine.SchedulerConfig{
+		CallTimeout:  cfg.CallTimeout,
+		PollInterval: cfg.Scale(cfg.PollInterval),
+		DLQTopic:     cfg.DLQTopic,
+		RetryDelay:   cfg.Scale(cfg.RetryDelay),
+		NudgeDelay:   cfg.Scale(cfg.NudgeDelay),
+		Guardrails:   guardrailsFrom(cfg),
+	}
+	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), model, schedCfg)
 
 	consumer, err := kafkax.NewConsumer(cfg.KafkaBrokers, cfg.ConsumerGroup, []string{cfg.Topic})
 	if err != nil {

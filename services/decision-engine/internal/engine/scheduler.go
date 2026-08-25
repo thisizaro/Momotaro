@@ -3,13 +3,16 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
+	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 )
 
 // maxExecuteAttempts/executeRetryDelay mirror HandleMessage's classify
@@ -26,11 +29,18 @@ const (
 	claimBatchSize = 20
 )
 
-// SchedulerConfig groups the scheduler's tunables.
+// SchedulerConfig groups the scheduler's tunables. RetryDelay, NudgeDelay
+// and Guardrails mirror Engine's Config: a failed attempt that gets
+// re-scored (docs/ARCHITECTURE.md section 7) needs the same guardrails and
+// the same scheduling delays a fresh record's first classification uses, so
+// the two paths stay in step (docs/PHASE2_IMPLEMENTATION.md Unit E).
 type SchedulerConfig struct {
 	CallTimeout  time.Duration
 	PollInterval time.Duration
 	DLQTopic     string
+	RetryDelay   time.Duration
+	NudgeDelay   time.Duration
+	Guardrails   GuardrailConfig
 }
 
 // Scheduler is docs/ARCHITECTURE.md section 7a's scheduler worker. Without
@@ -38,23 +48,27 @@ type SchedulerConfig struct {
 // actually fires: neither a Kafka message nor a gRPC call is what wakes a
 // waiting record back up, this poll loop is.
 type Scheduler struct {
-	store   *store
-	clients *clients
-	dlq     *deadLetterPublisher
-	clock   clock.Clock
-	cfg     SchedulerConfig
+	store     *store
+	clients   *clients
+	dlq       *deadLetterPublisher
+	clock     clock.Clock
+	economics *economics.Model
+	cfg       SchedulerConfig
 }
 
 // NewScheduler returns a Scheduler. It only needs the Executor client, not
 // the Classifier: resuming a claimed record executes the action already
-// decided at classify time, it never re-classifies.
-func NewScheduler(pool *pgxpkg.Pool, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, cfg SchedulerConfig) *Scheduler {
+// decided at classify time, it never re-classifies. It does need the
+// economics model, because a failed attempt is re-priced in place
+// (scoreAndRoute) rather than re-classified.
+func NewScheduler(pool *pgxpkg.Pool, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, model *economics.Model, cfg SchedulerConfig) *Scheduler {
 	return &Scheduler{
-		store:   newStore(pool),
-		clients: &clients{executor: executor, callTimeout: cfg.CallTimeout},
-		dlq:     newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
-		clock:   clk,
-		cfg:     cfg,
+		store:     newStore(pool),
+		clients:   &clients{executor: executor, callTimeout: cfg.CallTimeout},
+		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
+		clock:     clk,
+		economics: model,
+		cfg:       cfg,
 	}
 }
 
@@ -108,14 +122,47 @@ func (s *Scheduler) process(ctx context.Context, c claimedRecord) {
 		return
 	}
 
-	toState, reason := decideAfterExecute(c.PendingAction, resp.GetOutcome())
+	outcome := resp.GetOutcome()
+	if outcome == commonv1.Outcome_OUTCOME_FAILURE {
+		s.handleFailedAttempt(ctx, log, c, int(attemptNumber), resp.GetCostPaise())
+		return
+	}
+
+	toState, reason := decideAfterExecute(c.PendingAction, outcome)
 	if err := s.store.recordOutcome(ctx, c, toState, reason, int(attemptNumber), resp.GetCostPaise(), s.clock.Now()); err != nil {
 		log.Error("failed to record outcome", logger.KeyError, err.Error())
 		return
 	}
 
 	log.Info("scheduled action executed",
-		logger.KeyAction, c.PendingAction.String(), logger.KeyOutcome, resp.GetOutcome().String(), logger.KeyState, toState.String())
+		logger.KeyAction, c.PendingAction.String(), logger.KeyOutcome, outcome.String(), logger.KeyState, toState.String())
+}
+
+// handleFailedAttempt is the re-entry to Scoring docs/ARCHITECTURE.md
+// section 7 requires after a failed attempt: the record is re-priced with
+// this attempt spent, rather than escalated outright. It calls the same
+// scoreAndRoute the New path uses (state.go), so the two paths cannot
+// disagree about when a record has run out of road.
+func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c claimedRecord, attemptNumber int, costPaise int64) {
+	history, err := s.store.loadAttemptHistory(ctx, c.RecordID)
+	if err != nil {
+		log.Error("failed to load attempt history for re-scoring", logger.KeyError, err.Error())
+		return
+	}
+
+	now := s.clock.Now()
+	state, pendingAction, reason, score := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
+	dueAt := dueAtFor(state, s.cfg.RetryDelay, s.cfg.NudgeDelay, now)
+	steps := rescoringPath(c.ClaimedState, state, reason)
+
+	if err := s.store.recordRescore(ctx, c, steps, pendingAction, dueAt, attemptNumber, costPaise, now); err != nil {
+		log.Error("failed to record rescore", logger.KeyError, err.Error())
+		return
+	}
+
+	log.Info("attempt failed, re-scored rather than escalated",
+		logger.KeyAction, c.PendingAction.String(), logger.KeyState, state.String(),
+		"ev_paise", score.EVPaise, "p_recovery", score.PRecovery)
 }
 
 func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attemptNumber int32) (*executorv1.ExecuteResponse, error) {
