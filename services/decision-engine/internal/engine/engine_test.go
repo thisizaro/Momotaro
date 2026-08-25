@@ -32,7 +32,7 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := retryClassifier()
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -81,7 +81,7 @@ func TestHandleMessageSchedulesNudge(t *testing.T) {
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_CHECKOUT", AmountPaise: 5000, FailureCode: "ABANDONED"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -107,7 +107,7 @@ func TestHandleMessageEscalatesOnExplicitEscalateAction(t *testing.T) {
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "RISK_HOLD"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -147,7 +147,7 @@ func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 	}
 
 	classifier := retryClassifier()
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -169,7 +169,7 @@ func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 func TestHandleMessageDeadLettersMalformedPayload(t *testing.T) {
 	pool := testPool(t)
 	dlqProducer, dlqTopic := testDLQ(t)
-	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	raw := "not json"
 	msg := kafkax.Message{Topic: "raw.events", Key: "bad-key", Value: []byte(raw)}
@@ -193,7 +193,7 @@ func TestHandleMessageDeadLettersAfterClassifyRetriesExhausted(t *testing.T) {
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{err: errors.New("classifier unavailable")}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -228,7 +228,7 @@ func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) 
 	classifier.err = errors.New("transient")
 	classifier.failN = maxClassifyAttempts - 1 // fails all but the last attempt
 
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
 		t.Fatalf("HandleMessage: %v", err)
@@ -250,7 +250,7 @@ func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) 
 func TestHandleMessageRejectsMalformedPayloadIsNeverFatal(t *testing.T) {
 	pool := testPool(t)
 	dlqProducer, dlqTopic := testDLQ(t)
-	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testConfig(dlqTopic))
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
 
 	msg := kafkax.Message{Topic: "raw.events", Key: "bad", Value: []byte("{not valid json")}
 	if err := e.HandleMessage(context.Background(), msg); err != nil {

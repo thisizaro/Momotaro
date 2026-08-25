@@ -20,5 +20,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /
 COPY --from=build /out/svc /svc
+# The economics config travels with the binary. It is read at startup and the
+# service refuses to run without it, deliberately: an engine that cannot price
+# its actions would score every one at zero and close every record as
+# uneconomic, which looks like a healthy agent doing nothing.
+COPY --from=build /src/configs /configs
 USER nonroot:nonroot
 ENTRYPOINT ["/svc"]

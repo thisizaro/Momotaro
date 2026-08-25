@@ -6,9 +6,13 @@
 package engine
 
 import (
+	"path/filepath"
+	"runtime"
+
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -186,4 +190,22 @@ func classifyResponseWithAction(action commonv1.ActionType) *classifierv1.Classi
 		Confidence:        1,
 		Source:            commonv1.Source_SOURCE_RULES_FALLBACK,
 	}
+}
+
+// testEconomics loads the real checked-in cost model and priors rather than a
+// fixture. The scorer's job is to price actions using those exact numbers, so
+// a fixture here would test the arithmetic while leaving the thing that
+// actually decides in production unexercised.
+func testEconomics(t *testing.T) *economics.Model {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
+	m, err := economics.Load(filepath.Join(root, "configs", "intervention_costs.yaml"), filepath.Join(root, "configs", "recovery_priors.yaml"))
+	if err != nil {
+		t.Fatalf("load economics config: %v", err)
+	}
+	return m
 }

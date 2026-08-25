@@ -176,3 +176,31 @@ func (c GuardrailConfig) Validate() error {
 	}
 	return nil
 }
+
+// permittedActions is the set of spending actions the guardrails allow, which
+// is what the economics scorer chooses from (docs/ARCHITECTURE.md section 5a:
+// guardrails filter, then economics decides). Order follows spendingActions so
+// the scorer's tie-breaking is deterministic rather than map-iteration order.
+//
+// ESCALATE and NONE are deliberately absent. They are not economic choices:
+// escalation is the fallback reached when nothing is permitted or nothing is
+// worth doing, and it must never win a comparison against a real intervention.
+func permittedActions(v guardrailVerdict) []commonv1.ActionType {
+	permitted := make([]commonv1.ActionType, 0, len(spendingActions))
+	for _, action := range spendingActions {
+		if v.allows(action) {
+			permitted = append(permitted, action)
+		}
+	}
+	return permitted
+}
+
+// attemptNumberFor is the action's OWN next attempt number, which is what the
+// prior table is keyed on: it asks how well a second retry does, a different
+// question from how well anything does after two interventions.
+func attemptNumberFor(action commonv1.ActionType, h attemptHistory) int {
+	if action == commonv1.ActionType_ACTION_TYPE_RETRY {
+		return h.Retries + 1
+	}
+	return h.Contacts + 1
+}

@@ -15,6 +15,8 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
+
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
@@ -57,22 +59,24 @@ type Config struct {
 // here (docs/ARCHITECTURE.md section 7's diagram never executes directly
 // from New).
 type Engine struct {
-	store   *store
-	clients *clients
-	dlq     *deadLetterPublisher
-	clock   clock.Clock
-	cfg     Config
+	store     *store
+	clients   *clients
+	dlq       *deadLetterPublisher
+	clock     clock.Clock
+	economics *economics.Model
+	cfg       Config
 }
 
 // New returns an Engine. dlqProducer publishes to cfg.DLQTopic
 // (raw.events.dlq in production).
-func New(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, cfg Config) *Engine {
+func New(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, model *economics.Model, cfg Config) *Engine {
 	return &Engine{
-		store:   newStore(pool),
-		clients: &clients{classifier: classifier, executor: executor, callTimeout: cfg.CallTimeout},
-		dlq:     newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
-		clock:   clk,
-		cfg:     cfg,
+		store:     newStore(pool),
+		clients:   &clients{classifier: classifier, executor: executor, callTimeout: cfg.CallTimeout},
+		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
+		clock:     clk,
+		economics: model,
+		cfg:       cfg,
 	}
 }
 
@@ -118,32 +122,75 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 
 	now := e.clock.Now()
 
-	// Classify, then guardrails filter, then (Phase 2) economics decides. The
-	// order is fixed (docs/ARCHITECTURE.md section 5a) and is what lets us say
-	// the model proposes but never decides how money is spent.
 	history, err := e.store.loadAttemptHistory(ctx, evt.RecordID)
 	if err != nil {
 		return err
 	}
-	recommended := classifyResp.GetRecommendedAction()
-	action, downgrade := permittedOrEscalate(recommended, applyGuardrails(history, e.cfg.Guardrails, now))
 
-	state, pendingAction, reason := decideForAction(action)
-	if downgrade != "" {
-		// The guardrail's own words become the audit trail's justification for
-		// the downgrade, so the trail answers "why did it not retry?".
-		reason = fmt.Sprintf("guardrail blocked %s: %s", recommended, downgrade)
-	}
-	dueAt := e.dueAtFor(state, now)
+	steps, pendingAction, score := e.decide(classifyResp, history, evt.AmountPaise, now)
+	final := steps[len(steps)-1].To
+	dueAt := e.dueAtFor(final, now)
 
-	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), state, pendingAction, reason, classifyResp.GetRationale(), classifyResp.GetSource(), dueAt, now); err != nil {
+	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), dueAt, now); err != nil {
 		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)
 	}
 
 	log.Info("record classified and scheduled",
-		logger.KeyState, state.String(), logger.KeyBucket, classifyResp.GetBucket().String(), logger.KeySource, classifyResp.GetSource().String(),
-		"recommended_action", recommended.String(), "scheduled_action", action.String(), "guardrail_downgrade", downgrade)
+		logger.KeyState, final.String(), logger.KeyBucket, classifyResp.GetBucket().String(), logger.KeySource, classifyResp.GetSource().String(),
+		"recommended_action", classifyResp.GetRecommendedAction().String(), "scheduled_action", pendingAction.String(),
+		"ev_paise", score.EVPaise, "p_recovery", score.PRecovery)
 	return nil
+}
+
+// decide runs the fixed order from docs/ARCHITECTURE.md section 5a: the
+// Classifier has proposed, the guardrails now constrain, and deterministic
+// economics decides. It returns the transitions to record, the action that was
+// scheduled, and the winning score.
+//
+// Note what the Classifier's recommended_action is NOT used for here. Once the
+// scorer exists, selection is by expected value over the whole permitted menu,
+// and the Classifier's real contribution is the BUCKET, which is what the
+// prior table is keyed on. That is the concrete answer to "does the model
+// decide how money is spent?": it does not, it only says what went wrong.
+func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHistory, amountPaise int64, now time.Time) ([]stateStep, commonv1.ActionType, economics.Score) {
+	none := commonv1.ActionType_ACTION_TYPE_UNSPECIFIED
+
+	// Escalation is the one recommendation that bypasses economics. A risk
+	// hold or a low-confidence classification is a safety call, and pricing it
+	// would imply it were negotiable.
+	if resp.GetRecommendedAction() == commonv1.ActionType_ACTION_TYPE_ESCALATE {
+		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, "classifier recommended escalation"), none, economics.Score{}
+	}
+
+	verdict := applyGuardrails(history, e.cfg.Guardrails, now)
+	permitted := permittedActions(verdict)
+
+	candidates := make([]economics.Candidate, 0, len(permitted))
+	for _, action := range permitted {
+		candidates = append(candidates, economics.Candidate{Action: action, AttemptNo: attemptNumberFor(action, history)})
+	}
+
+	best, worthDoing := e.economics.Best(candidates, resp.GetBucket(), amountPaise)
+	if !worthDoing {
+		// ClosedUneconomic is a deliberate decision, not a failure, and it is
+		// reported separately from escalation (docs/PRD.md section 9).
+		return scoringPath(commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC, uneconomicReason(permitted, verdict)), none, economics.Score{}
+	}
+
+	state, pendingAction, _ := decideForAction(best.Action)
+	reason := fmt.Sprintf("best expected value: %s worth %.0f paise (p=%.4f, cost=%d paise, at risk=%d paise)",
+		best.Action, best.EVPaise, best.PRecovery, best.CostPaise, amountPaise)
+	return scoringPath(state, reason), pendingAction, best
+}
+
+// uneconomicReason explains a closure in the audit trail's own words, because
+// "nothing was worth doing" has two very different causes and a finance team
+// reading the trail needs to know which one applied.
+func uneconomicReason(permitted []commonv1.ActionType, v guardrailVerdict) string {
+	if len(permitted) == 0 {
+		return fmt.Sprintf("no action permitted: %s", v.reason(commonv1.ActionType_ACTION_TYPE_RETRY))
+	}
+	return "no permitted action has positive expected value"
 }
 
 // dueAtFor computes when a newly scheduled record should first become

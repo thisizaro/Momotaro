@@ -83,3 +83,31 @@ func claimedState(scheduled commonv1.RecordState) commonv1.RecordState {
 	}
 	return commonv1.RecordState_RECORD_STATE_NUDGED
 }
+
+// stateStep is one transition to record. A record can move through more than
+// one state in a single handling pass: docs/ARCHITECTURE.md section 7 routes
+// every classified record through Scoring before it is scheduled, and Scoring
+// is a gate rather than somewhere a record waits. Both transitions are written
+// in one database transaction, so the trail is a complete replay of the
+// diagram rather than a summary of where a record ended up.
+type stateStep struct {
+	From, To commonv1.RecordState
+	Reason   string
+}
+
+// scoringPath is the sequence of transitions for a record that reached the
+// economics gate: New -> Scoring, then Scoring -> wherever the scorer sent it.
+func scoringPath(to commonv1.RecordState, reason string) []stateStep {
+	return []stateStep{
+		{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_SCORING, Reason: "classified, guardrails applied, scoring"},
+		{From: commonv1.RecordState_RECORD_STATE_SCORING, To: to, Reason: reason},
+	}
+}
+
+// directPath is a single transition out of New, for a record that never
+// reaches the economics gate. Only escalation takes this route: a risk hold or
+// a low-confidence classification is a safety decision, and pricing it would
+// imply it were negotiable.
+func directPath(to commonv1.RecordState, reason string) []stateStep {
+	return []stateStep{{From: commonv1.RecordState_RECORD_STATE_NEW, To: to, Reason: reason}}
+}
