@@ -32,6 +32,17 @@ message ExecuteRequest {
   // Amount at risk, carried so the executor can record cost against value
   // without a database round trip.
   int64 amount_paise = 6;
+  // The economics snapshot at the moment this action was chosen: the
+  // expected value the scorer computed for it, and the recovery probability
+  // that fed it. Persisted per attempt on INTERVENTION_ATTEMPT so the audit
+  // trail can answer "why did you think this was worth spending?" even after
+  // the priors have been recalibrated and would no longer produce the same
+  // numbers. See docs/ARCHITECTURE.md section 5a and section 10.
+  //
+  // The Decision Engine owns these: it is the only service that scores. The
+  // Executor records what it is told and never recomputes them.
+  double ev_score_at_decision = 7;
+  double p_recovery_at_decision = 8;
 }
 
 message ExecuteResponse {
