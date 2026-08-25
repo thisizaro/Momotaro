@@ -364,9 +364,21 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       NPCI NACH rate, sourced from a processor citing NPCI rather than
       npci.org.in directly) are named in that same DECISIONS.md entry as
       needing firming up, not resolved by this checkbox.
-- [ ] Economics scorer in Decision Engine: `Scoring` state, EV computed per
+- [x] Economics scorer in Decision Engine: `Scoring` state, EV computed per
       allowed action, `ClosedUneconomic` terminal state when no action has
       positive EV → `ARCHITECTURE.md` §5a, §7, `PRD.md` §2b
+      Selection is by expected value over the whole permitted menu, not by
+      the Classifier's `recommended_action`, so the model contributes the
+      bucket and the numbers decide. Escalation deliberately bypasses
+      economics: a risk hold is a safety call, and pricing it would imply it
+      were negotiable.
+      **Scope note**: `ARCHITECTURE.md` §7 also has a record RE-ENTER
+      `Scoring` after a failed attempt. That is not in this checkbox's text
+      and is not built yet; it is Unit E in
+      `docs/PHASE2_IMPLEMENTATION.md`. It matters more than it sounds:
+      until it lands nothing retries twice, so the guardrail caps never
+      bind and the batch invariant test below would pass while proving
+      nothing.
 - [ ] Cause-aware retry scheduling (salary-window for insufficient_funds,
       short backoff for bank_timeout, no retry for hard_decline/risk_hold)
       → `ARCHITECTURE.md` §5a
