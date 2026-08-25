@@ -183,8 +183,17 @@ func retryClassifier() *fakeClassifier {
 // recommending action, for tests that only care about the resulting state
 // transition.
 func classifyResponseWithAction(action commonv1.ActionType) *classifierv1.ClassifyResponse {
+	return classifyResponseFor(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, action)
+}
+
+// classifyResponseFor builds a classification with an explicit bucket. The
+// bucket matters more than the recommendation now: the scorer prices actions
+// from the prior table, which is keyed on it, so a test that wants a specific
+// action chosen has to put the record in a bucket where that action actually
+// wins on expected value.
+func classifyResponseFor(bucket commonv1.RootCauseBucket, action commonv1.ActionType) *classifierv1.ClassifyResponse {
 	return &classifierv1.ClassifyResponse{
-		Bucket:            commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK,
+		Bucket:            bucket,
 		RecommendedAction: action,
 		Rationale:         "test rationale",
 		Confidence:        1,
