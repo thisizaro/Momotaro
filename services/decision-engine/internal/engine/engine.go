@@ -46,6 +46,10 @@ type Config struct {
 	RetryDelay time.Duration
 	NudgeDelay time.Duration
 	DLQTopic   string
+	// TimeScale is DEMO_TIME_SCALE (docs/ARCHITECTURE.md section 17),
+	// threaded from config.Common so retryDueAt can compress salary-window
+	// waits for a live demo.
+	TimeScale float64
 	// Guardrails are the hard limits from docs/PRD.md section 11: retry
 	// budget, contact cap, contact cooldown and recovery window. They filter
 	// the Classifier's recommendation before it is scheduled
@@ -129,7 +133,12 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 
 	steps, pendingAction, score := e.decide(classifyResp, history, evt.AmountPaise, now)
 	final := steps[len(steps)-1].To
-	dueAt := dueAtFor(final, e.cfg.RetryDelay, e.cfg.NudgeDelay, now)
+	var dueAt *time.Time
+	if final == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
+		dueAt = retryDueAt(classifyResp.GetBucket(), now, e.cfg.RetryDelay, e.cfg.TimeScale)
+	} else {
+		dueAt = dueAtFor(final, e.cfg.NudgeDelay, now)
+	}
 
 	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), dueAt, now); err != nil {
 		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)

@@ -21,6 +21,7 @@ func schedulerTestConfig(dlqTopic string) SchedulerConfig {
 		DLQTopic:     dlqTopic,
 		RetryDelay:   time.Minute,
 		NudgeDelay:   time.Minute,
+		TimeScale:    1,
 		Guardrails:   testGuardrails,
 	}
 }
@@ -234,7 +235,7 @@ func TestSchedulerRetryLoopTerminatesViaGuardrailCap(t *testing.T) {
 	}
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_FAILURE, CostPaise: 25}}
-	cfg := SchedulerConfig{CallTimeout: 2 * time.Second, PollInterval: time.Second, DLQTopic: dlqTopic, RetryDelay: retryDelay, NudgeDelay: retryDelay, Guardrails: testGuardrails}
+	cfg := SchedulerConfig{CallTimeout: 2 * time.Second, PollInterval: time.Second, DLQTopic: dlqTopic, RetryDelay: retryDelay, NudgeDelay: retryDelay, TimeScale: 1, Guardrails: testGuardrails}
 	sched := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), cfg)
 
 	const maxIterations = 10
@@ -324,7 +325,7 @@ func TestSchedulerRetryLoopTerminatesViaEconomicsWhenPriorsRunOut(t *testing.T) 
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_FAILURE, CostPaise: 25}}
 	guardrails := GuardrailConfig{MaxRetries: 10, MaxContacts: 1, ContactCooldown: 24 * time.Hour, RecoveryWindow: 7 * 24 * time.Hour}
-	cfg := SchedulerConfig{CallTimeout: 2 * time.Second, PollInterval: time.Second, DLQTopic: dlqTopic, RetryDelay: retryDelay, NudgeDelay: retryDelay, Guardrails: guardrails}
+	cfg := SchedulerConfig{CallTimeout: 2 * time.Second, PollInterval: time.Second, DLQTopic: dlqTopic, RetryDelay: retryDelay, NudgeDelay: retryDelay, TimeScale: 1, Guardrails: guardrails}
 	sched := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), cfg)
 
 	const maxIterations = 10

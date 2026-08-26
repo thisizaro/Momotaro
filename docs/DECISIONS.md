@@ -781,5 +781,28 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Unit J's e2e test (`test/e2e/rerun_safety_test.go`) asserts this actual
   behavior: two calls with identical content produce two distinct batch
   IDs, two distinct record IDs, and both process and settle independently.
-  This is correct, not a gap. See `docs/PHASE2_IMPLEMENTATION.md` Unit J
-  for the full test description.
+   This is correct, not a gap. See `docs/PHASE2_IMPLEMENTATION.md` Unit J
+   for the full test description.
+- 2026-08-26: Salary-window boundary for cause-aware retry timing (Unit F)
+  is days 1 through 7 of each calendar month, **inclusive on both ends**.
+  Reason: the salary credit typically arrives on the 1st, but processing
+  delays (bank holidays, batch processing windows) mean some credits land
+  on the 2nd-3rd, and a merchant who gets paid on the 7th would be
+  unfairly skipped if the window closed on the 6th. The window returns
+  `now` when the current day is inside [1, 7] (no delay, the money should
+  arrive imminently and the scheduler picks it up on the next tick). When
+  day 8 or later, the next window is the 1st of the next calendar month
+  at the same wall-clock time-of-day. Go's `time.Date` normalises month 13
+  to January of the next year, which handles the December-to-January
+  rollover automatically, but a test proves it rather than trusting the
+  language spec. `retryDueAt` returns `nil` for HARD_DECLINE and
+  RISK_HOLD (belt-and-braces: the priors already give them zero
+  probability, so the scorer would not choose a retry anyway; encoding
+  them as a second independent stop means a code path that somehow
+  reaches retry scheduling for these buckets also produces no due_at
+  rather than a nonsensical one). The function is pure (no I/O, takes
+  `now` directly rather than an injected Clock), matches `dueAtFor`'s
+  existing signature style, and lives in its own file
+  (`schedule.go`).`DemoTimeScale` is threaded to both call sites via a
+  new `TimeScale` field on `engine.Config` and `engine.SchedulerConfig`,
+  populated from `config.Common.DemoTimeScale` in `main.go`.

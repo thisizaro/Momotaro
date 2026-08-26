@@ -32,7 +32,7 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | C | `GROUND_TRUTH` isolation test | **merged** | nothing |
 | D | Economics scorer, `Scoring`, `ClosedUneconomic` | **merged** | E, F, G, M |
 | E | Retry loop: re-entry to `Scoring` after a failed attempt | **merged** | F, H, M |
-| F | Cause-aware retry timing | not started | nothing |
+| F | Cause-aware retry timing | **merged** | nothing |
 | G | EV snapshot persisted per attempt | not started | nothing |
 | H | Batch correctness invariants | not started | nothing |
 | I | Idempotency proven end to end | **merged** | nothing |
@@ -41,7 +41,7 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | L | Scheduler fake-clock test | not started | nothing |
 | M | Delete the `TEMPORARY` state machine edges | not started | nothing |
 
-**7 of 13 merged. 6 remaining.** F, H and M are now unblocked.
+**8 of 13 merged. 5 remaining.** H and M are now unblocked.
 
 Units A, B and C map to three `PLAN.md` checkboxes. D and E together are the
 "economics scorer" checkbox. M is cleanup that Phase 2 unlocks and that
@@ -179,7 +179,7 @@ Touches the same three files as Unit F. **Do not run E and F in parallel.**
 
 ## Unit F: Cause-aware retry timing
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: E merged.
 **Branch**: `svc/decision-engine/cause-aware-timing`.
 **Files owned**: a new `schedule.go` in `internal/engine`, plus `engine.go`'s
@@ -224,7 +224,8 @@ them regardless, and say in a comment that this is a second independent stop.
 ### Definition of done
 
 Table-driven tests covering each bucket, both salary-window branches, a month
-boundary, and a year rollover. Scaling verified.
+boundary, and a year rollover. Scaling verified. Red/green proof that a test
+can actually fail (timeScale division and salary-window boundary both proven).
 
 ---
 

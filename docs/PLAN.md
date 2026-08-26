@@ -380,7 +380,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       the guardrails refusing a capped action, and the priors falling to
       zero past the deepest modelled attempt. Both were verified by
       breaking them on purpose and confirming the tests go red.
-- [ ] Cause-aware retry scheduling (salary-window for insufficient_funds,
+- [x] Cause-aware retry scheduling (salary-window for insufficient_funds,
       short backoff for bank_timeout, no retry for hard_decline/risk_hold)
       → `ARCHITECTURE.md` §5a
 - [ ] `cost_paise` + EV snapshot persisted per attempt, so net recovered is

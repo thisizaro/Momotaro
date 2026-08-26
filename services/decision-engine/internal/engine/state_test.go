@@ -239,22 +239,22 @@ func TestGuardrailRefusalReasonNamesTheBlockingRule(t *testing.T) {
 
 func TestDueAtFor(t *testing.T) {
 	now := testNow
-	const retryDelay, nudgeDelay = time.Minute, time.Hour
+	const nudgeDelay = time.Hour
 
 	tests := []struct {
 		name  string
 		state commonv1.RecordState
 		want  *time.Time
 	}{
-		{name: "retry scheduled waits RetryDelay", state: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, want: timePtr(now.Add(retryDelay))},
 		{name: "nudge scheduled waits NudgeDelay", state: commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, want: timePtr(now.Add(nudgeDelay))},
+		{name: "retry scheduled is now handled by retryDueAt, dueAtFor returns nil", state: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, want: nil},
 		{name: "escalated is terminal, no due_at", state: commonv1.RecordState_RECORD_STATE_ESCALATED, want: nil},
 		{name: "closed uneconomic is terminal, no due_at", state: commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC, want: nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dueAtFor(tt.state, retryDelay, nudgeDelay, now)
+			got := dueAtFor(tt.state, nudgeDelay, now)
 			if (got == nil) != (tt.want == nil) {
 				t.Fatalf("dueAtFor(%v) = %v, want %v", tt.state, got, tt.want)
 			}

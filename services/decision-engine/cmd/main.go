@@ -194,6 +194,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		RetryDelay:  cfg.Scale(cfg.RetryDelay),
 		NudgeDelay:  cfg.Scale(cfg.NudgeDelay),
 		DLQTopic:    cfg.DLQTopic,
+		TimeScale:   cfg.DemoTimeScale,
 		Guardrails:  guardrailsFrom(cfg),
 	}
 	eng := engine.New(pool,
@@ -207,6 +208,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		DLQTopic:     cfg.DLQTopic,
 		RetryDelay:   cfg.Scale(cfg.RetryDelay),
 		NudgeDelay:   cfg.Scale(cfg.NudgeDelay),
+		TimeScale:    cfg.DemoTimeScale,
 		Guardrails:   guardrailsFrom(cfg),
 	}
 	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), model, schedCfg)

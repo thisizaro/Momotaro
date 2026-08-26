@@ -192,21 +192,17 @@ func guardrailRefusalReason(v guardrailVerdict) string {
 	return "no reason recorded"
 }
 
-// dueAtFor computes when a record newly parked in state should first become
-// actionable, or nil for a state that is not waiting on the scheduler
-// (docs/ARCHITECTURE.md section 7a: due_at is what the scheduler polls).
-// Shared by the New path (engine.go) and the re-entry path after a failed
-// attempt (scheduler.go), so both compute timing the same way.
-func dueAtFor(state commonv1.RecordState, retryDelay, nudgeDelay time.Duration, now time.Time) *time.Time {
-	var delay time.Duration
-	switch state {
-	case commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED:
-		delay = retryDelay
-	case commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED:
-		delay = nudgeDelay
-	default:
+// dueAtFor computes when a record newly parked in a waiting state should
+// first become actionable, or nil for a state that is not waiting on the
+// scheduler (docs/ARCHITECTURE.md section 7a: due_at is what the scheduler
+// polls). Shared by the New path (engine.go) and the re-entry path after a
+// failed attempt (scheduler.go), so both compute timing the same way.
+// RETRY_SCHEDULED is now handled by retryDueAt (schedule.go) for
+// cause-aware timing; this function only covers NUDGE_SCHEDULED.
+func dueAtFor(state commonv1.RecordState, nudgeDelay time.Duration, now time.Time) *time.Time {
+	if state != commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED {
 		return nil
 	}
-	due := now.Add(delay)
+	due := now.Add(nudgeDelay)
 	return &due
 }

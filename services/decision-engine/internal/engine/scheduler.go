@@ -40,6 +40,7 @@ type SchedulerConfig struct {
 	DLQTopic     string
 	RetryDelay   time.Duration
 	NudgeDelay   time.Duration
+	TimeScale    float64
 	Guardrails   GuardrailConfig
 }
 
@@ -152,7 +153,12 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 
 	now := s.clock.Now()
 	state, pendingAction, reason, score := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
-	dueAt := dueAtFor(state, s.cfg.RetryDelay, s.cfg.NudgeDelay, now)
+	var dueAt *time.Time
+	if state == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
+		dueAt = retryDueAt(c.RootCauseBucket, now, s.cfg.RetryDelay, s.cfg.TimeScale)
+	} else {
+		dueAt = dueAtFor(state, s.cfg.NudgeDelay, now)
+	}
 	steps := rescoringPath(c.ClaimedState, state, reason)
 
 	if err := s.store.recordRescore(ctx, c, steps, pendingAction, dueAt, attemptNumber, costPaise, now); err != nil {
