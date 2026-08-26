@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
@@ -532,13 +533,22 @@ func TestSchedulerConcurrentSchedulersClaimExactlyOnce(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM intervention_attempt WHERE record_id=$1`, recordID)
 	})
-	sched1 := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
-	sched2 := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
+	// 10 concurrent schedulers, not 2: with only two racers, true overlap at
+	// the database level was rare enough in practice that this test passed
+	// even with the row lock removed entirely (verified during review). More
+	// contenders racing the same connection pool makes genuine overlap far
+	// more likely per run; the GOMAXPROCS=2 loop in the verify step is what
+	// makes it reliable across runs.
+	const numSchedulers = 25
+	scheds := make([]*Scheduler, numSchedulers)
+	for i := range scheds {
+		scheds[i] = NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
+	}
 
 	startTicks := make(chan struct{})
-	errs := make(chan error, 2)
+	errs := make(chan error, numSchedulers)
 	var wg sync.WaitGroup
-	for _, sched := range []*Scheduler{sched1, sched2} {
+	for _, sched := range scheds {
 		wg.Add(1)
 		go func(s *Scheduler) {
 			defer wg.Done()
@@ -585,12 +595,29 @@ type attemptRecordingExecutor struct {
 	clock clock.Clock
 }
 
+// Execute mirrors the real Executor's insert-before-execute contract
+// (services/executor/internal/attempt/store.go): claim the
+// (record_id, attempt_number) slot via a real INSERT, and treat a unique
+// violation as "already executed" rather than a hard error. Without this,
+// a genuine double-claim (the bug this test exists to catch) makes both
+// calls return a raw DB error, which the real Scheduler's executeWithRetry
+// treats as an infrastructure failure and retries against a fake clock
+// that nothing in this test ever advances -- the test hangs until its
+// timeout instead of failing with a clear assertion, which is worse than
+// useless in CI. Mirroring the real contract turns a genuine double-claim
+// into a normal AlreadyExecuted response, exactly like production, and the
+// row-count assertions after the concurrent ticks are what actually catch
+// the violation.
 func (e *attemptRecordingExecutor) Execute(ctx context.Context, in *executorv1.ExecuteRequest, opts ...grpc.CallOption) (*executorv1.ExecuteResponse, error) {
 	_, err := e.pool.Exec(ctx, `
 		INSERT INTO intervention_attempt (id, record_id, attempt_number, action_type, outcome, executed_at, cost_paise)
 		VALUES ($1, $2, $3, $4, $5, $6, 0)`,
 		uuid.NewString(), in.GetRecordId(), in.GetAttemptNumber(), in.GetActionType().String(), commonv1.Outcome_OUTCOME_SUCCESS.String(), e.clock.Now())
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS, AlreadyExecuted: true}, nil
+		}
 		return nil, err
 	}
 	return &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}, nil
