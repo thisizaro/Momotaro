@@ -72,11 +72,23 @@ func TestRetryDueAt(t *testing.T) {
 			wantExact: time.Date(2026, 8, 7, 23, 59, 0, 0, time.UTC),
 		},
 		{
-			name:      "insufficient funds on the 8th: next month 1st, same time-of-day",
+			name:      "insufficient funds well past the window: next month 1st, same time-of-day",
 			bucket:    commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS,
 			now:       time.Date(2026, 8, 28, 15, 30, 0, 0, time.UTC),
 			wantNil:   false,
 			wantExact: time.Date(2026, 9, 1, 15, 30, 0, 0, time.UTC),
+		},
+		{
+			// The precise boundary the "on the 7th" case above doesn't
+			// pin down on its own: day 8 is the first day OUTSIDE the
+			// window and must fall through to next-month behavior, not
+			// be treated as still-open. Catches an off-by-one on the
+			// upper bound specifically (e.g. day <= 8 instead of <= 7).
+			name:      "insufficient funds on the 8th: first day outside the window, next month 1st",
+			bucket:    commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS,
+			now:       time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC),
+			wantNil:   false,
+			wantExact: time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC),
 		},
 		{
 			name:      "insufficient funds month boundary: 31-day month to next month 1st",
