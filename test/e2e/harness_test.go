@@ -27,10 +27,11 @@ import (
 
 // stack is a running pipeline: the addresses a test needs, and nothing else.
 type stack struct {
-	gatewayHTTP string // host:port for the public HTTP API
-	auditAddr   string // host:port for Audit's gRPC
-	topic       string // this stack's isolated raw.events topic
-	dlqTopic    string
+	gatewayHTTP  string // host:port for the public HTTP API
+	auditAddr    string // host:port for Audit's gRPC
+	executorAddr string // host:port for Executor's gRPC
+	topic        string // this stack's isolated raw.events topic
+	dlqTopic     string
 }
 
 // startStack builds and starts all six services and returns once every one of
@@ -89,6 +90,7 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 	executorAddr := fmt.Sprintf("127.0.0.1:%d", executorPort)
 	ingestionAddr := fmt.Sprintf("127.0.0.1:%d", ingestionPort)
 	s.auditAddr = fmt.Sprintf("127.0.0.1:%d", auditPort)
+	s.executorAddr = executorAddr
 	s.gatewayHTTP = fmt.Sprintf("127.0.0.1:%d", gwHTTPPort)
 
 	procs = append(procs, startProcess(t, "classifier", classifierBin, commonEnv(classifierPort, classifierMetrics)))

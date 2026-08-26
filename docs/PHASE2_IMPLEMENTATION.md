@@ -35,7 +35,7 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | F | Cause-aware retry timing | not started | nothing |
 | G | EV snapshot persisted per attempt | not started | nothing |
 | H | Batch correctness invariants | not started | nothing |
-| I | Idempotency proven end to end | not started | nothing |
+| I | Idempotency proven end to end | **complete** | nothing |
 | J | Re-run safety | not started | nothing |
 | K | Crash safety | not started | nothing |
 | L | Scheduler fake-clock test | not started | nothing |

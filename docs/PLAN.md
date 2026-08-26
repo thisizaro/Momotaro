@@ -332,7 +332,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 
 ## Phase 2: Durability, safety & economics
 
-- [ ] Idempotency proven end-to-end (duplicate Kafka delivery and duplicate
+- [x] Idempotency proven end-to-end (duplicate Kafka delivery and duplicate
       gRPC retry both handled safely) → `ARCHITECTURE.md` §11
 - [x] Retry budgets, cooldowns, contact caps enforced with automated tests
       → `PRD.md` §11
