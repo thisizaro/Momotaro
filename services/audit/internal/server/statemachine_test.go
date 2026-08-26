@@ -30,17 +30,6 @@ func TestIsAllowedTransitionAcceptsEveryFormalEdge(t *testing.T) {
 	}
 }
 
-// docs/DECISIONS.md: the walking skeleton collapses New straight to
-// Recovered, skipping Scoring/RetryScheduled/Retrying because neither the
-// economics scorer nor the scheduler worker exist yet. The verifier must
-// allow this ONE temporary edge or it would flag every record the current
-// system produces as an invariant violation.
-func TestIsAllowedTransitionAcceptsTheTemporarySkeletonEdge(t *testing.T) {
-	if !isAllowedTransition(commonv1.RecordState_RECORD_STATE_NEW, commonv1.RecordState_RECORD_STATE_RECOVERED) {
-		t.Error("New -> Recovered rejected, but this is what the walking skeleton actually produces")
-	}
-}
-
 func TestIsAllowedTransitionRejectsInvalidEdges(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -52,6 +41,9 @@ func TestIsAllowedTransitionRejectsInvalidEdges(t *testing.T) {
 		{"reversed edge", commonv1.RecordState_RECORD_STATE_RETRYING, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED},
 		{"unspecified is never a valid from-state", commonv1.RecordState_RECORD_STATE_UNSPECIFIED, commonv1.RecordState_RECORD_STATE_NEW},
 		{"self-loop not in the diagram", commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_SCORING},
+		{"cannot skip scoring to recovered", commonv1.RecordState_RECORD_STATE_NEW, commonv1.RecordState_RECORD_STATE_RECOVERED},
+		{"cannot skip scoring to retry scheduled", commonv1.RecordState_RECORD_STATE_NEW, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED},
+		{"cannot skip scoring to nudge scheduled", commonv1.RecordState_RECORD_STATE_NEW, commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,22 +51,6 @@ func TestIsAllowedTransitionRejectsInvalidEdges(t *testing.T) {
 				t.Errorf("%s -> %s accepted, want rejected", tc.from, tc.to)
 			}
 		})
-	}
-}
-
-// The Phase 1 pipeline that actually exists schedules straight out of New,
-// because Scoring is the Phase 2 economics gate and has not been built. So
-// these two edges are what every classified record really produces today,
-// and rejecting them made the verifier flag the entire normal output of the
-// system. See docs/INCIDENTS.md 2026-08-23.
-func TestIsAllowedTransitionAcceptsThePhase1SchedulingEdges(t *testing.T) {
-	for _, to := range []commonv1.RecordState{
-		commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED,
-		commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED,
-	} {
-		if !isAllowedTransition(commonv1.RecordState_RECORD_STATE_NEW, to) {
-			t.Errorf("New -> %s rejected, but this is what the Phase 1 Decision Engine actually writes", to)
-		}
 	}
 }
 

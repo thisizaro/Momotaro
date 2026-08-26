@@ -14,7 +14,10 @@ func TestVerifyInvariantsCleanRecordsProduceZeroViolations(t *testing.T) {
 	snapshots := []recordSnapshot{
 		snap("rec-untouched", false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED),
 		snap("rec-recovered", true, commonv1.RecordState_RECORD_STATE_RECOVERED,
-			transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_RECOVERED}),
+			transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_SCORING},
+			transition{From: commonv1.RecordState_RECORD_STATE_SCORING, To: commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED},
+			transition{From: commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_NUDGED},
+			transition{From: commonv1.RecordState_RECORD_STATE_NUDGED, To: commonv1.RecordState_RECORD_STATE_RECOVERED}),
 		snap("rec-escalated", true, commonv1.RecordState_RECORD_STATE_ESCALATED,
 			transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_ESCALATED}),
 		snap("rec-multi-hop", true, commonv1.RecordState_RECORD_STATE_RECOVERED,
@@ -144,28 +147,33 @@ func TestVerifyInvariantsCountsUntouchedRecordsButNeverFlagsThem(t *testing.T) {
 	}
 }
 
-// Regression for docs/INCIDENTS.md 2026-08-23: these are the exact trails
-// the Phase 1 pipeline produces end to end, and the verifier reported every
-// one of them as an impossible transition because the state machine only
-// knew the Scoring-mediated path from the target design.
-func TestVerifyInvariantsAcceptsRealPhase1Trails(t *testing.T) {
-	newTo := func(to commonv1.RecordState) transition {
-		return transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: to}
+// These are the trail shapes the live pipeline actually produces now that
+// every classified record is routed through Scoring (docs/PHASE2_IMPLEMENTATION.md
+// Unit M): the direct New -> RetryScheduled/NudgeScheduled/Recovered edges
+// that docs/INCIDENTS.md 2026-08-23 carved out for the Phase 1 pipeline are
+// gone, because Phase 1's unscored path no longer exists.
+func TestVerifyInvariantsAcceptsRealTrails(t *testing.T) {
+	newToScoring := transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_SCORING}
+	scoredTo := func(to commonv1.RecordState) transition {
+		return transition{From: commonv1.RecordState_RECORD_STATE_SCORING, To: to}
 	}
 	snapshots := []recordSnapshot{
-		// The walking-skeleton e2e path: classify, claim, succeed.
+		// Scored, retried, recovered.
 		snap("rec-retry-recovered", true, commonv1.RecordState_RECORD_STATE_RECOVERED,
-			newTo(commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED),
+			newToScoring,
+			scoredTo(commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED),
 			transition{From: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_RETRYING},
 			transition{From: commonv1.RecordState_RECORD_STATE_RETRYING, To: commonv1.RecordState_RECORD_STATE_RECOVERED}),
-		// A failing execute escalates (no retry budget until Phase 2).
+		// Scored, retried, a failing execute escalates.
 		snap("rec-retry-escalated", true, commonv1.RecordState_RECORD_STATE_ESCALATED,
-			newTo(commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED),
+			newToScoring,
+			scoredTo(commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED),
 			transition{From: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_RETRYING},
 			transition{From: commonv1.RecordState_RECORD_STATE_RETRYING, To: commonv1.RecordState_RECORD_STATE_ESCALATED}),
-		// A nudge parks in Nudged awaiting the Phase 5 delayed outcome.
+		// Scored, a nudge parks in Nudged awaiting the Phase 5 delayed outcome.
 		snap("rec-nudge-parked", true, commonv1.RecordState_RECORD_STATE_NUDGED,
-			newTo(commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED),
+			newToScoring,
+			scoredTo(commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED),
 			transition{From: commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_NUDGED}),
 	}
 
@@ -186,9 +194,10 @@ func TestTrailComplete(t *testing.T) {
 		want bool
 	}{
 		{
-			"a sound Phase 1 trail",
+			"a sound trail through Scoring",
 			snap("a", true, commonv1.RecordState_RECORD_STATE_RETRYING,
-				transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED},
+				transition{From: commonv1.RecordState_RECORD_STATE_NEW, To: commonv1.RecordState_RECORD_STATE_SCORING},
+				transition{From: commonv1.RecordState_RECORD_STATE_SCORING, To: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED},
 				transition{From: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, To: commonv1.RecordState_RECORD_STATE_RETRYING}),
 			true,
 		},
