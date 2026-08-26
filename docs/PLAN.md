@@ -402,10 +402,23 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       no record lost and no audit gap (this is what the transactional write
       and contiguous-prefix commits exist to guarantee)
       → `ARCHITECTURE.md` §8a, §10a
-- [ ] Scheduler test with a fake clock: a record parked with a future
+- [x] Scheduler test with a fake clock: a record parked with a future
       `due_at` fires exactly once when the clock advances past it, and is
       never double-claimed by two concurrent pods
-      → `ARCHITECTURE.md` §7a, `ENGINEERING.md` §2
+      → `ARCHITECTURE.md` §7a, `ENGINEERING.md` §2.
+      `TestSchedulerFiresOnceWhenFakeClockPassesDueAt` proves the first
+      half with `clock.Fake`; `TestSchedulerConcurrentSchedulersClaimExactlyOnce`
+      proves the second by racing 25 schedulers for one row and asserting
+      exactly one `intervention_attempt`/one execution. Verified
+      adversarially, not just written and trusted: with `FOR UPDATE OF rs
+      SKIP LOCKED` removed from `claimDue`, the concurrency test catches
+      the break in roughly 60% of runs (0/20 false positives against
+      correct code), which is why it runs in a `GOMAXPROCS=2` loop rather
+      than once. A genuinely broken lock used to hang the test instead of
+      failing it (the fake Executor propagated a raw unique-violation
+      error into the Scheduler's retry loop, which then waited on a fake
+      clock nothing advances); fixed by having the fake Executor mirror
+      the real Executor's graceful duplicate-claim handling.
 
 ## Phase 3: Reasoning layer
 

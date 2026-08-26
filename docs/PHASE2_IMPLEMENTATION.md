@@ -38,10 +38,10 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | I | Idempotency proven end to end | **merged** | nothing |
 | J | Re-run safety | **merged** | nothing |
 | K | Crash safety | not started | nothing |
-| L | Scheduler fake-clock test | not started | nothing |
+| L | Scheduler fake-clock test | **merged** | nothing |
 | M | Delete the `TEMPORARY` state machine edges | not started | nothing |
 
-**7 of 13 merged. 6 remaining.** F, H and M are now unblocked.
+**8 of 13 merged. 5 remaining.** F, H and M are now unblocked.
 
 Units A, B and C map to three `PLAN.md` checkboxes. D and E together are the
 "economics scorer" checkbox. M is cleanup that Phase 2 unlocks and that
@@ -415,7 +415,7 @@ is not the interesting one.
 
 ## Unit L: Scheduler fake-clock test
 
-**Status**: not started, **unblocked now**.
+**Status**: merged.
 **Depends on**: nothing.
 **Branch**: `svc/decision-engine/scheduler-clock-test`.
 **Files owned**: `services/decision-engine/internal/engine/scheduler_test.go`.
@@ -430,13 +430,37 @@ passes it, and is never claimed by two concurrent pods.
 `FOR UPDATE SKIP LOCKED` is the mechanism the whole time-based half of the
 system rests on. Double-claiming means charging a customer twice.
 
+### What actually shipped
+
+Two tests: `TestSchedulerFiresOnceWhenFakeClockPassesDueAt` uses
+`clock.Fake` for the "fires exactly once" half.
+`TestSchedulerConcurrentSchedulersClaimExactlyOnce` races **25** concurrent
+`Scheduler`s (not 2) against one due row, via a fake Executor
+(`attemptRecordingExecutor`) that mirrors the real Executor's
+insert-before-execute contract, including its graceful handling of a
+duplicate claim (catches SQLSTATE 23505, returns `AlreadyExecuted` rather
+than an error).
+
+Both numbers came from adversarial review, not the original draft: with
+only 2 racers, removing `FOR UPDATE OF rs SKIP LOCKED` from `claimDue`
+entirely still passed 5/5 runs, because true database-level overlap between
+two racers was rare in practice. Raising to 25 racers gave a ~60% catch
+rate over 20 runs against the same deliberately-broken code, with 0/20
+false positives against correct code. Separately, the first version of the
+fake Executor did not mirror the real duplicate-claim handling, so when
+contention was forced high enough to actually double-claim, the Scheduler's
+retry loop waited on a fake clock nothing in the test advances and the test
+**hung** until its timeout instead of failing with a clear assertion,
+worse than a silent pass since it reads as an infra problem in CI, not a
+locking bug. Fixed before merge.
+
 ### LLD
 
 Use the injected `clock.Fake`. Two assertions:
 
 1. **Fires exactly once.** Park a record ahead of the clock, tick past it,
    assert one claim.
-2. **Never double-claimed.** Run two schedulers concurrently against one due
+2. **Never double-claimed.** Run schedulers concurrently against one due
    record and assert exactly one claims it.
 
 For the concurrency half, a single green run is not evidence. Use the

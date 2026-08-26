@@ -783,3 +783,20 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   IDs, two distinct record IDs, and both process and settle independently.
   This is correct, not a gap. See `docs/PHASE2_IMPLEMENTATION.md` Unit J
   for the full test description.
+- 2026-08-26: Unit L's `claimDue` concurrency test races 25 `Scheduler`s
+  against one row, not 2, and its fake Executor mirrors the real
+  Executor's graceful duplicate-claim handling rather than propagating a
+  raw DB error. Both came from adversarially breaking the test before
+  trusting it, per `ENGINEERING.md` §1: with 2 racers and no such
+  duplicate-handling, removing `FOR UPDATE OF rs SKIP LOCKED` from
+  `claimDue` entirely still passed every run, and when contention was
+  forced high enough to actually overlap, the Scheduler's retry loop
+  waited on a fake clock nothing in the test advances and the test hung
+  until its timeout rather than failing cleanly, which is worse than
+  useless in CI (reads as an infra problem, not a locking bug). Fixed by
+  raising the race to 25 concurrent schedulers (~60% catch rate over 20
+  runs against deliberately broken locking, 0/20 false positives against
+  correct locking, both measured) and having the fake Executor catch
+  SQLSTATE 23505 and return `AlreadyExecuted`, matching
+  `services/executor/internal/attempt/store.go`'s actual contract. See
+  `docs/PHASE2_IMPLEMENTATION.md` Unit L for the full test description.
