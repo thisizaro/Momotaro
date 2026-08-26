@@ -5,13 +5,16 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
+	"google.golang.org/grpc"
 )
 
 func schedulerTestConfig(dlqTopic string) SchedulerConfig {
@@ -453,4 +456,142 @@ func TestSchedulerNeverDoubleClaimsTheSameRecord(t *testing.T) {
 	if entryCount != 2 {
 		t.Errorf("audit_entry rows = %d, want 2 (one claim + one outcome, not doubled by a second tick)", entryCount)
 	}
+}
+
+func TestSchedulerFiresOnceWhenFakeClockPassesDueAt(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	_, recordID := seedRecord(ctx, t, pool)
+
+	start := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
+	fakeClock := clock.NewFake(start)
+	dueAt := fakeClock.Now().Add(time.Minute)
+	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, dueAt)
+
+	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}}
+	sched := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
+
+	if err := sched.tick(ctx); err != nil {
+		t.Fatalf("tick before due_at: %v", err)
+	}
+
+	var state string
+	var storedDueAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT current_state, due_at FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &storedDueAt); err != nil {
+		t.Fatalf("query record_state before due_at: %v", err)
+	}
+	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String() {
+		t.Fatalf("current_state before due_at = %q, want RETRY_SCHEDULED", state)
+	}
+	if storedDueAt == nil || !storedDueAt.Equal(dueAt) {
+		t.Fatalf("due_at before due_at = %v, want unchanged %v", storedDueAt, dueAt)
+	}
+
+	fakeClock.Advance(time.Minute + time.Nanosecond)
+	if err := sched.tick(ctx); err != nil {
+		t.Fatalf("tick after due_at: %v", err)
+	}
+	if err := sched.tick(ctx); err != nil {
+		t.Fatalf("second tick after due_at: %v", err)
+	}
+
+	var attemptCount, auditEntries int
+	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &attemptCount); err != nil {
+		t.Fatalf("query record_state after due_at: %v", err)
+	}
+	if state != commonv1.RecordState_RECORD_STATE_RECOVERED.String() {
+		t.Errorf("current_state after due_at = %q, want RECOVERED", state)
+	}
+	if attemptCount != 1 {
+		t.Errorf("attempt_count after two due ticks = %d, want 1", attemptCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_entry WHERE record_id=$1`, recordID).Scan(&auditEntries); err != nil {
+		t.Fatalf("count audit entries: %v", err)
+	}
+	if auditEntries != 2 {
+		t.Errorf("audit_entry rows = %d, want 2 (one claim + one outcome)", auditEntries)
+	}
+}
+
+// TestSchedulerConcurrentSchedulersClaimExactlyOnce exercises the row lock in
+// claimDue using two independent schedulers and a shared Postgres record. The
+// recording executor mirrors the Executor's insert-before-execute contract so
+// the test proves the durable money-action guard as well as the state trail.
+func TestSchedulerConcurrentSchedulersClaimExactlyOnce(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	_, recordID := seedRecord(ctx, t, pool)
+
+	start := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
+	fakeClock := clock.NewFake(start)
+	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, fakeClock.Now().Add(-time.Minute))
+
+	executor := &attemptRecordingExecutor{pool: pool, clock: fakeClock}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM intervention_attempt WHERE record_id=$1`, recordID)
+	})
+	sched1 := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched2 := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
+
+	startTicks := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, sched := range []*Scheduler{sched1, sched2} {
+		wg.Add(1)
+		go func(s *Scheduler) {
+			defer wg.Done()
+			<-startTicks
+			errs <- s.tick(ctx)
+		}(sched)
+	}
+	close(startTicks)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent tick: %v", err)
+		}
+	}
+
+	var state string
+	var attemptCount, attempts, auditEntries int
+	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &attemptCount); err != nil {
+		t.Fatalf("query record_state: %v", err)
+	}
+	if state != commonv1.RecordState_RECORD_STATE_RECOVERED.String() {
+		t.Errorf("current_state = %q, want RECOVERED", state)
+	}
+	if attemptCount != 1 {
+		t.Errorf("attempt_count = %d, want 1", attemptCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM intervention_attempt WHERE record_id=$1`, recordID).Scan(&attempts); err != nil {
+		t.Fatalf("count intervention attempts: %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("intervention_attempt rows = %d, want 1", attempts)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_entry WHERE record_id=$1`, recordID).Scan(&auditEntries); err != nil {
+		t.Fatalf("count audit entries: %v", err)
+	}
+	if auditEntries != 2 {
+		t.Errorf("audit_entry rows = %d, want 2 (one claim + one outcome)", auditEntries)
+	}
+}
+
+type attemptRecordingExecutor struct {
+	pool  *pgxpkg.Pool
+	clock clock.Clock
+}
+
+func (e *attemptRecordingExecutor) Execute(ctx context.Context, in *executorv1.ExecuteRequest, opts ...grpc.CallOption) (*executorv1.ExecuteResponse, error) {
+	_, err := e.pool.Exec(ctx, `
+		INSERT INTO intervention_attempt (id, record_id, attempt_number, action_type, outcome, executed_at, cost_paise)
+		VALUES ($1, $2, $3, $4, $5, $6, 0)`,
+		uuid.NewString(), in.GetRecordId(), in.GetAttemptNumber(), in.GetActionType().String(), commonv1.Outcome_OUTCOME_SUCCESS.String(), e.clock.Now())
+	if err != nil {
+		return nil, err
+	}
+	return &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}, nil
 }
