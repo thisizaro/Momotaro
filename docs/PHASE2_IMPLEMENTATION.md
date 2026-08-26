@@ -35,13 +35,13 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | F | Cause-aware retry timing | not started | nothing |
 | G | EV snapshot persisted per attempt | not started | nothing |
 | H | Batch correctness invariants | not started | nothing |
-| I | Idempotency proven end to end | **complete** | nothing |
-| J | Re-run safety | not started | nothing |
+| I | Idempotency proven end to end | **merged** | nothing |
+| J | Re-run safety | **merged** | nothing |
 | K | Crash safety | not started | nothing |
 | L | Scheduler fake-clock test | not started | nothing |
 | M | Delete the `TEMPORARY` state machine edges | not started | nothing |
 
-**5 of 13 merged. 8 remaining.** F, H and M are now unblocked.
+**7 of 13 merged. 6 remaining.** F, H and M are now unblocked.
 
 Units A, B and C map to three `PLAN.md` checkboxes. D and E together are the
 "economics scorer" checkbox. M is cleanup that Phase 2 unlocks and that
@@ -315,7 +315,7 @@ below.
 
 ## Unit I: Idempotency proven end to end
 
-**Status**: not started, **unblocked now**.
+**Status**: merged.
 **Depends on**: nothing.
 **Branch**: `test/idempotency-e2e`.
 **Files owned**: a new file in `test/e2e/`.
@@ -353,7 +353,7 @@ still a bug.
 
 ## Unit J: Re-run safety
 
-**Status**: not started, **unblocked now**.
+**Status**: merged.
 **Depends on**: nothing.
 **Branch**: `test/rerun-safety`.
 **Files owned**: a new file in `test/e2e/`.
