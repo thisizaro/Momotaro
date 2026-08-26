@@ -766,3 +766,20 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
     the headline metric under-costs recovery by roughly two orders of
     magnitude relative to messaging spend, independent of anything fixed
     here.
+- 2026-08-26: `SubmitBatch` has no idempotency key and no dedup. Verified by
+  inspection of `proto/ingestion/v1/ingestion.proto`
+  (`SubmitBatchRequest` has no `batch_id` field and no idempotency key
+  field), `services/ingestion/internal/server/server.go`
+  (`SubmitBatch` calls `createBatch` unconditionally, no key lookup),
+  and `services/api-gateway/internal/httpapi/handler.go` (the Gateway's
+  `submitBatch` handler passes `SubmitBatchRequest` straight through with
+  no additional dedup). Every call creates a brand-new `batch_id` and new
+  `record` rows. This is the documented scope of the demo/backfill path
+  (`ARCHITECTURE.md` section 0a): `SubmitBatch` was never designed to be
+  idempotent. The only per-event idempotency guarantee in Ingestion is
+  `SubmitEvent`'s `idempotency_key` field (the production webhook path).
+  Unit J's e2e test (`test/e2e/rerun_safety_test.go`) asserts this actual
+  behavior: two calls with identical content produce two distinct batch
+  IDs, two distinct record IDs, and both process and settle independently.
+  This is correct, not a gap. See `docs/PHASE2_IMPLEMENTATION.md` Unit J
+  for the full test description.

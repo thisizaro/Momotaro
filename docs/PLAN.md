@@ -396,7 +396,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       identifiers and string literals.
 - [ ] Correctness invariant tests over a batch run: zero stopping-rule
       violations, 100% audit trail completeness → `PRD.md` §9, §10
-- [ ] Re-run safety test: replay the same batch twice, confirm identical
+- [x] Re-run safety test: replay the same batch twice, confirm identical
       outcome (no double-processing) → `ARCHITECTURE.md` §11
 - [ ] Crash-safety test: kill the Decision Engine mid-batch, restart, assert
       no record lost and no audit gap (this is what the transactional write
