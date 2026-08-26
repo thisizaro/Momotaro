@@ -109,7 +109,7 @@ func TestSubmitEventIdempotencyDeduplicatesRecord(t *testing.T) {
 	}
 
 	// --- Wait for the pipeline to process the single record. ---
-	waitForRecordState(ctx, t, pool, resp1.RecordID,
+	waitForExactRecordState(ctx, t, pool, resp1.RecordID,
 		commonv1.RecordState_RECORD_STATE_RECOVERED,
 		"deduplicated event should process once and reach RECOVERED")
 
@@ -275,10 +275,10 @@ func TestSubmitBatchResubmitCreatesIndependentRecords(t *testing.T) {
 	t.Logf("record IDs: batch1=%s record=%s  batch2=%s record=%s", resp1.BatchID, id1, resp2.BatchID, id2)
 
 	// --- Wait for both records to process and settle. ---
-	waitForRecordState(ctx, t, pool, id1,
+	waitForExactRecordState(ctx, t, pool, id1,
 		commonv1.RecordState_RECORD_STATE_RECOVERED,
 		"first batch record should reach RECOVERED")
-	waitForRecordState(ctx, t, pool, id2,
+	waitForExactRecordState(ctx, t, pool, id2,
 		commonv1.RecordState_RECORD_STATE_RECOVERED,
 		"second batch record should reach RECOVERED")
 
@@ -372,10 +372,10 @@ type submitBatchResp struct {
 	AcceptedCount int32  `json:"accepted_count"`
 }
 
-// waitForRecordState polls record_state until the record reaches wantState
+// waitForExactRecordState polls record_state until the record reaches wantState
 // or the context deadline is exceeded. Uses pipelineWait as the polling
 // deadline (no time.Sleep, bounded deadline per ENGINEERING.md section 1).
-func waitForRecordState(ctx context.Context, t *testing.T, p *pgxpkg.Pool, recordID string, wantState commonv1.RecordState, reason string) {
+func waitForExactRecordState(ctx context.Context, t *testing.T, p *pgxpkg.Pool, recordID string, wantState commonv1.RecordState, reason string) {
 	t.Helper()
 	deadline := time.Now().Add(pipelineWait)
 	for {
