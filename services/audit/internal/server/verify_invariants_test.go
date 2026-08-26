@@ -36,9 +36,9 @@ func TestVerifyInvariantsOnACleanRecordReportsNoViolations(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
-	seedRecordState(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RECOVERED.String())
+	seedRecordState(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_ESCALATED.String())
 	seedAuditEntry(ctx, t, pool, recordID, batchID,
-		commonv1.RecordState_RECORD_STATE_NEW.String(), commonv1.RecordState_RECORD_STATE_RECOVERED.String())
+		commonv1.RecordState_RECORD_STATE_NEW.String(), commonv1.RecordState_RECORD_STATE_ESCALATED.String())
 
 	s := New(pool)
 	resp, err := s.VerifyInvariants(ctx, &auditv1.VerifyInvariantsRequest{BatchId: batchID})
