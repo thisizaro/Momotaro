@@ -725,3 +725,38 @@ which in practice means the *full* suite, not just the files a unit
 touched -- worth restating here since two independently-reviewed units
 each looked complete on their own and still broke the full run when
 combined.
+
+### 2026-08-26, Unit M's own LLD said to run the full suite, and did not
+
+Unit M deleted the three `TEMPORARY` state-machine edges
+(`NEW -> RECOVERED`, `NEW -> RETRY_SCHEDULED`, `NEW -> NUDGE_SCHEDULED`,
+see the 2026-08-23 entry above for why they existed) now that every record
+routes through `Scoring`, and updated `statemachine_test.go` accordingly.
+`go test ./services/audit/...` with no build tags was green.
+
+That command does not compile the package's `integration`-tagged files.
+Three fixtures elsewhere in the same package still built audit trails
+through the removed edges: one in the unit-tier `verify_test.go` (a
+clean-record case using `NEW -> RECOVERED` directly), and two behind the
+`integration` tag (`get_record_audit_test.go`, `verify_invariants_test.go`)
+that seed rows straight into Postgres rather than going through
+`scheduleNew`. `go test -race -tags='integration e2e' ./...` caught all
+three as `ImpossibleTransitions`/`TrailComplete` failures.
+
+**Fix:** routed each fixture through `NEW -> SCORING -> ...`, matching what
+`scheduleNew` (decision-engine `store.go`) actually writes -- notably, that
+function applies the same rationale and source to every step it inserts,
+not only the last, so the real shape has one more row than the old
+fixtures assumed. Re-verified with a `-count=1` full-suite run, plus an
+adversarial check: reintroduced `NEW -> RECOVERED` into the state machine
+and confirmed the new rejection case in `statemachine_test.go` goes red,
+then reverted.
+
+**Prevention:** same lesson as the entry above, with a sharper edge this
+time: Unit M's own LLD explicitly said "run the full e2e suite, and
+confirm nothing regresses," and the unit-only `go test ./services/audit/...`
+run that was actually done looked like it satisfied that instruction
+without doing so, because Go silently skips build-tagged files it wasn't
+told to include rather than erroring. A green run over the wrong test set
+is not distinguishable from a green run over the right one unless someone
+checks which files actually compiled.

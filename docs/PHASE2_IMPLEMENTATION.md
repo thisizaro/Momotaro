@@ -39,9 +39,9 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | J | Re-run safety | **merged** | nothing |
 | K | Crash safety | not started | nothing |
 | L | Scheduler fake-clock test | **merged** | nothing |
-| M | Delete the `TEMPORARY` state machine edges | not started | nothing |
+| M | Delete the `TEMPORARY` state machine edges | **merged** | nothing |
 
-**9 of 13 merged. 4 remaining.** H and M are unblocked. G is complete but
+**10 of 13 merged. 3 remaining.** H and K are unblocked. G is complete but
 not yet merged (two branches: `infra/record-state-ev-snapshot`,
 `svc/executor/ev-snapshot`).
 
@@ -487,7 +487,7 @@ parallel.**
 
 ## Unit M: Delete the TEMPORARY state machine edges
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: E merged.
 **Branch**: `svc/audit/remove-temporary-edges`.
 **Files owned**: `services/audit/internal/server/statemachine.go`.
@@ -513,6 +513,26 @@ a reason to keep the edge.
 
 Do this **after** E, not after D. The re-entry path may legitimately produce
 transitions the New path does not.
+
+### What actually shipped
+
+The three edges and the statemachine_test.go cases exercising them were
+removed as scoped, and three new cases were added asserting the edges are
+now rejected. `go test ./services/audit/...` (no build tags) was green.
+
+That run does not compile `verify_test.go`'s unit-tagged sibling files under
+the `integration` tag, and it turned out three fixtures there still built
+audit trails through the removed edges: a fixture in `verify_test.go` itself
+(clean-record case), and two integration-tagged files
+(`get_record_audit_test.go`, `verify_invariants_test.go`) that seed rows
+straight into Postgres. Full-suite verification
+(`go test -race -tags='integration e2e' ./...`) caught all three; the LLD's
+own instruction to run the full suite would have caught them before merge.
+Fixed by routing every fixture through `New -> Scoring -> ...`, matching what
+`scheduleNew` (decision-engine store.go) actually writes, and re-verified
+with a `-count=1` full-suite run plus an adversarial check: reintroducing
+`New -> Recovered` and confirming the new rejection test in
+statemachine_test.go goes red, then reverting.
 
 ---
 

@@ -396,16 +396,20 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       identifiers and string literals.
 - [ ] Correctness invariant tests over a batch run: zero stopping-rule
       violations, 100% audit trail completeness → `PRD.md` §9, §10
-- [ ] Re-run safety test: replay the same batch twice, confirm identical
+- [x] Re-run safety test: replay the same batch twice, confirm identical
       outcome (no double-processing) → `ARCHITECTURE.md` §11
 - [ ] Crash-safety test: kill the Decision Engine mid-batch, restart, assert
       no record lost and no audit gap (this is what the transactional write
       and contiguous-prefix commits exist to guarantee)
       → `ARCHITECTURE.md` §8a, §10a
-- [ ] Scheduler test with a fake clock: a record parked with a future
+- [x] Scheduler test with a fake clock: a record parked with a future
       `due_at` fires exactly once when the clock advances past it, and is
       never double-claimed by two concurrent pods
       → `ARCHITECTURE.md` §7a, `ENGINEERING.md` §2
+- [x] Delete the `TEMPORARY` state machine edges (`NEW -> RECOVERED`,
+      `NEW -> RETRY_SCHEDULED`, `NEW -> NUDGE_SCHEDULED`) added at
+      `docs/PLAN.md` above for the Phase 1 pipeline, now that every record
+      routes through `Scoring` → `docs/PHASE2_IMPLEMENTATION.md` Unit M
 
 ## Phase 3: Reasoning layer
 
