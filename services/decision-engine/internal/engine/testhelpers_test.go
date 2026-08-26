@@ -15,6 +15,7 @@ import (
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -165,14 +166,29 @@ type fakeExecutor struct {
 	err   error
 	failN int32
 	calls int32
+
+	mu      sync.Mutex
+	lastReq *executorv1.ExecuteRequest
 }
 
 func (f *fakeExecutor) Execute(ctx context.Context, in *executorv1.ExecuteRequest, opts ...grpc.CallOption) (*executorv1.ExecuteResponse, error) {
 	n := atomic.AddInt32(&f.calls, 1)
+	f.mu.Lock()
+	f.lastReq = in
+	f.mu.Unlock()
 	if f.err != nil && (f.failN == 0 || n <= f.failN) {
 		return nil, f.err
 	}
 	return f.resp, nil
+}
+
+// LastRequest returns the most recent ExecuteRequest this fake received, for
+// tests that need to assert on what was actually sent rather than just that
+// something was.
+func (f *fakeExecutor) LastRequest() *executorv1.ExecuteRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReq
 }
 
 func retryClassifier() *fakeClassifier {

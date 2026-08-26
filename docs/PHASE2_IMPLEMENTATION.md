@@ -33,7 +33,7 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | D | Economics scorer, `Scoring`, `ClosedUneconomic` | **merged** | E, F, G, M |
 | E | Retry loop: re-entry to `Scoring` after a failed attempt | **merged** | F, H, M |
 | F | Cause-aware retry timing | **merged** | nothing |
-| G | EV snapshot persisted per attempt | not started | nothing |
+| G | EV snapshot persisted per attempt | **merged** | nothing |
 | H | Batch correctness invariants | not started | nothing |
 | I | Idempotency proven end to end | **merged** | nothing |
 | J | Re-run safety | **merged** | nothing |
@@ -41,9 +41,7 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | L | Scheduler fake-clock test | **merged** | nothing |
 | M | Delete the `TEMPORARY` state machine edges | **merged** | nothing |
 
-**10 of 13 merged. 3 remaining.** H and K are unblocked. G is complete but
-not yet merged (two branches: `infra/record-state-ev-snapshot`,
-`svc/executor/ev-snapshot`).
+**11 of 13 merged. 2 remaining.** H and K are unblocked.
 
 Units A, B and C map to three `PLAN.md` checkboxes. D and E together are the
 "economics scorer" checkbox. M is cleanup that Phase 2 unlocks and that
@@ -233,11 +231,28 @@ can actually fail (timeScale division and salary-window boundary both proven).
 
 ## Unit G: EV snapshot persisted per attempt
 
-**Status**: not started, and **unblocked right now**.
+**Status**: merged.
 **Depends on**: nothing. The proto fields are merged (PR #27).
-**Branch**: `svc/executor/ev-snapshot`.
+**Branch**: `svc/executor/ev-snapshot`, stacked on `infra/record-state-ev-snapshot`.
 **Files owned**: `services/executor/internal/attempt/store.go`,
 `services/decision-engine/internal/engine/clients.go`.
+
+**What actually shipped, ahead of what's below.** The LLD as written
+undersold the scope: `economics.Score` is computed once at Scoring time,
+but Execute does not happen until the scheduler claims the record later
+(sometimes a whole salary window afterward), so there was nowhere to hold
+the snapshot in between. Migration `00004_record_state_ev_snapshot.sql`
+adds `ev_score_at_decision`/`p_recovery_at_decision` to `record_state`
+too, its own PR ahead of the dependent code per `ARCHITECTURE.md` §12a
+(local development was done stacked on that branch so both could be
+tested together; merge order still matters). `store.scheduleNew` and
+`store.recordRescore` both now take the winning `economics.Score` and
+write it there, NULL when the record never reached scoring (an explicit
+escalation, `engine.go`'s `decide`), never a misleading 0.
+`store.claimDue` reads it back onto `claimedRecord`, and
+`scheduler.go`'s `executeWithRetry` forwards it on the `ExecuteRequest`
+exactly as the LLD describes. The Executor side matched the LLD as
+written.
 
 ### What it is
 

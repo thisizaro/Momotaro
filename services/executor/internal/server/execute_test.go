@@ -65,6 +65,34 @@ func TestExecuteClaimsTheAttemptBeforeRunningTheAction(t *testing.T) {
 	}
 }
 
+// Phase 2 Unit G: the Decision Engine's economics decision snapshot arrives
+// on the request and must be recorded as-is, never recomputed here (the
+// Executor is not the service that scores, docs/PHASE2_IMPLEMENTATION.md
+// Unit G's LLD is explicit about this split of responsibility).
+func TestExecutePersistsTheEVSnapshotFromTheRequest(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	recordID := seedRecord(ctx, t, pool)
+
+	s := newServer(t, pool, succeedingRetry(), &countingNotification{})
+
+	req := retryReq(recordID, 1)
+	req.EvScoreAtDecision = 4567.25
+	req.PRecoveryAtDecision = 0.42
+
+	if _, err := s.Execute(ctx, req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	stored := loadAttempt(ctx, t, pool, recordID, 1)
+	if stored.EVScoreAtDecision == nil || *stored.EVScoreAtDecision != 4567.25 {
+		t.Errorf("stored ev_score_at_decision = %v, want 4567.25", stored.EVScoreAtDecision)
+	}
+	if stored.PRecoveryAtDecision == nil || *stored.PRecoveryAtDecision != 0.42 {
+		t.Errorf("stored p_recovery_at_decision = %v, want 0.42", stored.PRecoveryAtDecision)
+	}
+}
+
 // The durable guarantee (docs/ARCHITECTURE.md section 11) and the money-safety
 // requirement of docs/ENGINEERING.md section 11 item 8.
 func TestExecuteIsIdempotentOnRedelivery(t *testing.T) {

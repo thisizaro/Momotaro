@@ -68,13 +68,18 @@ type Recorded struct {
 // Claim reserves the (recordID, attemptNumber) slot before any side effect
 // runs, returning the new row's id. claimed is false when the slot was
 // already taken, which is the duplicate-delivery case and not an error.
-func (s *Store) Claim(ctx context.Context, recordID string, attemptNumber int32, action commonv1.ActionType, message string, now time.Time) (id string, claimed bool, err error) {
+//
+// evScoreAtDecision and pRecoveryAtDecision are the Decision Engine's
+// economics decision snapshot for this action, recorded as-is: the Executor
+// never scores, it only persists what it was told
+// (docs/PHASE2_IMPLEMENTATION.md Unit G).
+func (s *Store) Claim(ctx context.Context, recordID string, attemptNumber int32, action commonv1.ActionType, message string, evScoreAtDecision, pRecoveryAtDecision float64, now time.Time) (id string, claimed bool, err error) {
 	id = uuid.NewString()
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO intervention_attempt
-			(id, record_id, attempt_number, action_type, outcome, executed_at, cost_paise, message_text, failure_code)
-		VALUES ($1, $2, $3, $4, $5, $6, 0, $7, '')`,
-		id, recordID, attemptNumber, action.String(), claimMarker, now, message)
+			(id, record_id, attempt_number, action_type, outcome, executed_at, cost_paise, message_text, failure_code, ev_score_at_decision, p_recovery_at_decision)
+		VALUES ($1, $2, $3, $4, $5, $6, 0, $7, '', $8, $9)`,
+		id, recordID, attemptNumber, action.String(), claimMarker, now, message, evScoreAtDecision, pRecoveryAtDecision)
 	if err == nil {
 		return id, true, nil
 	}

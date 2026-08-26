@@ -42,8 +42,9 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	var state, bucket, pendingAction string
 	var attemptCount int
 	var dueAt *time.Time
-	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count, root_cause_bucket, pending_action, due_at FROM record_state WHERE record_id=$1`, recordID).
-		Scan(&state, &attemptCount, &bucket, &pendingAction, &dueAt); err != nil {
+	var evScore, pRecovery *float64
+	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count, root_cause_bucket, pending_action, due_at, ev_score_at_decision, p_recovery_at_decision FROM record_state WHERE record_id=$1`, recordID).
+		Scan(&state, &attemptCount, &bucket, &pendingAction, &dueAt, &evScore, &pRecovery); err != nil {
 		t.Fatalf("query record_state: %v", err)
 	}
 	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String() {
@@ -60,6 +61,19 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	}
 	if !dueAt.After(time.Now().Add(-time.Second)) {
 		t.Errorf("due_at = %v, want roughly now + RetryDelay", dueAt)
+	}
+	// Phase 2 Unit G: the economics scorer's decision snapshot must be
+	// persisted here, since Execute happens later (when the scheduler claims
+	// this record) and has no other way to learn what was decided.
+	if evScore == nil {
+		t.Error("ev_score_at_decision is NULL, want the scorer's winning EV")
+	} else if *evScore <= 0 {
+		t.Errorf("ev_score_at_decision = %v, want > 0 (only a positive-EV action is ever scheduled)", *evScore)
+	}
+	if pRecovery == nil {
+		t.Error("p_recovery_at_decision is NULL, want the scorer's winning P(recovery)")
+	} else if *pRecovery <= 0 || *pRecovery > 1 {
+		t.Errorf("p_recovery_at_decision = %v, want in (0,1]", *pRecovery)
 	}
 
 	var entryCount int
@@ -123,7 +137,9 @@ func TestHandleMessageEscalatesOnExplicitEscalateAction(t *testing.T) {
 	var state string
 	var pendingAction *string
 	var dueAt *time.Time
-	if err := pool.QueryRow(ctx, `SELECT current_state, pending_action, due_at FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &pendingAction, &dueAt); err != nil {
+	var evScore, pRecovery *float64
+	if err := pool.QueryRow(ctx, `SELECT current_state, pending_action, due_at, ev_score_at_decision, p_recovery_at_decision FROM record_state WHERE record_id=$1`, recordID).
+		Scan(&state, &pendingAction, &dueAt, &evScore, &pRecovery); err != nil {
 		t.Fatalf("query record_state: %v", err)
 	}
 	if state != commonv1.RecordState_RECORD_STATE_ESCALATED.String() {
@@ -134,6 +150,15 @@ func TestHandleMessageEscalatesOnExplicitEscalateAction(t *testing.T) {
 	}
 	if dueAt != nil {
 		t.Errorf("due_at = %v, want NULL for a terminal record", *dueAt)
+	}
+	// Escalation bypasses economics entirely (engine.go's decide): there is
+	// no winning score to snapshot, and storing 0 would misrepresent "we
+	// priced this at zero" instead of "this was never priced."
+	if evScore != nil {
+		t.Errorf("ev_score_at_decision = %v, want NULL for an escalated record that bypassed scoring", *evScore)
+	}
+	if pRecovery != nil {
+		t.Errorf("p_recovery_at_decision = %v, want NULL for an escalated record that bypassed scoring", *pRecovery)
 	}
 }
 

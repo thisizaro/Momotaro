@@ -140,7 +140,7 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 		dueAt = dueAtFor(final, e.cfg.NudgeDelay, now)
 	}
 
-	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), dueAt, now); err != nil {
+	if err := e.store.scheduleNew(ctx, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), score, dueAt, now); err != nil {
 		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)
 	}
 

@@ -40,6 +40,18 @@ func seedScheduled(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordI
 	}
 }
 
+// seedEVSnapshot sets record_state's economics decision snapshot directly,
+// standing in for what a real scheduleNew/recordRescore write would have
+// left there, for tests that only care whether the scheduler reads and
+// forwards it correctly rather than how it got there.
+func seedEVSnapshot(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID string, evScorePaise, pRecovery float64) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `UPDATE record_state SET ev_score_at_decision=$1, p_recovery_at_decision=$2 WHERE record_id=$3`,
+		evScorePaise, pRecovery, recordID); err != nil {
+		t.Fatalf("seed ev snapshot: %v", err)
+	}
+}
+
 func TestSchedulerClaimsDueRetryAndRecordsSuccess(t *testing.T) {
 	pool := testPool(t)
 	dlqProducer, dlqTopic := testDLQ(t)
@@ -78,6 +90,46 @@ func TestSchedulerClaimsDueRetryAndRecordsSuccess(t *testing.T) {
 	}
 	if entryCount != 2 {
 		t.Errorf("audit_entry rows = %d, want 2 (claim transition + outcome transition)", entryCount)
+	}
+}
+
+// Phase 2 Unit G: the EV snapshot record_state carries from Scoring time
+// must reach the Executor on the ExecuteRequest unchanged, since Execute has
+// no other way to learn what the Decision Engine decided. Proven by seeding
+// a known snapshot directly (standing in for a real scheduleNew/
+// recordRescore write) and asserting the fake Executor received exactly
+// those numbers, not zero and not recomputed.
+func TestSchedulerForwardsEVSnapshotToExecute(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	_, recordID := seedRecord(ctx, t, pool)
+	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(-time.Minute))
+	seedEVSnapshot(ctx, t, pool, recordID, 12345.5, 0.6789)
+
+	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS, CostPaise: 20}}
+	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+
+	if err := sched.tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	req := executor.LastRequest()
+	if req == nil {
+		t.Fatal("Execute was never called")
+	}
+	if req.GetRecordId() != recordID {
+		// claimDue is unscoped (see the comment above), so a concurrently
+		// running test could have this fake's last call belong to a
+		// different record; that would make the assertions below meaningless
+		// rather than wrong, so fail clearly instead of silently passing.
+		t.Fatalf("last Execute call was for record %s, want %s (claimDue picked up an unrelated due record first)", req.GetRecordId(), recordID)
+	}
+	if req.GetEvScoreAtDecision() != 12345.5 {
+		t.Errorf("ExecuteRequest.EvScoreAtDecision = %v, want 12345.5", req.GetEvScoreAtDecision())
+	}
+	if req.GetPRecoveryAtDecision() != 0.6789 {
+		t.Errorf("ExecuteRequest.PRecoveryAtDecision = %v, want 0.6789", req.GetPRecoveryAtDecision())
 	}
 }
 
@@ -158,7 +210,9 @@ func TestSchedulerReschedulesAfterFailedAttemptRatherThanEscalating(t *testing.T
 
 	var state string
 	var attemptCount int
-	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &attemptCount); err != nil {
+	var evScore, pRecovery *float64
+	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count, ev_score_at_decision, p_recovery_at_decision FROM record_state WHERE record_id=$1`, recordID).
+		Scan(&state, &attemptCount, &evScore, &pRecovery); err != nil {
 		t.Fatalf("query record_state: %v", err)
 	}
 	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String() {
@@ -166,6 +220,19 @@ func TestSchedulerReschedulesAfterFailedAttemptRatherThanEscalating(t *testing.T
 	}
 	if attemptCount != 1 {
 		t.Errorf("attempt_count = %d, want 1 (the failed attempt still counts)", attemptCount)
+	}
+	// recordRescore must persist the re-priced score (attempt 2's, not
+	// attempt 1's stale value, and not left NULL from before this record was
+	// ever scored): this record started with no snapshot at all
+	// (seedScheduled sets neither column), so a real value here proves
+	// scoreAndRoute's winning score actually reached the database.
+	if evScore == nil {
+		t.Error("ev_score_at_decision is NULL after re-scoring, want the re-priced EV")
+	} else if *evScore <= 0 {
+		t.Errorf("ev_score_at_decision = %v, want > 0 (only a positive-EV action is ever re-scheduled)", *evScore)
+	}
+	if pRecovery == nil {
+		t.Error("p_recovery_at_decision is NULL after re-scoring, want the re-priced P(recovery)")
 	}
 
 	// One claim transition (Retrying) plus two rescore transitions

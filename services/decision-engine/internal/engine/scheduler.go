@@ -161,7 +161,7 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 	}
 	steps := rescoringPath(c.ClaimedState, state, reason)
 
-	if err := s.store.recordRescore(ctx, c, steps, pendingAction, dueAt, attemptNumber, costPaise, now); err != nil {
+	if err := s.store.recordRescore(ctx, c, steps, pendingAction, score, dueAt, attemptNumber, costPaise, now); err != nil {
 		log.Error("failed to record rescore", logger.KeyError, err.Error())
 		return
 	}
@@ -174,7 +174,7 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attemptNumber int32) (*executorv1.ExecuteResponse, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxExecuteAttempts; attempt++ {
-		resp, err := s.clients.execute(ctx, c.RecordID, c.BatchID, c.PendingAction, attemptNumber, c.AmountPaise)
+		resp, err := s.clients.execute(ctx, c.RecordID, c.BatchID, c.PendingAction, attemptNumber, c.AmountPaise, c.EVScoreAtDecision, c.PRecoveryAtDecision)
 		if err == nil {
 			return resp, nil
 		}

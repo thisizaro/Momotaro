@@ -7,6 +7,7 @@ import (
 
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 )
 
 // store is Decision Engine's only access point to RECORD_STATE and
@@ -37,18 +38,24 @@ func (s *store) recordStateExists(ctx context.Context, recordID string) (bool, e
 // scheduleNew creates the first RECORD_STATE row for a freshly classified
 // record and its NEW -> state audit entry, in one transaction
 // (docs/ARCHITECTURE.md section 10a). attempt_count starts at 0: scheduling
-// is not itself an execution attempt.
-func (s *store) scheduleNew(ctx context.Context, evt RawEvent, bucket commonv1.RootCauseBucket, steps []stateStep, pendingAction commonv1.ActionType, rationale string, source commonv1.Source, dueAt *time.Time, now time.Time) error {
+// is not itself an execution attempt. score is the economics scorer's
+// winning candidate, persisted so Execute (which happens later, when the
+// scheduler claims this record) can learn what was decided
+// (docs/PHASE2_IMPLEMENTATION.md Unit G); it is the zero value when the
+// record never reached scoring (an explicit escalation), in which case
+// nothing is stored rather than a misleading zero.
+func (s *store) scheduleNew(ctx context.Context, evt RawEvent, bucket commonv1.RootCauseBucket, steps []stateStep, pendingAction commonv1.ActionType, rationale string, source commonv1.Source, score economics.Score, dueAt *time.Time, now time.Time) error {
 	if len(steps) == 0 {
 		return fmt.Errorf("schedule %s: no transitions to record", evt.RecordID)
 	}
 	final := steps[len(steps)-1].To
+	evScore, pRecovery := scoreColumns(score)
 
 	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO record_state (record_id, current_state, attempt_count, root_cause_bucket, pending_action, due_at, last_action_at, updated_at)
-			VALUES ($1, $2, 0, $3, $4, $5, $6, $6)`,
-			evt.RecordID, final.String(), bucket.String(), nullIfUnspecified(pendingAction), dueAt, now,
+			INSERT INTO record_state (record_id, current_state, attempt_count, root_cause_bucket, pending_action, due_at, ev_score_at_decision, p_recovery_at_decision, last_action_at, updated_at)
+			VALUES ($1, $2, 0, $3, $4, $5, $6, $7, $8, $8)`,
+			evt.RecordID, final.String(), bucket.String(), nullIfUnspecified(pendingAction), dueAt, evScore, pRecovery, now,
 		); err != nil {
 			return fmt.Errorf("insert record_state: %w", err)
 		}
@@ -79,6 +86,15 @@ type claimedRecord struct {
 	AttemptCount    int // before this attempt; the attempt about to run is AttemptCount+1
 	AmountPaise     int64
 	RootCauseBucket commonv1.RootCauseBucket // needed to re-score a failed attempt without re-classifying
+	// EVScoreAtDecision and PRecoveryAtDecision are the scorer's decision
+	// snapshot from when this record was last scheduled or re-scored, to
+	// forward on the Execute call (docs/PHASE2_IMPLEMENTATION.md Unit G).
+	// Only records in RETRY_SCHEDULED/NUDGE_SCHEDULED are ever claimed, and
+	// scoreAndRoute only routes there with a positive-EV winning score, so a
+	// claimed record always has one; zero here would mean a data bug in an
+	// older row, not "unscored", and is never written by this service.
+	EVScoreAtDecision   float64
+	PRecoveryAtDecision float64
 }
 
 // claimDue finds up to limit records whose due_at has passed and claims
@@ -92,7 +108,7 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 	var claimed []claimedRecord
 	err := pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket
+			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision
 			FROM record_state rs
 			JOIN record r ON r.id = rs.record_id
 			WHERE rs.due_at IS NOT NULL AND rs.due_at <= $1
@@ -114,11 +130,12 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 			attemptCount                                   int
 			amountPaise                                    int64
 			rootCauseBucket                                *string
+			evScoreAtDecision, pRecoveryAtDecision         *float64
 		}
 		var scanned []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise, &r.rootCauseBucket); err != nil {
+			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise, &r.rootCauseBucket, &r.evScoreAtDecision, &r.pRecoveryAtDecision); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan due record: %w", err)
 			}
@@ -154,15 +171,24 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 			if r.rootCauseBucket != nil {
 				bucket = commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[*r.rootCauseBucket])
 			}
+			var evScore, pRecovery float64
+			if r.evScoreAtDecision != nil {
+				evScore = *r.evScoreAtDecision
+			}
+			if r.pRecoveryAtDecision != nil {
+				pRecovery = *r.pRecoveryAtDecision
+			}
 			claimed = append(claimed, claimedRecord{
-				RecordID:        r.recordID,
-				BatchID:         r.batchID,
-				FromState:       fromState,
-				ClaimedState:    toState,
-				PendingAction:   commonv1.ActionType(commonv1.ActionType_value[r.pendingAction]),
-				AttemptCount:    r.attemptCount,
-				AmountPaise:     r.amountPaise,
-				RootCauseBucket: bucket,
+				RecordID:            r.recordID,
+				BatchID:             r.batchID,
+				FromState:           fromState,
+				ClaimedState:        toState,
+				PendingAction:       commonv1.ActionType(commonv1.ActionType_value[r.pendingAction]),
+				AttemptCount:        r.attemptCount,
+				AmountPaise:         r.amountPaise,
+				RootCauseBucket:     bucket,
+				EVScoreAtDecision:   evScore,
+				PRecoveryAtDecision: pRecovery,
 			})
 		}
 		return nil
@@ -204,17 +230,18 @@ func (s *store) recordOutcome(ctx context.Context, c claimedRecord, toState comm
 // -> ... trail. attemptNumber is the attempt that just failed: both the
 // updated attempt_count and the audit entries are attributed to it, since
 // this is the aftermath of that one attempt, not a new one.
-func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stateStep, pendingAction commonv1.ActionType, dueAt *time.Time, attemptNumber int, costPaise int64, now time.Time) error {
+func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stateStep, pendingAction commonv1.ActionType, score economics.Score, dueAt *time.Time, attemptNumber int, costPaise int64, now time.Time) error {
 	if len(steps) == 0 {
 		return fmt.Errorf("rescore %s: no transitions to record", c.RecordID)
 	}
 	final := steps[len(steps)-1].To
+	evScore, pRecovery := scoreColumns(score)
 
 	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		if _, err := tx.Exec(ctx, `
-			UPDATE record_state SET current_state=$1, attempt_count=$2, pending_action=$3, due_at=$4, last_action_at=$5, updated_at=$5
-			WHERE record_id=$6`,
-			final.String(), attemptNumber, nullIfUnspecified(pendingAction), dueAt, now, c.RecordID,
+			UPDATE record_state SET current_state=$1, attempt_count=$2, pending_action=$3, due_at=$4, ev_score_at_decision=$5, p_recovery_at_decision=$6, last_action_at=$7, updated_at=$7
+			WHERE record_id=$8`,
+			final.String(), attemptNumber, nullIfUnspecified(pendingAction), dueAt, evScore, pRecovery, now, c.RecordID,
 		); err != nil {
 			return fmt.Errorf("update record_state for %s: %w", c.RecordID, err)
 		}
@@ -247,6 +274,20 @@ func nullIfUnspecified(a commonv1.ActionType) any {
 		return nil
 	}
 	return a.String()
+}
+
+// scoreColumns returns the values to store for score's EV and recovery
+// probability, or (nil, nil) when score is the zero value: a record that
+// never reached the economics gate (an explicit escalation) has no winning
+// score to snapshot, and storing 0 would misrepresent "priced at zero" as
+// "never priced" (docs/PHASE2_IMPLEMENTATION.md Unit G). A real score always
+// has a non-UNSPECIFIED Action, since it is the winning candidate returned
+// by economics.Model.Best.
+func scoreColumns(score economics.Score) (evScore, pRecovery any) {
+	if score.Action == commonv1.ActionType_ACTION_TYPE_UNSPECIFIED {
+		return nil, nil
+	}
+	return score.EVPaise, score.PRecovery
 }
 
 // loadAttemptHistory reads what has already been spent on one record, for the

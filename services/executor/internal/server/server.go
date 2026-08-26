@@ -58,7 +58,7 @@ func (s *Server) Execute(ctx context.Context, req *executorv1.ExecuteRequest) (*
 	// deferred to Phase 6, is the actual guarantee (docs/ARCHITECTURE.md
 	// section 11).
 	attemptID, claimed, err := s.attempts.Claim(ctx, req.GetRecordId(), req.GetAttemptNumber(),
-		req.GetActionType(), req.GetMessage(), s.clock.Now())
+		req.GetActionType(), req.GetMessage(), req.GetEvScoreAtDecision(), req.GetPRecoveryAtDecision(), s.clock.Now())
 	if err != nil {
 		if errors.Is(err, attempt.ErrUnknownRecord) {
 			return nil, status.Errorf(codes.NotFound, "record %s does not exist", req.GetRecordId())
