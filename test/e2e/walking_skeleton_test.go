@@ -209,14 +209,26 @@ func waitForTCP(ctx context.Context, addr string) error {
 
 func commonEnv(grpcPort, metricsPort int) map[string]string {
 	return map[string]string{
-		"ENV":             "ci",
-		"LOG_LEVEL":       "info",
-		"GRPC_PORT":       strconv.Itoa(grpcPort),
-		"METRICS_PORT":    strconv.Itoa(metricsPort),
-		"POSTGRES_DSN":    postgresDSN,
-		"REDIS_ADDR":      redisAddr,
-		"KAFKA_BROKERS":   kafkaBrokers,
-		"DEMO_TIME_SCALE": "1",
+		"ENV":           "ci",
+		"LOG_LEVEL":     "info",
+		"GRPC_PORT":     strconv.Itoa(grpcPort),
+		"METRICS_PORT":  strconv.Itoa(metricsPort),
+		"POSTGRES_DSN":  postgresDSN,
+		"REDIS_ADDR":    redisAddr,
+		"KAFKA_BROKERS": kafkaBrokers,
+		// Must compress real wall-clock waits, not just the fixed
+		// RETRY_DELAY/NUDGE_DELAY tests already override to something
+		// short. Cause-aware retry timing (schedule.go's retryDueAt,
+		// PHASE2_IMPLEMENTATION.md Unit F) can schedule an
+		// INSUFFICIENT_FUNDS retry up to ~31 real days out (the next
+		// salary window); at scale 1 that genuinely waits weeks and every
+		// test asserting that bucket reaches a terminal state within
+		// pipelineWait/startupWindow times out. 300000 compresses the
+		// worst case (~31 days) to under 9 seconds, comfortably inside
+		// pipelineWait, while a scheduler poll interval of a few hundred
+		// milliseconds still bounds how fast the compressed wait is
+		// actually observed.
+		"DEMO_TIME_SCALE": "300000",
 	}
 }
 

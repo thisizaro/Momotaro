@@ -9,13 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
-	"google.golang.org/grpc"
 )
 
 func schedulerTestConfig(dlqTopic string) SchedulerConfig {
@@ -517,12 +514,20 @@ func TestSchedulerFiresOnceWhenFakeClockPassesDueAt(t *testing.T) {
 }
 
 // TestSchedulerConcurrentSchedulersClaimExactlyOnce exercises the row lock in
-// claimDue using two independent schedulers and a shared Postgres record. The
-// recording executor mirrors the Executor's insert-before-execute contract so
-// the test proves the durable money-action guard as well as the state trail.
+// claimDue directly, not through the full Scheduler.tick -> process ->
+// Execute path: many concurrent callers race claimDue for the same due
+// record, each scoped to limit=1 so no racer can grab more than the one row
+// this test cares about. claimDue's query is a system-wide poll by design
+// (see its own doc comment); going through tick()'s claimBatchSize=20 per
+// racer here risked grabbing OTHER tests' due records under a full ./...
+// run, where every package's Postgres-backed tests share one database --
+// this happened during review (services/decision-engine and test/e2e
+// interfering with each other under `go test ./...`). Testing claimDue in
+// isolation also sidesteps process()/executeWithRetry entirely, so a
+// genuine double-claim fails with a clear assertion instead of the two
+// claimants racing a real Executor call.
 func TestSchedulerConcurrentSchedulersClaimExactlyOnce(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
 	ctx := context.Background()
 	_, recordID := seedRecord(ctx, t, pool)
 
@@ -530,96 +535,55 @@ func TestSchedulerConcurrentSchedulersClaimExactlyOnce(t *testing.T) {
 	fakeClock := clock.NewFake(start)
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, fakeClock.Now().Add(-time.Minute))
 
-	executor := &attemptRecordingExecutor{pool: pool, clock: fakeClock}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM intervention_attempt WHERE record_id=$1`, recordID)
-	})
-	// 10 concurrent schedulers, not 2: with only two racers, true overlap at
+	s := newStore(pool)
+
+	// 25 concurrent claimers, not 2: with only two racers, true overlap at
 	// the database level was rare enough in practice that this test passed
 	// even with the row lock removed entirely (verified during review). More
 	// contenders racing the same connection pool makes genuine overlap far
 	// more likely per run; the GOMAXPROCS=2 loop in the verify step is what
 	// makes it reliable across runs.
-	const numSchedulers = 25
-	scheds := make([]*Scheduler, numSchedulers)
-	for i := range scheds {
-		scheds[i] = NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
-	}
-
-	startTicks := make(chan struct{})
-	errs := make(chan error, numSchedulers)
+	const numClaimers = 25
+	startClaims := make(chan struct{})
+	errs := make(chan error, numClaimers)
 	var wg sync.WaitGroup
-	for _, sched := range scheds {
+	var mu sync.Mutex
+	claimedMine := 0
+	for i := 0; i < numClaimers; i++ {
 		wg.Add(1)
-		go func(s *Scheduler) {
+		go func() {
 			defer wg.Done()
-			<-startTicks
-			errs <- s.tick(ctx)
-		}(sched)
+			<-startClaims
+			claimed, err := s.claimDue(ctx, fakeClock.Now(), 1)
+			if err != nil {
+				errs <- err
+				return
+			}
+			for _, c := range claimed {
+				if c.RecordID == recordID {
+					mu.Lock()
+					claimedMine++
+					mu.Unlock()
+				}
+			}
+		}()
 	}
-	close(startTicks)
+	close(startClaims)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent tick: %v", err)
-		}
+		t.Fatalf("claimDue: %v", err)
+	}
+
+	if claimedMine != 1 {
+		t.Errorf("record %s was claimed %d times across %d concurrent claimDue calls, want exactly 1", recordID, claimedMine, numClaimers)
 	}
 
 	var state string
-	var attemptCount, attempts, auditEntries int
-	if err := pool.QueryRow(ctx, `SELECT current_state, attempt_count FROM record_state WHERE record_id=$1`, recordID).Scan(&state, &attemptCount); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT current_state FROM record_state WHERE record_id=$1`, recordID).Scan(&state); err != nil {
 		t.Fatalf("query record_state: %v", err)
 	}
-	if state != commonv1.RecordState_RECORD_STATE_RECOVERED.String() {
-		t.Errorf("current_state = %q, want RECOVERED", state)
+	if state != commonv1.RecordState_RECORD_STATE_RETRYING.String() {
+		t.Errorf("current_state = %q, want RETRYING (claimed exactly once)", state)
 	}
-	if attemptCount != 1 {
-		t.Errorf("attempt_count = %d, want 1", attemptCount)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM intervention_attempt WHERE record_id=$1`, recordID).Scan(&attempts); err != nil {
-		t.Fatalf("count intervention attempts: %v", err)
-	}
-	if attempts != 1 {
-		t.Errorf("intervention_attempt rows = %d, want 1", attempts)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_entry WHERE record_id=$1`, recordID).Scan(&auditEntries); err != nil {
-		t.Fatalf("count audit entries: %v", err)
-	}
-	if auditEntries != 2 {
-		t.Errorf("audit_entry rows = %d, want 2 (one claim + one outcome)", auditEntries)
-	}
-}
-
-type attemptRecordingExecutor struct {
-	pool  *pgxpkg.Pool
-	clock clock.Clock
-}
-
-// Execute mirrors the real Executor's insert-before-execute contract
-// (services/executor/internal/attempt/store.go): claim the
-// (record_id, attempt_number) slot via a real INSERT, and treat a unique
-// violation as "already executed" rather than a hard error. Without this,
-// a genuine double-claim (the bug this test exists to catch) makes both
-// calls return a raw DB error, which the real Scheduler's executeWithRetry
-// treats as an infrastructure failure and retries against a fake clock
-// that nothing in this test ever advances -- the test hangs until its
-// timeout instead of failing with a clear assertion, which is worse than
-// useless in CI. Mirroring the real contract turns a genuine double-claim
-// into a normal AlreadyExecuted response, exactly like production, and the
-// row-count assertions after the concurrent ticks are what actually catch
-// the violation.
-func (e *attemptRecordingExecutor) Execute(ctx context.Context, in *executorv1.ExecuteRequest, opts ...grpc.CallOption) (*executorv1.ExecuteResponse, error) {
-	_, err := e.pool.Exec(ctx, `
-		INSERT INTO intervention_attempt (id, record_id, attempt_number, action_type, outcome, executed_at, cost_paise)
-		VALUES ($1, $2, $3, $4, $5, $6, 0)`,
-		uuid.NewString(), in.GetRecordId(), in.GetAttemptNumber(), in.GetActionType().String(), commonv1.Outcome_OUTCOME_SUCCESS.String(), e.clock.Now())
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS, AlreadyExecuted: true}, nil
-		}
-		return nil, err
-	}
-	return &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}, nil
 }

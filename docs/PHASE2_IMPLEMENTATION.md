@@ -438,24 +438,32 @@ system rests on. Double-claiming means charging a customer twice.
 Two tests: `TestSchedulerFiresOnceWhenFakeClockPassesDueAt` uses
 `clock.Fake` for the "fires exactly once" half.
 `TestSchedulerConcurrentSchedulersClaimExactlyOnce` races **25** concurrent
-`Scheduler`s (not 2) against one due row, via a fake Executor
-(`attemptRecordingExecutor`) that mirrors the real Executor's
-insert-before-execute contract, including its graceful handling of a
-duplicate claim (catches SQLSTATE 23505, returns `AlreadyExecuted` rather
-than an error).
+callers against one due row, calling `store.claimDue(ctx, now, 1)`
+**directly** rather than going through the full `Scheduler.tick()` ->
+`process()` -> `Execute()` path -- each racer scoped to `limit=1` so it can
+claim at most the one row this test cares about.
 
-Both numbers came from adversarial review, not the original draft: with
-only 2 racers, removing `FOR UPDATE OF rs SKIP LOCKED` from `claimDue`
-entirely still passed 5/5 runs, because true database-level overlap between
-two racers was rare in practice. Raising to 25 racers gave a ~60% catch
-rate over 20 runs against the same deliberately-broken code, with 0/20
-false positives against correct code. Separately, the first version of the
-fake Executor did not mirror the real duplicate-claim handling, so when
+The numbers and the direct-`claimDue` design both came from adversarial
+review, not the original draft, and went through two iterations
+(`docs/INCIDENTS.md` 2026-08-26 has the full story): with only 2 racers
+going through the full `tick()`, removing `FOR UPDATE OF rs SKIP LOCKED`
+from `claimDue` entirely still passed 5/5 runs, because true database-level
+overlap between two racers was rare in practice. Raising to 25 racers via
+`tick()` fixed the catch rate (~60% over 20 runs) but `tick()`'s
+`claimBatchSize=20` is a system-wide poll by design, so 25 concurrent full
+ticks could claim up to 500 rows across the whole database -- under a full
+`./...` run this stole due records seeded by `test/e2e`'s own tests running
+at the same time. Separately, the fake Executor used at that point did not
+mirror the real Executor's graceful duplicate-claim handling, so when
 contention was forced high enough to actually double-claim, the Scheduler's
 retry loop waited on a fake clock nothing in the test advances and the test
-**hung** until its timeout instead of failing with a clear assertion,
-worse than a silent pass since it reads as an infra problem in CI, not a
-locking bug. Fixed before merge.
+**hung** until its timeout instead of failing with a clear assertion.
+Calling `claimDue` directly with `limit=1` fixes both at once: no
+system-wide blast radius (each racer claims at most one row), and no
+`process()`/`executeWithRetry` in the path at all, so there is no retry
+loop to hang. Final numbers: 60% catch rate over 20 runs against
+deliberately broken locking (no hangs), 0/20 false positives against
+correct locking, two full clean runs of the entire repo suite afterward.
 
 ### LLD
 

@@ -659,3 +659,69 @@ exactly the kind of thing worth a deliberate regression test before a fix,
 not a quick patch, per `ENGINEERING.md` §1 ("every bug you fix gets a
 regression test first"). Logging it here so it is not lost, rather than
 fixing it silently mid-verification.
+
+### 2026-08-26, Unit F broke two existing e2e tests, and Unit L's own new test had two real gaps
+**What happened:** Merging Units F (cause-aware retry timing) and L
+(scheduler fake-clock/concurrency test) individually passed every check
+each unit's own verification asked for. Running the full repo suite
+(`go test -race -tags='integration e2e' ./...`) after merging both
+surfaced three separate problems that neither unit's own testing caught.
+
+**Problem 1: Unit F's salary-window timing broke tests that predate it.**
+`TestSmokeBatchReachesExpectedTerminalStates` and Unit J's own
+`TestSubmitBatchResubmitCreatesIndependentRecords` both submit an
+`INSUFFICIENT_FUNDS` record and wait up to `pipelineWait` (30s) for it to
+reach `RECOVERED`. Once Unit F landed, that bucket's retry can be scheduled
+up to ~31 real days out (the next salary window), and the e2e harness
+(`test/e2e/walking_skeleton_test.go`'s `commonEnv`) hardcoded
+`DEMO_TIME_SCALE=1`, so nothing compressed the wait. Both tests genuinely
+started waiting for a delay measured in weeks and timed out.
+**Root cause:** cause-aware timing was reviewed and tested in isolation
+(`schedule_test.go`, pure unit tests, no e2e dependency), so nothing in
+Unit F's own verification exercised the e2e harness at all, and neither
+Unit F's brief nor the smoke/rerun-safety tests (written before Unit F
+existed) knew to account for a bucket whose retry timing is no longer a
+small fixed delay.
+**Fix:** `commonEnv` now sets `DEMO_TIME_SCALE=300000`, compressing the
+worst-case ~31-day wait to under 9 seconds, comfortably inside
+`pipelineWait`. Verified by rerunning the full e2e suite twice after the
+change, both clean.
+
+**Problem 2 and 3, in Unit L's own concurrency test.** Adversarial review
+(removing `FOR UPDATE OF rs SKIP LOCKED` from `claimDue` and confirming the
+test actually goes red) found the original two-racer version essentially
+never caught the break: two `Scheduler`s racing one row rarely overlapped
+at the database level, so the test passed 5/5 runs even with row locking
+removed entirely. Raising the race to 25 concurrent `Scheduler.tick()`
+calls fixed the detection rate, but introduced a worse problem: `tick()`
+calls `claimDue` with `claimBatchSize=20`, a **system-wide** poll by
+design, so 25 concurrent full ticks could claim up to 500 due records
+across the whole database, not just the one row the test seeded. Under a
+full `./...` run, that stole due records seeded by `test/e2e`'s own
+subprocess-driven tests running at the same wall-clock time. Separately,
+when contention was forced high enough to genuinely double-claim, the
+test's fake Executor propagated a raw unique-violation error into the
+Scheduler's real retry loop, which then waited on a fake clock nothing in
+the test ever advances -- the test hung until its timeout instead of
+failing with a clear assertion, which reads as an infra problem in CI, not
+a locking bug.
+**Fix:** rewrote the test to call `store.claimDue(ctx, now, 1)` directly,
+25 times concurrently, instead of going through the full
+`Scheduler.tick()` -> `process()` -> `Execute()` path. Each racer can now
+claim at most one row, tightly bounding the blast radius, and bypassing
+`process()`/`executeWithRetry` entirely removes the hang path, since
+`claimDue` alone has no retry loop and no dependency on the fake clock
+advancing. Verified: 60% catch rate over 20 runs against deliberately
+broken locking (no hangs), 0/20 false positives against correct locking,
+and two full clean runs of the entire repo suite (`go test -race
+-tags='integration e2e' ./...`) afterward.
+
+**Prevention:** the recurring lesson across all three problems is the same
+one this file already has several entries about: a unit's own passing
+tests are evidence about that unit in isolation, not about the merged
+system. `PHASE2_IMPLEMENTATION.md`'s "Definition of done" for every unit
+already says CI must be green "including the integration and e2e tiers,"
+which in practice means the *full* suite, not just the files a unit
+touched -- worth restating here since two independently-reviewed units
+each looked complete on their own and still broke the full run when
+combined.
