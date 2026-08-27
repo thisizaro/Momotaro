@@ -394,7 +394,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       unit tier, no build tag, parses each service's Go source with
       `go/parser`/`go/ast` so comments are never matched, only real
       identifiers and string literals.
-- [ ] Correctness invariant tests over a batch run: zero stopping-rule
+- [x] Correctness invariant tests over a batch run: zero stopping-rule
       violations, 100% audit trail completeness → `PRD.md` §9, §10
 - [x] Re-run safety test: replay the same batch twice, confirm identical
       outcome (no double-processing) → `ARCHITECTURE.md` §11

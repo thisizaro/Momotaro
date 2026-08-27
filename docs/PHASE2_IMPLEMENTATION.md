@@ -34,14 +34,14 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | E | Retry loop: re-entry to `Scoring` after a failed attempt | **merged** | F, H, M |
 | F | Cause-aware retry timing | **merged** | nothing |
 | G | EV snapshot persisted per attempt | **merged** | nothing |
-| H | Batch correctness invariants | not started | nothing |
+| H | Batch correctness invariants | **merged** | nothing |
 | I | Idempotency proven end to end | **merged** | nothing |
 | J | Re-run safety | **merged** | nothing |
 | K | Crash safety | not started | nothing |
 | L | Scheduler fake-clock test | **merged** | nothing |
 | M | Delete the `TEMPORARY` state machine edges | **merged** | nothing |
 
-**11 of 13 merged. 2 remaining.** H and K are unblocked.
+**12 of 13 merged. 1 remaining.** K is unblocked.
 
 Units A, B and C map to three `PLAN.md` checkboxes. D and E together are the
 "economics scorer" checkbox. M is cleanup that Phase 2 unlocks and that
@@ -291,7 +291,7 @@ Touches `clients.go`, which Units E and F do not. Safe to run alongside either.
 
 ## Unit H: Batch correctness invariants
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: E merged. Meaningless before it.
 **Branch**: `test/batch-invariants`.
 **Files owned**: a new file in `test/e2e/`.
@@ -323,6 +323,55 @@ attempts. Drive to terminal states, then assert:
 **Prove the test can fail.** Temporarily raise a cap so a violation is
 reachable, confirm red, then revert. Without that, this is an assertion that
 nothing bad happened in a run where nothing could have.
+
+### What actually shipped
+
+The LLD's premise needed one correction before anything else: `ports/stub.go`'s
+`StubRecovery` is a deterministic script -- attempt 1 of any retry always
+succeeds -- so a record submitted organically through the real HTTP API can
+never naturally reach a second attempt, making `MAX_RETRIES`/`MAX_CONTACTS`
+structurally unreachable through a pure organic run, exactly as the "why it
+matters" section already warned. Fixed the same way Units G and L handled an
+unreachable setup: seed a record's prior `INTERVENTION_ATTEMPT` rows directly
+in Postgres (the exact table `loadAttemptHistory`, decision-engine's
+`store.go`, reads from) so the record enters the scheduler's next live claim
+already sitting near its cap, then let the real, live Decision Engine,
+Executor and Audit process everything from there. `test/e2e/batch_invariants_test.go`
+runs a 3-record batch: one seeded to trip `MAX_RETRIES` for real, one seeded
+with retries already exhausted plus two prior contacts (so the live claim
+that follows can only re-score among the still-permitted `NUDGE` actions),
+and one plain happy-path record with no seeding at all, to prove the seeding
+machinery doesn't disturb the organic case. The guardrail *rules* themselves
+are already exhaustively unit-tested in isolation
+(`services/decision-engine/internal/engine/guardrails_test.go`); this test's
+job is to prove the wiring, not re-derive the rules.
+
+Two real, previously-undiscovered bugs surfaced while making this test
+actually reach a cap, both logged in full in `docs/INCIDENTS.md` 2026-08-27:
+
+1. **A double-scaling bug in `RETRY_DELAY`** (`services/decision-engine/cmd/main.go`):
+   `main.go` pre-scaled `RetryDelay` by `DEMO_TIME_SCALE` before handing it to
+   `engine.Config`/`SchedulerConfig`, and `schedule.go`'s `retryDueAt` scaled
+   it *again* internally (it needs the raw value plus the raw scale factor for
+   the `INSUFFICIENT_FUNDS` salary-window branch). Invisible in production,
+   where `DEMO_TIME_SCALE=1` makes both scale calls no-ops; only visible once
+   a test needed a real, observable delay window for a `TRANSIENT_BANK`
+   retry rather than "fire as fast as possible." Fixed by not pre-scaling
+   `RetryDelay` in `main.go`, leaving `retryDueAt` as the single place that
+   applies the scale.
+2. **A missing state-machine edge**: `SCORING -> ESCALATED` was absent from
+   `services/audit/internal/server/statemachine.go`'s `allowedTransitions`.
+   It's a real, permanent output of `permittedOrEscalate` (guardrails.go)
+   whenever a re-entry to `Scoring` finds every spending action blocked --
+   nothing before this unit ever pushed a record's retry or contact history
+   far enough to exhaust a budget, so nothing had ever produced the edge.
+   Fixed by adding it, with a regression case in `statemachine_test.go`.
+
+Verified with two clean full-suite runs (`go test -count=1 -race
+-tags='integration e2e' ./...`) and an adversarial check: temporarily lowered
+the test's own `wantMaxRetries` below the real observed count from a live
+run, confirmed it goes red with the real attempt count in the failure
+message, then reverted.
 
 ### Collision notes
 

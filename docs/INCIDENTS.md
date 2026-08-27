@@ -760,3 +760,62 @@ without doing so, because Go silently skips build-tagged files it wasn't
 told to include rather than erroring. A green run over the wrong test set
 is not distinguishable from a green run over the right one unless someone
 checks which files actually compiled.
+
+### 2026-08-27, Unit H found a double-scaling bug and a missing state-machine edge
+
+Building `test/e2e/batch_invariants_test.go` (docs/PHASE2_IMPLEMENTATION.md
+Unit H) required a record's `TRANSIENT_BANK` retry to become due after a
+real, observable delay rather than instantly, so a fabricated near-cap
+history could be seeded into Postgres before the live scheduler claimed it.
+Passing a large `RETRY_DELAY` produced an immediate claim anyway, both at a
+plain "10s" and, when that was suspected to be double-compressed by
+`DEMO_TIME_SCALE=300000`, at a compensating "3000000s".
+
+Root cause: `services/decision-engine/cmd/main.go` scaled `RetryDelay` by
+`DEMO_TIME_SCALE` before assigning it to `engine.Config`/`SchedulerConfig`,
+and `schedule.go`'s `retryDueAt` scaled the same value again internally (it
+needs the raw duration plus the raw scale factor together, for the
+`INSUFFICIENT_FUNDS` salary-window branch, which does not go through
+`cfg.Scale`). The effective delay was the requested value divided by the
+scale factor twice, not once. Invisible in production, where
+`DEMO_TIME_SCALE` defaults to 1 and both scale calls are no-ops; invisible in
+every e2e test before this one too, since none of them needed a real,
+observable delay window -- they only wanted something to happen soon, and
+"soon squared" is still soon. Confirmed by reading `retryDueAt`'s scaling
+math directly rather than guessing at another compensating constant.
+**Fix:** stopped pre-scaling `RetryDelay` in `main.go`; `retryDueAt` remains
+the single place that applies `TimeScale` to it.
+
+With the delay fixed, the seeded records reached their live claim as
+intended, and a *second*, unrelated real bug surfaced: `Audit.VerifyInvariants`
+reported `SCORING -> ESCALATED` as an impossible transition for both
+records, even though the trail was exactly what the Decision Engine's own
+`permittedOrEscalate` (guardrails.go) legitimately produces whenever a
+re-entry to `Scoring` finds every spending action guardrail-blocked. This
+edge is a real, permanent output of Unit E's re-scoring loop plus the
+guardrail caps, not a fabricated or temporary one -- it was simply never
+produced by anything before this test, because nothing earlier ever pushed a
+record's retry or contact history far enough to exhaust a budget mid
+re-score. **Fix:** added `{SCORING, ESCALATED}: true` to
+`services/audit/internal/server/statemachine.go`'s `allowedTransitions`,
+with a regression case in `statemachine_test.go`.
+
+A third issue was self-inflicted rather than a product bug: the first
+version of the contacts-cap scenario seeded three fake `RETRY` rows already
+at the cap and expected the live claim to therefore execute a `NUDGE` --
+but the scheduler executes whatever `pending_action` the record's real,
+unseeded first classify already decided (always `RETRY` for
+`TRANSIENT_BANK`), and guardrails only re-check *after* that attempt fails.
+Fixed by seeding the same "one retry short of the cap" shape already
+validated for the retries scenario, plus two prior contacts, so the single
+live claim fails as intended and the guardrails correctly gate what happens
+next.
+
+**Prevention:** the double-scaling bug is the same class of gap as
+`docs/INCIDENTS.md` 2026-08-26's `DEMO_TIME_SCALE` finding for Unit F: a
+compressed-time knob that nothing had ever needed to reason about precisely
+before. The missing edge is the same class as 2026-08-23's original
+`NEW -> RETRY_SCHEDULED` gap and 2026-08-26's temporary-edge cleanup: a
+state diagram is only as complete as the code paths that have actually been
+exercised against it, and a guardrail cap that nothing has ever pushed a
+record hard enough to hit will look complete right up until something does.
