@@ -383,7 +383,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 - [x] Cause-aware retry scheduling (salary-window for insufficient_funds,
       short backoff for bank_timeout, no retry for hard_decline/risk_hold)
       → `ARCHITECTURE.md` §5a
-- [ ] `cost_paise` + EV snapshot persisted per attempt, so net recovered is
+- [x] `cost_paise` + EV snapshot persisted per attempt, so net recovered is
       computed from real logged spend, not estimated
       → `ARCHITECTURE.md` §10
 - [x] Test asserting the Decision Engine has **no** query path to
