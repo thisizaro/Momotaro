@@ -42,7 +42,11 @@ type stack struct {
 // it. Tests pass something well under pipelineWait; production's default is
 // 30s and its real cause-aware timing is Phase 2 (docs/ARCHITECTURE.md
 // section 5a).
-func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
+//
+// extraDecisionEngineEnv, if given, is merged over the Decision Engine's
+// environment (guardrail overrides for Unit H's adversarial proof; every
+// other caller omits it and gets the defaults).
+func startStack(ctx context.Context, t *testing.T, retryDelay string, extraDecisionEngineEnv ...map[string]string) *stack {
 	t.Helper()
 
 	root := repoRoot(t)
@@ -108,7 +112,7 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 		}
 	}
 
-	procs = append(procs, startProcess(t, "decision-engine", decisionEngineBin, merge(commonEnv(deGRPCPort, deMetrics), map[string]string{
+	deEnv := merge(commonEnv(deGRPCPort, deMetrics), map[string]string{
 		"CLASSIFIER_ADDR":           classifierAddr,
 		"EXECUTOR_ADDR":             executorAddr,
 		"CALL_TIMEOUT":              "5s",
@@ -129,7 +133,11 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 		"RETRY_DELAY":             retryDelay,
 		"NUDGE_DELAY":             retryDelay,
 		"SCHEDULER_POLL_INTERVAL": "300ms",
-	})))
+	})
+	for _, extra := range extraDecisionEngineEnv {
+		deEnv = merge(deEnv, extra)
+	}
+	procs = append(procs, startProcess(t, "decision-engine", decisionEngineBin, deEnv))
 
 	procs = append(procs, startProcess(t, "api-gateway", apiGatewayBin, merge(commonEnv(gwPort, gwMetrics), map[string]string{
 		"INGESTION_ADDR": ingestionAddr,
