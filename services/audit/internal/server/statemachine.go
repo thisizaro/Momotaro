@@ -19,6 +19,17 @@ var allowedTransitions = map[transition]bool{
 	{commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED}:   true,
 	{commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED}:   true,
 	{commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC}: true,
+	// A re-entry to Scoring (Retrying -> Scoring or Nudged -> Scoring, Unit
+	// E's loop) can find every spending action guardrail-blocked -- the
+	// retry budget and the contact cap are both finite, and re-scoring is
+	// exactly what runs them down. permittedOrEscalate (guardrails.go) then
+	// falls back to ESCALATE from within the same Scoring step, so this
+	// edge is a real, permanent output of the guardrails, not a temporary
+	// one. Missing until Unit H's batch-invariants test actually pushed a
+	// record's history to the cap: nothing before it ever exercised a
+	// record retrying or being contacted enough times to exhaust a budget
+	// (docs/PHASE2_IMPLEMENTATION.md Unit H, docs/INCIDENTS.md).
+	{commonv1.RecordState_RECORD_STATE_SCORING, commonv1.RecordState_RECORD_STATE_ESCALATED}: true,
 
 	{commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.RecordState_RECORD_STATE_RETRYING}: true,
 	{commonv1.RecordState_RECORD_STATE_RETRYING, commonv1.RecordState_RECORD_STATE_RECOVERED}:       true,
