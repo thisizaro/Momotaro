@@ -37,11 +37,11 @@ Phase 1 proved a record can flow through the pipeline. Phase 2 makes it flow
 | H | Batch correctness invariants | **merged** | nothing |
 | I | Idempotency proven end to end | **merged** | nothing |
 | J | Re-run safety | **merged** | nothing |
-| K | Crash safety | not started | nothing |
+| K | Crash safety | **merged** | nothing |
 | L | Scheduler fake-clock test | **merged** | nothing |
 | M | Delete the `TEMPORARY` state machine edges | **merged** | nothing |
 
-**12 of 13 merged. 1 remaining.** K is unblocked.
+**13 of 13 merged. Phase 2 complete.**
 
 Units A, B and C map to three `PLAN.md` checkboxes. D and E together are the
 "economics scorer" checkbox. M is cleanup that Phase 2 unlocks and that
@@ -450,7 +450,7 @@ Assert on final states, `INTERVENTION_ATTEMPT` counts, and total spend.
 
 ## Unit K: Crash safety
 
-**Status**: not started, **unblocked now**.
+**Status**: merged.
 **Depends on**: nothing.
 **Branch**: `test/crash-safety`.
 **Files owned**: a new file in `test/e2e/`.
@@ -477,6 +477,61 @@ missing hop, and no record was processed twice.
 
 `SIGKILL`, not `SIGTERM`. A graceful shutdown proves the graceful path, which
 is not the interesting one.
+
+### What actually shipped
+
+`test/e2e/harness_test.go` gained the minimal, additive support this unit
+needs: `stack` now remembers the Decision Engine's binary path, its full
+environment and its `*process` handle, and a `restartDecisionEngine(t)`
+method that `kill(t)`s the running process (SIGKILL, a new method on
+`process` alongside the existing graceful `stop`) and starts a fresh one
+with identical configuration -- crucially the same Kafka consumer group and
+topic, so it resumes from the last committed offset. `process.stop`/`kill`
+now share a `sync.Once`-guarded wait so a process that was already killed
+directly doesn't panic when `t.Cleanup` also tries to stop it. None of the
+five existing callers of `startStack` changed.
+
+One design correction before this could work at all: the original LLD
+assumed a "wait until partially processed" window would occur naturally.
+An earlier, unthrottled version of this test found the entire 8-record
+batch finished before the first kill call even ran -- classify-through-
+execute for a small batch completes in well under a second against the
+deterministic stub. `test/e2e/crash_safety_test.go` instead uses the same
+technique Unit H's docs/INCIDENTS.md 2026-08-27 entry documents for getting
+a real, observable delay window under `DEMO_TIME_SCALE`, so all eight
+records are genuinely still scheduled-but-unclaimed (`RETRY_SCHEDULED`, none
+executed) at the moment of the crash.
+
+A second, real bug surfaced while building the restart mechanism itself:
+the first version waited for the restarted process to accept a TCP
+connection on its configured `GRPC_PORT`, and this never succeeded --
+`services/decision-engine/cmd/main.go` never opens that port at all (or any
+port). Unlike every other service in this stack, the Decision Engine is a
+pure Kafka consumer and scheduler with no RPCs for anything else to call;
+`GRPC_PORT` is only present because the shared config loader requires it.
+Confirmed by grepping `main.go` for a `Listen` call rather than continuing
+to guess at timing. Fixed by removing the readiness probe entirely --
+callers rely on their own polling of `record_state`/Audit, which every
+caller already needs regardless.
+
+Verified with two clean full-suite runs and an adversarial check: after a
+clean pass, deliberately deleted one record's `audit_entry` rows (the exact
+shape a real crash-induced gap would leave) and confirmed
+`Audit.VerifyInvariants` reports exactly one `IncompleteAuditTrails`
+violation, then reverted before committing.
+
+**Scope note, stated honestly rather than overclaimed**: this test crashes
+the Decision Engine while every record is scheduled-but-unclaimed, not
+mid-transaction during an active claim. That is a real, meaningful crash
+window (the harness's other passing runs show classify-through-schedule
+completing in well under a second, leaving nowhere reliable to land a kill
+mid-claim without a log-watching hook into production code), and it proves
+the property the LLD actually asks for: no record lost, no audit gap, no
+double processing, across a restart with a resumed Kafka consumer group.
+It does not, on its own, prove the claim transaction's atomicity against a
+kill landing inside it -- that guarantee rests on Postgres's own
+transactional rollback semantics plus `pgxpkg.WithTx`'s usage in
+`claimDue`, and is a natural target for a future, more surgical test.
 
 ---
 

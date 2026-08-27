@@ -398,7 +398,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       violations, 100% audit trail completeness → `PRD.md` §9, §10
 - [x] Re-run safety test: replay the same batch twice, confirm identical
       outcome (no double-processing) → `ARCHITECTURE.md` §11
-- [ ] Crash-safety test: kill the Decision Engine mid-batch, restart, assert
+- [x] Crash-safety test: kill the Decision Engine mid-batch, restart, assert
       no record lost and no audit gap (this is what the transactional write
       and contiguous-prefix commits exist to guarantee)
       → `ARCHITECTURE.md` §8a, §10a

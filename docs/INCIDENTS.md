@@ -819,3 +819,52 @@ before. The missing edge is the same class as 2026-08-23's original
 state diagram is only as complete as the code paths that have actually been
 exercised against it, and a guardrail cap that nothing has ever pushed a
 record hard enough to hit will look complete right up until something does.
+
+### 2026-08-27, Unit K's LLD assumption about a "partially processed" window was wrong, and its restart readiness probe checked a port nothing opens
+
+Two findings while building `test/e2e/crash_safety_test.go`
+(docs/PHASE2_IMPLEMENTATION.md Unit K), both caught before merge rather than
+shipped silently.
+
+**First:** the LLD's premise -- "submit a batch, wait until partially
+processed, SIGKILL the Decision Engine" -- assumed a natural window would
+exist. An early, unthrottled version of the test submitted an 8-record
+batch and called the kill immediately after; every record had already
+reached `RECORD_STATE_RECOVERED` before the kill call even ran. Classify
+through execute for a small batch completes in well under a second against
+the deterministic stub, the same fact Unit H's entry above already
+documents for a different reason. Fixed the same way: `RETRY_DELAY` is set
+to a value that scales down to a real ~6s window under
+`DEMO_TIME_SCALE=300000` (now single-scaled, per the fix above), so every
+record is genuinely still `RETRY_SCHEDULED`, unclaimed, at the moment of
+the crash.
+
+**Second:** the restart mechanism's own readiness check
+(`stack.restartDecisionEngine`, `test/e2e/harness_test.go`) waited for the
+restarted process to accept a TCP connection on `GRPC_PORT`, mirroring how
+every other service in the harness is confirmed ready. This never
+succeeded -- 20s timeout, every run, on a freshly-allocated port that
+should have been immediately available. Root cause: `services/decision-
+engine/cmd/main.go` never opens `GRPC_PORT` (or any port) at all. The
+Decision Engine is a pure Kafka consumer and scheduler; nothing else in the
+pipeline calls it over gRPC, so it has no server to serve. `GRPC_PORT` is
+only present in its environment because the shared config loader
+(`internal/platform/config`) requires the value from every service
+regardless of whether that service uses it. Confirmed by grepping
+`main.go` for a `Listen` call and finding none, rather than adding a longer
+timeout and hoping. **Fix:** removed the readiness probe from
+`restartDecisionEngine` entirely; every caller already has to poll
+`record_state`/Audit for the restarted process actually resuming work, the
+same as for any other asynchronous effect in this harness.
+
+Both problems are visible only once you actually run the thing you are
+building a safety net for, not once you assume it will work the way the
+LLD describes. Verified afterward with an adversarial check: deliberately
+deleted one record's `audit_entry` rows after a clean pass (the exact shape
+a real crash-induced gap would leave) and confirmed
+`Audit.VerifyInvariants` catches it as a single `IncompleteAuditTrails`
+violation, then reverted before committing -- this is the same file's own
+recurring lesson, now for the sixth time in three days: a test that has
+never been run against the real system, or an assumption that has never
+been checked against the real code, reads exactly like a correct one until
+someone runs it.
