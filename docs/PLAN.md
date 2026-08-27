@@ -203,7 +203,7 @@ immediately against `docs/API_GATEWAY.md` using mocked responses.
       `ARCHITECTURE.md` §5, §5a, `PRD.md` §2a. Explicitly deferred: any
       real LLM provider and circuit breakers (Phase 3); `ComposeNudge`
       (Phase 5, no caller exists yet); Prometheus metrics (Phase 4's
-      shared gRPC interceptor work, not hand-wired per service — logs a
+      shared gRPC interceptor work, not hand-wired per service; logs a
       `Warn` per failed rung and per unknown-code classification instead);
       economics/EV scoring and cause-aware retry timing (Decision Engine,
       Phase 2). Restructured per `ENGINEERING.md` §14: `internal/rules`
@@ -413,17 +413,54 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 
 ## Phase 3: Reasoning layer
 
+> Working breakdown, dependency graph and per-unit LLDs:
+> **`docs/PHASE3_IMPLEMENTATION.md`** (7 units, A to G). That document also
+> lists ten flaws found in the four checkboxes below before starting, the most
+> important being: the "rationale stored and retrievable" item is already done
+> and the part actually missing is `ClassifyResponse.hops`, which nothing
+> persists; and an LLM rung would currently receive exactly the same two
+> inputs as the lookup table it replaces, because
+> `ClassifyRequest.history`/`instrument_history` are never populated. Read it
+> before picking up any item here.
+
 - [ ] LLM provider(s) decided (cost/rate-limit evaluation still open, see
       `AGENTS.md` locked decisions) and wired into the provider chain
-      → `ARCHITECTURE.md` §5
+      → `ARCHITECTURE.md` §5, `docs/PHASE3_IMPLEMENTATION.md` Units A, B
 - [ ] Fallback path deliberately tested (simulate timeout/error per
       provider, confirm the chain falls through correctly and every hop
-      tried is recorded) → `ARCHITECTURE.md` §5
+      tried is recorded) → `ARCHITECTURE.md` §5,
+      `docs/PHASE3_IMPLEMENTATION.md` Unit C
 - [ ] Circuit breaker per provider, with a test proving that a sustained
       provider outage does **not** make every record pay the full timeout
-      → `ARCHITECTURE.md` §5
+      → `ARCHITECTURE.md` §5, `docs/PHASE3_IMPLEMENTATION.md` Unit D
+      (note: assert call counts and hop results, never wall-clock time, see
+      that document's Flaw 6)
 - [ ] Rationale stored and retrievable from the audit trail for a full
       record → `PRD.md` §2a
+      Note (found while planning Phase 3): the rationale half of this is
+      already done and has been since Phase 1 (decision-engine `store.go`
+      writes it, audit `store.go` reads it back, `GetRecordAudit` returns it,
+      two tests assert it). The part genuinely missing is
+      `ClassifyResponse.hops`, which the chain computes and nothing persists,
+      so the trail cannot show *which* provider answered or what the ones
+      before it did. Replaced by `docs/PHASE3_IMPLEMENTATION.md` Unit E
+      (migration + proto + code, three sequenced PRs).
+- [ ] (unplanned, found while planning Phase 3) populate
+      `ClassifyRequest.history` and `instrument_history` from the Decision
+      Engine. Both have been empty since Phase 1
+      (`services/classifier/SPEC.md` §3 documented it and §10 item 1 raised it
+      as a cross-service item), so a model rung would see exactly the two
+      inputs the rules table sees and could not improve on it. Without this,
+      the whole reasoning layer is decorative
+      → `docs/PHASE3_IMPLEMENTATION.md` Unit F
+- [ ] (unplanned, found while planning Phase 3) enforce the classification
+      confidence threshold in the Decision Engine. `classifier.proto`
+      documents it, `ARCHITECTURE.md` §5 assigns it here, and both
+      `engine/state.go` and `engine/engine.go` already carry comments saying a
+      low-confidence classification is a safety call that bypasses pricing,
+      but no code reads `confidence`. Harmless while it is a table constant,
+      a real gap once a model produces it
+      → `docs/PHASE3_IMPLEMENTATION.md` Unit G
 
 ## Phase 4: Observability
 
