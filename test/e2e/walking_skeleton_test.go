@@ -127,10 +127,23 @@ func freePort(t *testing.T) int {
 	return 0
 }
 
-// process wraps a running service subprocess.
+// process wraps a running service subprocess. waitOnce guards cmd.Wait(),
+// which panics if called twice concurrently -- needed because Unit K's
+// restartDecisionEngine (harness_test.go) can kill a process directly while
+// t.Cleanup will also call stop() on whatever startStack's procs slice still
+// references.
 type process struct {
-	name string
-	cmd  *exec.Cmd
+	name    string
+	cmd     *exec.Cmd
+	wait    sync.Once
+	waitErr error
+}
+
+// waitOnce calls cmd.Wait() exactly once no matter how many callers ask,
+// returning the same result to all of them.
+func (p *process) waitOnce() error {
+	p.wait.Do(func() { p.waitErr = p.cmd.Wait() })
+	return p.waitErr
 }
 
 // startProcess launches bin with env (merged over a minimal base
@@ -180,7 +193,7 @@ func (p *process) stop(t *testing.T) {
 	_ = p.cmd.Process.Signal(os.Interrupt)
 
 	done := make(chan error, 1)
-	go func() { done <- p.cmd.Wait() }()
+	go func() { done <- p.waitOnce() }()
 
 	select {
 	case <-done:
@@ -189,6 +202,20 @@ func (p *process) stop(t *testing.T) {
 		_ = p.cmd.Process.Kill()
 		<-done
 	}
+}
+
+// kill sends SIGKILL and waits for exit -- a hard crash, not the graceful
+// shutdown stop() exercises. Unit K deliberately uses this rather than stop:
+// a clean shutdown proves the graceful path is safe, which is not the claim
+// the transactional write and contiguous-prefix Kafka commits exist to back
+// (docs/PHASE2_IMPLEMENTATION.md Unit K).
+func (p *process) kill(t *testing.T) {
+	t.Helper()
+	if p.cmd.Process == nil {
+		return
+	}
+	_ = p.cmd.Process.Kill()
+	_ = p.waitOnce()
 }
 
 // waitForTCP polls addr until it accepts a connection or ctx is done.

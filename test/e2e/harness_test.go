@@ -32,6 +32,41 @@ type stack struct {
 	executorAddr string // host:port for Executor's gRPC
 	topic        string // this stack's isolated raw.events topic
 	dlqTopic     string
+
+	// Decision Engine restart support (Unit K, docs/PHASE2_IMPLEMENTATION.md):
+	// everything needed to kill the running process and start an
+	// identically-configured replacement. Every other field above is
+	// sufficient for every test but K; these two exist only for
+	// restartDecisionEngine below.
+	decisionEngineBin string
+	decisionEngineEnv map[string]string
+	decisionEngine    *process
+}
+
+// restartDecisionEngine hard-kills the running Decision Engine (SIGKILL, not
+// the graceful SIGTERM stop() sends -- a clean shutdown exercises the
+// graceful path, which is not the one Unit K exists to prove) and starts a
+// fresh process with identical configuration, including the same Kafka
+// consumer group and topic, so it resumes from the last committed offset
+// rather than replaying or skipping anything.
+//
+// There is no readiness port to wait on: unlike every other service in this
+// stack, the Decision Engine is a pure Kafka consumer and scheduler with no
+// RPCs for anything else to call, so it never opens GRPC_PORT (the config
+// loader requires the value, but nothing here listens on it -- confirmed by
+// grepping main.go for a Listen call before assuming otherwise). Callers
+// rely on their own polling of record_state/Audit for the process actually
+// resuming work, the same as they would for any other asynchronous effect.
+func (s *stack) restartDecisionEngine(t *testing.T) {
+	t.Helper()
+	s.decisionEngine.kill(t)
+
+	p := startProcess(t, "decision-engine", s.decisionEngineBin, s.decisionEngineEnv)
+	// The replacement isn't in startStack's procs slice, so it needs its own
+	// cleanup registration -- otherwise a restarted Decision Engine leaks
+	// past the end of the test.
+	t.Cleanup(func() { p.stop(t) })
+	s.decisionEngine = p
 }
 
 // startStack builds and starts all six services and returns once every one of
@@ -42,11 +77,7 @@ type stack struct {
 // it. Tests pass something well under pipelineWait; production's default is
 // 30s and its real cause-aware timing is Phase 2 (docs/ARCHITECTURE.md
 // section 5a).
-//
-// extraDecisionEngineEnv, if given, is merged over the Decision Engine's
-// environment (guardrail overrides for Unit H's adversarial proof; every
-// other caller omits it and gets the defaults).
-func startStack(ctx context.Context, t *testing.T, retryDelay string, extraDecisionEngineEnv ...map[string]string) *stack {
+func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 	t.Helper()
 
 	root := repoRoot(t)
@@ -134,10 +165,11 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string, extraDecis
 		"NUDGE_DELAY":             retryDelay,
 		"SCHEDULER_POLL_INTERVAL": "300ms",
 	})
-	for _, extra := range extraDecisionEngineEnv {
-		deEnv = merge(deEnv, extra)
-	}
-	procs = append(procs, startProcess(t, "decision-engine", decisionEngineBin, deEnv))
+	deProc := startProcess(t, "decision-engine", decisionEngineBin, deEnv)
+	procs = append(procs, deProc)
+	s.decisionEngineBin = decisionEngineBin
+	s.decisionEngineEnv = deEnv
+	s.decisionEngine = deProc
 
 	procs = append(procs, startProcess(t, "api-gateway", apiGatewayBin, merge(commonEnv(gwPort, gwMetrics), map[string]string{
 		"INGESTION_ADDR": ingestionAddr,
