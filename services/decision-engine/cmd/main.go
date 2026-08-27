@@ -191,11 +191,17 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 
 	engCfg := engine.Config{
 		CallTimeout: cfg.CallTimeout,
-		RetryDelay:  cfg.Scale(cfg.RetryDelay),
-		NudgeDelay:  cfg.Scale(cfg.NudgeDelay),
-		DLQTopic:    cfg.DLQTopic,
-		TimeScale:   cfg.DemoTimeScale,
-		Guardrails:  guardrailsFrom(cfg),
+		// RetryDelay is deliberately NOT scaled here: retryDueAt
+		// (schedule.go) scales it itself using TimeScale below, because it
+		// also needs the raw factor for the INSUFFICIENT_FUNDS
+		// salary-window branch. Scaling it here too would compress it
+		// twice -- invisible at DEMO_TIME_SCALE=1 (production; scaleDuration
+		// no-ops there) but silently near-instant at any other scale.
+		RetryDelay: cfg.RetryDelay,
+		NudgeDelay: cfg.Scale(cfg.NudgeDelay),
+		DLQTopic:   cfg.DLQTopic,
+		TimeScale:  cfg.DemoTimeScale,
+		Guardrails: guardrailsFrom(cfg),
 	}
 	eng := engine.New(pool,
 		classifierv1.NewClassifierServiceClient(classifierConn),
@@ -206,10 +212,11 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		CallTimeout:  cfg.CallTimeout,
 		PollInterval: cfg.Scale(cfg.PollInterval),
 		DLQTopic:     cfg.DLQTopic,
-		RetryDelay:   cfg.Scale(cfg.RetryDelay),
-		NudgeDelay:   cfg.Scale(cfg.NudgeDelay),
-		TimeScale:    cfg.DemoTimeScale,
-		Guardrails:   guardrailsFrom(cfg),
+		// See engCfg.RetryDelay above: retryDueAt scales this itself.
+		RetryDelay: cfg.RetryDelay,
+		NudgeDelay: cfg.Scale(cfg.NudgeDelay),
+		TimeScale:  cfg.DemoTimeScale,
+		Guardrails: guardrailsFrom(cfg),
 	}
 	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), model, schedCfg)
 
