@@ -331,12 +331,12 @@ box.
 | B | The real provider rung | **merged** | C, D, G |
 | C | Fallback path proven per failure mode | not started | nothing |
 | D | Circuit breaker per provider | **merged** | nothing |
-| E | Provider hops persisted and retrievable | not started | nothing |
+| E | Provider hops persisted and retrievable | **merged** | nothing |
 | F | Populate `history` and `instrument_history` | not started | nothing (but B is decorative without it) |
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
 | H | `LLM_SAMPLE_RATE` and the config profiles | not started | nothing |
 
-**3 of 8 merged.**
+**4 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -973,7 +973,7 @@ because the catch rate was measured rather than assumed from one red run.
 
 ## Unit E: Provider hops persisted and retrievable
 
-**Status**: not started.
+**Status**: merged, PRs #31, #32, #33.
 **Depends on**: nothing. **Start this first** (see the dependency graph).
 **Branches**, three, merged in this order:
 
@@ -1067,13 +1067,49 @@ has not merged, add the check here rather than assuming it.
 - Full suite twice. The migration means the integration and e2e tiers are not
   optional here.
 
+### What actually shipped
+
+Three PRs as planned (#31 migration, #32 proto, #33 code), plus one structural
+decision the LLD did not make.
+
+**The codec lives in `internal/platform/hopcodec`, not in the Audit Service.**
+The LLD put `encodeHops`/`decodeHops` in `services/audit/internal/server/hops.go`,
+which does not work: the Decision Engine *writes* the column and the Audit
+Service *reads* it, so the two halves live in different services that cannot
+import each other. Leaving each to implement its own direction means nothing
+forces the delimiter to stay in step, and a divergence there corrupts an audit
+row rather than failing a build. `internal/platform` is the right home for the
+same reason `kafkax` is (`docs/PLAN.md` Phase 1: "generic infrastructure, not
+one service's business logic"), and it puts the round-trip test somewhere it
+can actually cover both directions.
+
+**Encode failure stores NULL and warns rather than failing the transaction.**
+The hops are diagnostic; the classification and the state change are not.
+Losing a real payment record because a hop label contained a delimiter is the
+wrong trade. `hopcodec.Encode` only rejects what `NewChain` already refuses at
+startup, so this should be unreachable, which is precisely why reaching it
+warrants a `Warn` rather than silence. The warning uses `HandleMessage`'s
+record-scoped logger, so it carries `record_id` for free; that is why
+`scheduleNew` takes a `*slog.Logger` rather than the `store` growing a field.
+
+**`recordRescore` writes nothing, so the column stays NULL, and that is now
+stated in code rather than being an accident of omission.** A re-score
+re-prices what the Classifier already said; no provider call was made, and
+carrying the original hops forward would misrepresent the trail as "we asked
+the model again".
+
 ### Prove the test can fail
 
-Seed an entry with three hops and assert two; confirm red with the real count.
-Then, separately, seed a provider name containing a `:` and confirm the
-encoding either round-trips it or rejects it, whichever the implementation
-chose. A delimiter-based encoding whose delimiter case is untested is a bug
-waiting for the first provider named `groq:v2`.
+Making `scheduleNew` never write the column turns the e2e assertion red with
+`classify entry hops = [], want exactly one for the rules-only default chain`.
+That is the assertion that catches the column being written but never
+selected, or selected but never decoded, since it exercises the whole path:
+chain, gRPC response, Decision Engine, Postgres, Audit, `GetRecordAudit`.
+
+The delimiter case is covered directly rather than left to chance:
+`hopcodec.Encode` refuses `:` or `,` in either field, tested for all four
+placements, because a delimiter-based encoding whose delimiter case is
+untested is a bug waiting for the first provider named `groq:v2`.
 
 ### Collision notes
 

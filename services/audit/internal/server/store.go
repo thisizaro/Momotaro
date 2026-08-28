@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/thisizaro/Momotaro/internal/platform/hopcodec"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
@@ -69,7 +70,7 @@ func (s *store) loadCurrentState(ctx context.Context, recordID string) (commonv1
 // loadAuditEntries returns a record's full trail, oldest first.
 func (s *store) loadAuditEntries(ctx context.Context, recordID string) ([]*auditv1.AuditEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT ts, from_state, to_state, reason, rationale, source, actor, attempt_number, cost_paise, message_text
+		SELECT ts, from_state, to_state, reason, rationale, source, actor, attempt_number, cost_paise, message_text, provider_hops
 		FROM audit_entry WHERE record_id = $1 ORDER BY ts ASC, id ASC`, recordID)
 	if err != nil {
 		return nil, fmt.Errorf("query audit_entry for %s: %w", recordID, err)
@@ -80,12 +81,21 @@ func (s *store) loadAuditEntries(ctx context.Context, recordID string) ([]*audit
 	for rows.Next() {
 		var ts time.Time
 		var fromState, toState, reason string
-		var rationale, source, actor, messageText sql.NullString
+		var rationale, source, actor, messageText, providerHops sql.NullString
 		var attemptNumber sql.NullInt32
 		var costPaise sql.NullInt64
 
-		if err := rows.Scan(&ts, &fromState, &toState, &reason, &rationale, &source, &actor, &attemptNumber, &costPaise, &messageText); err != nil {
+		if err := rows.Scan(&ts, &fromState, &toState, &reason, &rationale, &source, &actor, &attemptNumber, &costPaise, &messageText, &providerHops); err != nil {
 			return nil, fmt.Errorf("scan audit_entry for %s: %w", recordID, err)
+		}
+
+		// Worth failing on rather than skipping: the hops exist to show what
+		// was tried, so an entry silently returned without them is
+		// indistinguishable from a classification that tried nothing
+		// (Phase 3 Unit E).
+		hops, err := hopcodec.Decode(providerHops.String)
+		if err != nil {
+			return nil, fmt.Errorf("decode provider_hops for %s: %w", recordID, err)
 		}
 
 		entries = append(entries, &auditv1.AuditEntry{
@@ -99,6 +109,7 @@ func (s *store) loadAuditEntries(ctx context.Context, recordID string) ([]*audit
 			AttemptNumber: attemptNumber.Int32,
 			CostPaise:     costPaise.Int64,
 			MessageText:   messageText.String,
+			Hops:          hops,
 		})
 	}
 	if err := rows.Err(); err != nil {

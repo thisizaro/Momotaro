@@ -470,8 +470,16 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       20/20 with 0/20 false positives (`docs/INCIDENTS.md` 2026-08-28).
       Metric export (`llm_circuit_state`) deferred to Phase 4; a `Warn` on
       every state change is the compensating control.
-- [ ] Rationale stored and retrievable from the audit trail for a full
+- [x] Rationale stored and retrievable from the audit trail for a full
       record → `PRD.md` §2a
+      Done as `docs/PHASE3_IMPLEMENTATION.md` Unit E, in three sequenced PRs
+      (#31 migration, #32 proto, #33 code). `audit_entry.provider_hops` now
+      carries which provider rungs were actually tried, encoded as
+      `provider:result` pairs, and `GetRecordAudit` returns them on
+      `AuditEntry.hops`. The codec is shared infrastructure
+      (`internal/platform/hopcodec`) rather than per-service, because the
+      writer and reader are different services and a divergent delimiter would
+      corrupt an audit row instead of failing a build.
       Note (found while planning Phase 3): the rationale half of this is
       already done and has been since Phase 1 (decision-engine `store.go`
       writes it, audit `store.go` reads it back, `GetRecordAudit` returns it,

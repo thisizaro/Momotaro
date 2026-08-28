@@ -984,3 +984,25 @@ indistinguishable from being right, until it isn't.
 The wall-clock sleep in the fixed version is deliberate and fails safe: a
 longer sleep only makes the pile-up more complete, and the assertion is a call
 count, not a duration.
+
+### 2026-08-28, the LLD put a shared encoding inside one of the two services that share it
+
+Unit E, caught while implementing rather than after. The plan said to put
+`encodeHops`/`decodeHops` in `services/audit/internal/server/hops.go`. That
+cannot work: the **Decision Engine writes** `audit_entry.provider_hops` and the
+**Audit Service reads** it, and `internal/` visibility means neither can import
+the other. Following the plan literally would have produced an encoder in one
+service and a decoder in the other with nothing keeping the delimiter in step.
+
+That failure mode is nasty because it is silent. A divergence would not break a
+build or fail a test; it would write audit rows that come back malformed or,
+worse, subtly wrong. The round-trip test that catches it is only possible if
+both halves live in one package.
+
+Moved to `internal/platform/hopcodec`, matching the precedent set when
+`kafkax` was added mid-Phase-1 for being "generic infrastructure, not one
+service's business logic".
+
+The general lesson: **when a plan assigns file ownership, check whether the
+data crosses a service boundary.** A shared column has at least two owners by
+definition, and the encoding of that column belongs to neither of them.
