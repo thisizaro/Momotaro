@@ -1,0 +1,47 @@
+-- +goose Up
+-- Phase 3 Unit E (docs/PHASE3_IMPLEMENTATION.md): the classifier's provider
+-- chain records which rungs it actually tried (ClassifyResponse.hops,
+-- services/classifier/internal/provider/chain.go), and until now nothing
+-- persisted them. There was no column, audit.proto's AuditEntry had no field,
+-- and the Decision Engine never read them off the response, so the hops were
+-- computed and discarded on every single classification.
+--
+-- That gap only became visible with a real model in the chain. AUDIT_ENTRY
+-- already stores `source`, but Source is a coarse enum: SOURCE_LLM is the same
+-- value whether the primary answered on the first try or timed out and the
+-- failover covered for it (chain.go's sourceFor only distinguishes rules from
+-- LLM, by design, SPEC.md section 4.6). So the trail can say "a model
+-- answered" and cannot say which one, or what the ones before it did. That is
+-- exactly what PRD.md section 12 step 5 promises to show a judge: "one record
+-- where the LLM call failed and fell back to rules."
+--
+-- TEXT rather than JSONB, matching this schema's house style: every enum here
+-- is already stored as TEXT (record_state.current_state, pending_action,
+-- intervention_attempt.action_type, outcome, audit_entry.source), and both
+-- halves of a hop are closed vocabularies (provider names are validated at
+-- startup by NewChain, results come from the Hop* constants in
+-- provider/provider.go). Encoding is "provider:result" pairs joined by ",",
+-- e.g. 'groq:timeout,gemini:ok'. It stays readable in psql without a JSON
+-- operator, which is worth something for a project whose pitch is an auditable
+-- trail. NewChain rejects provider names containing ':' or ',' so the
+-- delimiters cannot collide.
+--
+-- Two semantics decisions, recorded here so they are not inferred from code:
+--
+--   * NULL means no classification happened behind this transition, never the
+--     empty string. Those are different facts and the trail should not blur
+--     them: '' would read as "we asked and nothing was tried".
+--
+--   * Written on EVERY step of a multi-step transition, not only the step that
+--     followed the classification. That matches what store.scheduleNew
+--     (decision-engine) already does with `rationale` and `source`, and the
+--     uniformity is deliberate: a caller reading any single entry gets the
+--     same picture rationale gives it, rather than a picture that depends on
+--     which row it happened to read.
+--
+-- Additive only, and its own migration merged ahead of the code that uses it,
+-- per docs/ARCHITECTURE.md section 12a.
+ALTER TABLE audit_entry ADD COLUMN provider_hops TEXT;
+
+-- +goose Down
+ALTER TABLE audit_entry DROP COLUMN IF EXISTS provider_hops;
