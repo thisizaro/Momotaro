@@ -14,9 +14,10 @@ import (
 // section 3). Kept separate from engine.go and scheduler.go so neither has
 // to repeat the context-deadline boilerplate per call site.
 type clients struct {
-	classifier  classifierv1.ClassifierServiceClient
-	executor    executorv1.ExecutorServiceClient
-	callTimeout time.Duration
+	classifier    classifierv1.ClassifierServiceClient
+	executor      executorv1.ExecutorServiceClient
+	callTimeout   time.Duration
+	llmSampleRate float64
 }
 
 func (c *clients) classify(ctx context.Context, record *commonv1.Record, history, instrumentHistory []*commonv1.InterventionAttempt) (*classifierv1.ClassifyResponse, error) {
@@ -26,6 +27,7 @@ func (c *clients) classify(ctx context.Context, record *commonv1.Record, history
 		Record:            record,
 		History:           history,
 		InstrumentHistory: instrumentHistory,
+		ForceRulesOnly:    !sampledForLLM(record.GetId(), c.llmSampleRate),
 	})
 }
 

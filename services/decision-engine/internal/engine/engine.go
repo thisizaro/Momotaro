@@ -55,6 +55,11 @@ type Config struct {
 	// the Classifier's recommendation before it is scheduled
 	// (docs/ARCHITECTURE.md section 5a) and can only ever remove options.
 	Guardrails GuardrailConfig
+	// LLMSampleRate is LLM_SAMPLE_RATE (docs/PHASE3_IMPLEMENTATION.md Unit
+	// H): the fraction of records that get a live model call rather than
+	// ForceRulesOnly. Default 0.0, validated at startup in [0,1] by
+	// cmd/main.go, so every existing test and every default run stays free.
+	LLMSampleRate float64
 }
 
 // Engine consumes raw.events: classify a fresh record and schedule its
@@ -76,7 +81,7 @@ type Engine struct {
 func New(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, model *economics.Model, cfg Config) *Engine {
 	return &Engine{
 		store:     newStore(pool),
-		clients:   &clients{classifier: classifier, executor: executor, callTimeout: cfg.CallTimeout},
+		clients:   &clients{classifier: classifier, executor: executor, callTimeout: cfg.CallTimeout, llmSampleRate: cfg.LLMSampleRate},
 		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
 		clock:     clk,
 		economics: model,

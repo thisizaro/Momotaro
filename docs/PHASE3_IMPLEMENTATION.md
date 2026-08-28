@@ -334,9 +334,9 @@ box.
 | E | Provider hops persisted and retrievable | **merged** | nothing |
 | F | Populate `history` and `instrument_history` | **merged** | H |
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
-| H | `LLM_SAMPLE_RATE` and the config profiles | not started | nothing |
+| H | `LLM_SAMPLE_RATE` and the config profiles | **merged** | nothing |
 
-**5 of 8 merged.**
+**6 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -1313,8 +1313,8 @@ output.
 
 ## Unit H: `LLM_SAMPLE_RATE` and the config profiles
 
-**Status**: not started.
-**Depends on**: nothing. Collides with F, see Collision notes.
+**Status**: merged.
+**Depends on**: nothing. Collided with F, see Collision notes; F merged first.
 **Branch**: `svc/decision-engine/llm-sample-rate`.
 **Files owned**: `services/decision-engine/internal/engine/clients.go`,
 `engine.go`, `cmd/main.go`; new `configs/demo.env` and `configs/dev.env`;
