@@ -414,7 +414,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 ## Phase 3: Reasoning layer
 
 > Working breakdown, dependency graph and per-unit LLDs:
-> **`docs/PHASE3_IMPLEMENTATION.md`** (7 units, A to G). That document also
+> **`docs/PHASE3_IMPLEMENTATION.md`** (8 units, A to H). That document also
 > lists ten flaws found in the four checkboxes below before starting, the most
 > important being: the "rationale stored and retrievable" item is already done
 > and the part actually missing is `ClassifyResponse.hops`, which nothing
@@ -518,6 +518,32 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       but no code reads `confidence`. Harmless while it is a table constant,
       a real gap once a model produces it
       → `docs/PHASE3_IMPLEMENTATION.md` Unit G
+- [x] (unplanned, found while planning Phase 3) `LLM_SAMPLE_RATE` and the
+      checked-in demo/dev config profiles. `PRD.md` §12 calls for a
+      50-to-100-record demo batch; Groq's free tier is 30 RPM. Those two
+      numbers do not fit, and without a gate the failure is not graceful:
+      the first thirty records get a model, the rest get rate limited in an
+      order decided by scheduling luck, and there is no way to know in
+      advance which record a judge picks has a real rationale behind it.
+      → `docs/PHASE3_IMPLEMENTATION.md` Unit H
+      `ClassifyRequest.force_rules_only` already existed as a per-request
+      field with the classifier already honoring it (Unit A); nothing had
+      ever set it. The Decision Engine now decides per record, via
+      `hash(record_id) % 10000 < rate*10000`, deliberately not `rand`:
+      re-run safety (`test/e2e/rerun_safety_test.go`) asserts identical
+      outcomes on replay, and a random draw would make that guarantee
+      conditional on a config value. Default `0.0`, validated in `[0,1]` at
+      startup, so every existing test and every default run stays free.
+      `configs/demo.env` (`LLM_SAMPLE_RATE=0.15`, ~15 live calls per 100
+      records, comfortably under quota) and `configs/dev.env`
+      (`LLM_SAMPLE_RATE=1.0`, every manually-submitted record gets a live
+      rationale) checked in, alongside `.env.example` and one new row in
+      `ARCHITECTURE.md` §17. No `MODE=demo|dev|prod` enum: the profiles set
+      the same individually named knobs everything else uses
+      (`DEMO_TIME_SCALE`, `LLM_PROVIDER_CHAIN`), so the code never learns
+      what "demo" means and production stays a real, individually
+      overridable code path rather than something that only runs on a
+      judge's laptop.
 
 ## Phase 4: Observability
 
