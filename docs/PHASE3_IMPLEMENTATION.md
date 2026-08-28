@@ -332,11 +332,11 @@ box.
 | C | Fallback path proven per failure mode | not started | nothing |
 | D | Circuit breaker per provider | **merged** | nothing |
 | E | Provider hops persisted and retrievable | **merged** | nothing |
-| F | Populate `history` and `instrument_history` | not started | nothing (but B is decorative without it) |
+| F | Populate `history` and `instrument_history` | **merged** | H |
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
 | H | `LLM_SAMPLE_RATE` and the config profiles | not started | nothing |
 
-**4 of 8 merged.**
+**5 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -1121,7 +1121,7 @@ also owns. **Do not run E's third PR and F in parallel.** E's first two PRs
 
 ## Unit F: Populate `history` and `instrument_history`
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: nothing structurally. Should land before or with B.
 **Branch**: `svc/decision-engine/classify-history`.
 **Files owned**: `services/decision-engine/internal/engine/store.go`,

@@ -19,10 +19,14 @@ type clients struct {
 	callTimeout time.Duration
 }
 
-func (c *clients) classify(ctx context.Context, record *commonv1.Record) (*classifierv1.ClassifyResponse, error) {
+func (c *clients) classify(ctx context.Context, record *commonv1.Record, history, instrumentHistory []*commonv1.InterventionAttempt) (*classifierv1.ClassifyResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.callTimeout)
 	defer cancel()
-	return c.classifier.Classify(callCtx, &classifierv1.ClassifyRequest{Record: record})
+	return c.classifier.Classify(callCtx, &classifierv1.ClassifyRequest{
+		Record:            record,
+		History:           history,
+		InstrumentHistory: instrumentHistory,
+	})
 }
 
 // evScoreAtDecision and pRecoveryAtDecision are the economics scorer's

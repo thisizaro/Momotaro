@@ -118,7 +118,24 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 		CreatedAt:     timestamppb.New(evt.CreatedAt),
 	}
 
-	classifyResp, err := e.classifyWithRetry(ctx, record)
+	// Loaded before Classify, not after: these are its inputs
+	// (classifier.proto ClassifyRequest.history/instrument_history), not the
+	// guardrails' aggregate counters loaded below. A brand new record has no
+	// rows of its own yet, but the instrument may already carry history from
+	// other records (Phase 3 Unit F).
+	classifyHistory, err := e.store.loadAttemptRows(ctx, evt.RecordID)
+	if err != nil {
+		return err
+	}
+	var instrumentHistory []*commonv1.InterventionAttempt
+	if evt.InstrumentRef != "" {
+		instrumentHistory, err = e.store.loadInstrumentHistory(ctx, evt.InstrumentRef, evt.RecordID)
+		if err != nil {
+			return err
+		}
+	}
+
+	classifyResp, err := e.classifyWithRetry(ctx, record, classifyHistory, instrumentHistory)
 	if err != nil {
 		log.Error("classify failed after retries, dead-lettering", logger.KeyError, err.Error())
 		return e.deadLetterEvent(ctx, evt, fmt.Sprintf("classify failed after %d attempts: %v", maxClassifyAttempts, err))
@@ -179,10 +196,10 @@ func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHist
 // maxClassifyAttempts times, waiting classifyRetryDelay between attempts
 // via the injected clock so this is testable without a real wait
 // (docs/ENGINEERING.md section 2).
-func (e *Engine) classifyWithRetry(ctx context.Context, record *commonv1.Record) (*classifierv1.ClassifyResponse, error) {
+func (e *Engine) classifyWithRetry(ctx context.Context, record *commonv1.Record, history, instrumentHistory []*commonv1.InterventionAttempt) (*classifierv1.ClassifyResponse, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxClassifyAttempts; attempt++ {
-		resp, err := e.clients.classify(ctx, record)
+		resp, err := e.clients.classify(ctx, record, history, instrumentHistory)
 		if err == nil {
 			return resp, nil
 		}
