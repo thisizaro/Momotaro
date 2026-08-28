@@ -77,6 +77,13 @@ type serviceConfig struct {
 	// model call rather than force_rules_only. Default 0.0, so every
 	// existing test and every default run stays free of outbound LLM calls.
 	LLMSampleRate float64
+
+	// ClassifyConfidenceThreshold is CLASSIFY_CONFIDENCE_THRESHOLD
+	// (docs/PHASE3_IMPLEMENTATION.md Unit G): below this, a classification
+	// is escalated as a safety call rather than priced. Default 0.0, so
+	// every existing test and every default run escalates nothing on
+	// confidence (the rules engine's own confidence values are all > 0).
+	ClassifyConfidenceThreshold float64
 }
 
 // guardrailsFrom builds the engine's guardrail limits from the loaded config.
@@ -115,6 +122,8 @@ func loadConfig() (serviceConfig, error) {
 		RecoveryWindow:  l.Duration("RECOVERY_WINDOW", 7*24*time.Hour),
 
 		LLMSampleRate: l.Float("LLM_SAMPLE_RATE", 0.0),
+
+		ClassifyConfidenceThreshold: l.Float("CLASSIFY_CONFIDENCE_THRESHOLD", 0.0),
 	}
 	if err := l.Err(); err != nil {
 		return cfg, err
@@ -128,6 +137,12 @@ func loadConfig() (serviceConfig, error) {
 	// intended as "3 in 10" would otherwise sample the whole batch.
 	if cfg.LLMSampleRate < 0 || cfg.LLMSampleRate > 1 {
 		return cfg, fmt.Errorf("LLM_SAMPLE_RATE must be in [0,1], got %v", cfg.LLMSampleRate)
+	}
+	// Confidence itself is documented as always in [0,1] (classifier.proto,
+	// enforced by the classifier's own validate.go), so a threshold outside
+	// that range could only ever mean a typo, never a deliberate setting.
+	if cfg.ClassifyConfidenceThreshold < 0 || cfg.ClassifyConfidenceThreshold > 1 {
+		return cfg, fmt.Errorf("CLASSIFY_CONFIDENCE_THRESHOLD must be in [0,1], got %v", cfg.ClassifyConfidenceThreshold)
 	}
 	return cfg, nil
 }
@@ -210,12 +225,13 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		// salary-window branch. Scaling it here too would compress it
 		// twice -- invisible at DEMO_TIME_SCALE=1 (production; scaleDuration
 		// no-ops there) but silently near-instant at any other scale.
-		RetryDelay:    cfg.RetryDelay,
-		NudgeDelay:    cfg.Scale(cfg.NudgeDelay),
-		DLQTopic:      cfg.DLQTopic,
-		TimeScale:     cfg.DemoTimeScale,
-		Guardrails:    guardrailsFrom(cfg),
-		LLMSampleRate: cfg.LLMSampleRate,
+		RetryDelay:                  cfg.RetryDelay,
+		NudgeDelay:                  cfg.Scale(cfg.NudgeDelay),
+		DLQTopic:                    cfg.DLQTopic,
+		TimeScale:                   cfg.DemoTimeScale,
+		Guardrails:                  guardrailsFrom(cfg),
+		LLMSampleRate:               cfg.LLMSampleRate,
+		ClassifyConfidenceThreshold: cfg.ClassifyConfidenceThreshold,
 	}
 	eng := engine.New(pool,
 		classifierv1.NewClassifierServiceClient(classifierConn),

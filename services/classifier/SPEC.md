@@ -557,20 +557,24 @@ already works. Nothing to add. Same "stop and propose" rule if you disagree.
 1. ~~`ClassifyRequest.history` and `instrument_history` are never
    populated`~~ — done, Phase 3 Unit F. The Decision Engine now fills both
    from `INTERVENTION_ATTEMPT` before every `Classify` call (§3).
-2. **Confidence threshold enforcement does not exist.**
-   `classifier.proto` documents `confidence` as "Below the configured
-   threshold the record is escalated rather than acted on", and
-   `ARCHITECTURE.md` §5 puts that decision in the Decision Engine. Today
-   `decideAfterClassify` in
-   `services/decision-engine/internal/engine/state.go` ignores `confidence`
-   entirely. So a confidence-0.0 unknown-code classification is currently
-   only escalated because *you* recommend `ESCALATE`, not because a threshold
-   caught it. Emit honest confidence values regardless; the guardrail will
-   work when the Decision Engine adds it. Raise this as a Decision Engine
-   item (it fits naturally with Phase 2's guardrail work). **Do not implement
-   the threshold here**: a classifier that escalates on its own confidence is
-   the model deciding, which is exactly the trust inversion `PRD.md` §2a
-   forbids.
+2. ~~Confidence threshold enforcement does not exist~~ -- done, Phase 3
+   Unit G. `Engine.decide` in `services/decision-engine/internal/engine/
+   engine.go` now escalates any classification below
+   `CLASSIFY_CONFIDENCE_THRESHOLD` (default `0.0`, so nothing changes until
+   deliberately configured), before the existing recommended-action-escalate
+   check. One interaction worth knowing about if you touch this: the
+   unknown-code path always returns confidence `0.0` *and* recommends
+   `ESCALATE`, so once a threshold above `0.0` is set both conditions are
+   true for the same record. The audit trail still says "classifier
+   recommended escalation" for that case, not "classification confidence
+   below threshold", so a human reading it can tell "we do not recognise
+   this failure code" from "the model was unsure" -- those call for
+   different follow-up. Emit honest confidence values here regardless; the
+   threshold only does anything useful once a real model produces the
+   number, exactly as this item originally anticipated. Enforcement still
+   correctly lives in the Decision Engine, not here: a classifier that
+   escalates on its own confidence would be the model deciding, the trust
+   inversion `PRD.md` §2a forbids.
 3. **`docs/PLAN.md`'s stale Phase 5 migration note** (above).
 
 Raise all three in the PR description. If any turns out to be a real design
