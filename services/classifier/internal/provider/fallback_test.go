@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
-	"github.com/thisizaro/Momotaro/services/classifier/internal/llm"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
+	"github.com/thisizaro/Momotaro/services/classifier/internal/llm"
 )
 
 // Phase 3 Unit C: PLAN.md's "simulate timeout/error per provider, confirm
