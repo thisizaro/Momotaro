@@ -42,6 +42,16 @@ message AuditEntry {
   // The actual message text sent, for nudge transitions. Lets the demo show
   // real wording rather than describing it.
   string message_text = 10;
+  // Every classifier provider rung actually attempted for the classification
+  // behind this transition, in order, including rungs deliberately skipped
+  // (circuit open, or too little deadline left to afford). Empty when no
+  // classification happened.
+  //
+  // `source` alone cannot show this: it is coarse by design, so SOURCE_LLM
+  // reads the same whether the primary answered first try or timed out and a
+  // failover covered for it. These hops are what make a fallback visible in
+  // the trail (docs/PHASE3_IMPLEMENTATION.md Unit E).
+  repeated common.v1.ProviderHop hops = 11;
 }
 
 message GetRecordAuditRequest {
