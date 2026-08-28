@@ -445,10 +445,31 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       e2e harness, so no automated tier ever spends quota; the live chain is
       opt-in. Metric export deferred to Phase 4 as everywhere else.
       Full reasoning and the measurements in `docs/DECISIONS.md` 2026-08-28.
-- [ ] Fallback path deliberately tested (simulate timeout/error per
+- [x] Fallback path deliberately tested (simulate timeout/error per
       provider, confirm the chain falls through correctly and every hop
       tried is recorded) → `ARCHITECTURE.md` §5,
       `docs/PHASE3_IMPLEMENTATION.md` Unit C
+      Seven unit-tier tests against fakes in `provider/fallback_test.go`,
+      one per failure mode (timeout, transport error, HTTP 5xx, HTTP 429,
+      invalid JSON, out-of-vocabulary enum, open circuit), each asserting
+      the exact hop result string, plus a two-LLM-rung case (groq fails,
+      gemini answers) proving hop order and `SOURCE_LLM`. Uses
+      `services/classifier/internal/llm`'s real `RateLimitedError`/
+      `StatusError` types as the fake rung's error value rather than local
+      stand-ins, so the test is tied to the vocabulary the classifier
+      actually produces.
+      e2e half in `test/e2e/fallback_test.go`: the real classifier binary,
+      pointed at an `httptest.Server` that always returns 500, submits one
+      record and asserts the audit trail shows `SOURCE_RULES_FALLBACK` with
+      hops `[{groq,error},{rules,ok}]`. Needed a real cross-unit fix first
+      (`docs/INCIDENTS.md` 2026-08-28): the Decision Engine's
+      `LLM_SAMPLE_RATE` (Unit H) sends `force_rules_only=true` at its
+      default of `0.0`, which filters `groq` out of the chain before it is
+      ever called, so the test's own "was the fake server even hit" guard
+      caught its first version silently proving nothing. Fixed by extending
+      the harness (`startStackWithEnv`, additive, the other seven callers of
+      `startStack` unchanged) to also set `LLM_SAMPLE_RATE=1.0` for this
+      test's Decision Engine process.
 - [x] Circuit breaker per provider, with a test proving that a sustained
       provider outage does **not** make every record pay the full timeout
       → `ARCHITECTURE.md` §5, `docs/PHASE3_IMPLEMENTATION.md` Unit D
