@@ -806,3 +806,77 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   (`schedule.go`).`DemoTimeScale` is threaded to both call sites via a
   new `TimeScale` field on `engine.Config` and `engine.SchedulerConfig`,
   populated from `config.Common.DemoTimeScale` in `main.go`.
+- 2026-08-28: **LLM provider chain decided**, closing the deferral logged on
+  2026-08-22 and the open question in `docs/PRD.md` section 13. The chain is
+  `groq,gemini,rules`, with Groq running `openai/gpt-oss-20b` at
+  `reasoning_effort: low`. Groq is primary for three reasons, in order of
+  weight. (1) It is the only evaluated option giving **guaranteed constrained
+  decoding**: `response_format: json_schema` with `strict: true` constrains
+  the model at the token level, so it cannot emit a bucket outside
+  `RootCauseBucket`. That support is narrow, only `gpt-oss-20b`,
+  `gpt-oss-120b` and `Qwen 3.8 27B`; everything else on Groq, including
+  `llama-3.1-8b-instant`, is best-effort. (2) Latency is a hard constraint
+  here rather than a nicety, because the chain has to fit inside the Decision
+  Engine's 5s `CALL_TIMEOUT` and `PRD.md` section 10's 3s p95 target; Groq
+  measures roughly 1000 tok/s output, the fastest available. (3) It speaks
+  the OpenAI chat-completions shape, so the client is standard.
+  Gemini is the automatic failover, on the free tier, using **native
+  `generateContent` with `responseSchema`**, deliberately NOT its
+  OpenAI-compatibility endpoint: that endpoint exists but its tool calling
+  does not follow the OpenAI schema, which is precisely the capability the
+  fallback rung depends on. Gemini's compliance is best-effort and Google
+  says so, which is fine because `provider/validate.go` is already the
+  second gate and `services/classifier/SPEC.md` section 4.7 wrote it for
+  exactly this case: a non-compliant answer becomes a `schema_invalid` hop
+  and falls through.
+  Cost was the trigger for revisiting this (Anthropic and OpenAI are not
+  free) but is not the whole argument: on the merits, guaranteed constrained
+  decoding plus the fastest inference is a better fit for a
+  seven-way-classification-with-two-sentences workload than a frontier model
+  would be. Both free tiers reserve the right to train on inputs; the data
+  crossing that boundary is synthetic (World Simulator ground truth) and
+  `record.instrument_ref` is by its own schema comment never the instrument
+  itself, so no real payment PII leaves the system.
+  Two consequences recorded so they are not rediscovered the hard way.
+  **`LLM_TIMEOUT=2s` is now known to be a placeholder, not a measurement**:
+  GPT-OSS are reasoning models, and `gpt-oss-20b` at high reasoning effort
+  measures 3.05s time-to-first-token on Groq, which alone exceeds both that
+  timeout and the 3s p95 target. `reasoning_effort: low` is the fix, and the
+  timeout must be set from a real measurement in Unit B.
+  **Free-tier rate limits are org-level, not per-key**: 30 RPM and 1,000
+  requests/day on Groq's gpt-oss models, 10 to 15 RPM on Gemini. Against
+  `PRD.md` section 12's 50-to-100-record demo batch these do not fit, which
+  is why `LLM_SAMPLE_RATE` exists (`docs/PHASE3_IMPLEMENTATION.md` Unit H)
+  and why the default `LLM_PROVIDER_CHAIN` everywhere, including the e2e
+  harness, stays `rules`.
+- 2026-08-28: **Rate limiting is a distinct circuit-breaker case, not just
+  another failure.** A 429 opens the breaker immediately rather than after
+  `LLM_BREAKER_THRESHOLD` consecutive failures, with the cooldown taken from
+  `Retry-After` when the provider sends one. Reason: on a free tier, rate
+  limiting is the failure mode most likely to actually fire, and plain
+  consecutive-failure counting makes the pipeline pay five doomed calls
+  before protecting itself, which is a visible multi-second stall during a
+  demo. It is recorded as its own hop result (`rate_limited`) rather than
+  `error`, because "we were throttled" and "the provider is broken" call for
+  different operator responses and the audit trail should not blur them.
+  This is also what makes a three-rung chain viable: the latency objection to
+  `groq,gemini,rules` assumes each rung times out, but a rate-limited rung
+  costs approximately nothing because no call is made.
+- 2026-08-28: **No `MODE=demo|dev|prod` enum. Config profiles instead.**
+  `configs/demo.env` and `configs/dev.env` set the existing individually
+  named knobs (`DEMO_TIME_SCALE`, `LLM_PROVIDER_CHAIN`, `LLM_SAMPLE_RATE`);
+  the code never learns what "demo" means. Reason: a single switch that
+  silently changes many behaviours at once is how a demo stops being
+  reproducible and how "does this work in production?" stops being
+  answerable. `docs/ARCHITECTURE.md` section 17 already committed to the
+  opposite pattern, a table of named knobs each with its documented
+  real-world counterpart, and a mode enum would undercut it.
+- 2026-08-28: **LLM sampling is deterministic, by hash of `record_id`**, not
+  random. `LLM_SAMPLE_RATE` decides per record whether to spend a live model
+  call, via the already-existing per-request `ClassifyRequest.
+  force_rules_only` field. Determinism is not cosmetic: re-run safety
+  (identical outcomes on replay) is a headline claim proven by
+  `test/e2e/rerun_safety_test.go`, and a random sample would make that
+  guarantee conditional on a config value. An FNV hash costs nothing and
+  removes the question. Default is 0.0, so every default run and every
+  existing test is provably free.

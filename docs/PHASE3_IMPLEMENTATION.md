@@ -23,43 +23,72 @@ anything outside it.
 
 ---
 
-## Read this before Unit B: one decision is genuinely open
+## Provider decision: resolved
 
 `AGENTS.md` "Locked decisions", `ARCHITECTURE.md` section 5 and `PRD.md`
-section 13 all record the LLM provider as **deliberately undecided**. That is
-not work anyone can do in code. Somebody has to choose, and `PLAN.md` buries
-the choice inside the same checkbox as the wiring, which makes it look like an
-implementation detail. It is not.
+section 13 all recorded the LLM provider as deliberately undecided. It is
+decided now. Full reasoning and the sourced numbers are in `docs/DECISIONS.md`
+2026-08-28. The operative summary:
 
-What has to be decided, exactly:
+**`LLM_PROVIDER_CHAIN=groq,gemini,rules`**, with Groq running
+`openai/gpt-oss-20b` at `reasoning_effort: low`.
 
-1. **Which vendors, in what order.** The repo already carries
-   `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in `.env.example`, and
-   `common.proto`'s `ProviderHop` comment already uses `"claude"` and
-   `"openai"` as its examples, so the shape everything was built for is
-   Anthropic primary, OpenAI secondary, rules last.
-2. **Which model tier.** A diagnosis call returning one enum value, one enum
-   action and two sentences of rationale is a small, cheap, structured task.
-   The cheapest tier that reliably honours a JSON schema is the right answer;
-   spending a frontier tier on a seven-way classification is the sort of thing
-   a judge asks about.
-3. **Whether a second live vendor is worth it at all.** The chain's resilience
-   story does not require two *vendors*: `rules` is already a rung that cannot
-   fail, so a single LLM rung plus rules already gives a complete fallback
-   path. A second vendor buys quality continuity during a single provider's
-   outage, at the cost of a second key, a second client, a second prompt to
-   keep in sync, and a second timeout in the deadline budget (see Flaw 3).
+| Rung | Role | Why this one |
+|---|---|---|
+| `groq` | primary | The only option evaluated that gives **guaranteed constrained decoding** (`json_schema` with `strict: true`, supported on `gpt-oss-20b`, `gpt-oss-120b` and `Qwen 3.8 27B` only, best-effort on everything else). Fastest output measured, roughly 1000 tok/s, which matters because Unit A must fit every rung inside a 5s `CALL_TIMEOUT`. OpenAI-compatible wire format, so `llm/client.go` is a standard chat-completions client. |
+| `gemini` | automatic failover | Free tier, native `responseSchema` with `enum`. Buys quality continuity when Groq rate-limits or goes down. It is **not** what makes the system safe: `rules` is already a rung that cannot fail. |
+| `rules` | terminal rung | Cannot fail, so the chain always terminates in a valid answer. Unit A makes that structural rather than conventional. |
 
-**Recommendation**: `LLM_PROVIDER_CHAIN=claude,rules` for the build, with the
-code shaped so a second vendor is a registry entry and a config value rather
-than a refactor. Add OpenAI only if the demo narrative needs a
-vendor-to-vendor failover on stage, and note that Unit C's fallback test
-covers the two-rung case with fakes regardless, so the capability is proven
-without paying for a second key.
+Three findings from the evaluation are binding on the units below.
 
-Record the outcome in `docs/DECISIONS.md` and update `AGENTS.md`'s locked
-decision, because that bullet currently instructs every future agent that the
-choice is still open.
+1. **Do not use Gemini's OpenAI-compatibility endpoint.** It exists, but its
+   tool calling does not follow the OpenAI schema, so the one thing the
+   fallback rung must do reliably is the one thing that layer does badly. Use
+   native `generateContent` with `responseSchema`.
+2. **Gemini does not guarantee schema compliance**, and its own documentation
+   says to validate in the application. That is fine and already handled:
+   `provider/validate.go` is exactly that validator and `SPEC.md` section 4.7
+   wrote it for exactly this case. A non-compliant Gemini answer becomes a
+   `schema_invalid` hop and falls through to rules.
+3. **`LLM_TIMEOUT=2s` is a placeholder and must become a measured number.**
+   GPT-OSS models are reasoning models. Artificial Analysis measures
+   `gpt-oss-20b` (high reasoning) at **3.05s time to first token on Groq**,
+   and Groq is the fastest provider for that model. That one number exceeds
+   both the current `LLM_TIMEOUT` and `PRD.md` section 10's 3s p95 target
+   before any network time is added. `reasoning_effort: low` is the fix, and
+   is the right setting for a seven-way classification regardless, but the
+   timeout has to be set from measurement rather than from the value sitting
+   in `.env.example` today. Units A and B both carry this in their definition
+   of done.
+
+### Free-tier limits, and what they do to the demo
+
+| Provider and model | RPM | Requests/day |
+|---|---|---|
+| Groq `gpt-oss-20b` / `gpt-oss-120b` | 30 | 1,000 |
+| Groq `llama-3.1-8b-instant` (best-effort schema only) | 30 | 14,400 |
+| Gemini 3 Flash | 10 | 1,500 |
+| Gemini 2.5 Flash-Lite | 15 | 1,000 |
+
+Groq's limits are **organization-level, not per-key**, so extra keys do not
+multiply quota.
+
+`PRD.md` section 12 calls for a demo batch of 50 to 100 records. At 30 RPM a
+100-record batch cannot be classified live: the first thirty or so succeed and
+the rest are rate limited, so the demo self-degrades to rules in an
+uncontrolled way and the record a judge drills into may carry no model
+rationale at all.
+
+That is not something to engineer around, it is a knob to set. Unit H adds
+`LLM_SAMPLE_RATE` so a demo runs at full record volume with a bounded number
+of live calls. See Unit H for the arithmetic, and for how the same knob stages
+the failover beat deliberately instead of by accident.
+
+**Operational rule that follows from 1,000 requests per day**: the default
+`LLM_PROVIDER_CHAIN` in `.env.example` and in `test/e2e`'s harness stays
+`rules`. The live chain is opt-in through `configs/demo.env` (Unit H). One
+accidental e2e loop against a live chain burns the day's quota, and it will
+happen at the worst possible moment.
 
 ---
 
@@ -90,8 +119,8 @@ for it, and the Decision Engine never reads it off the response.
 
 That matters more once a real provider exists, because
 `sourceFor` (`provider/chain.go:95`) only distinguishes rules from LLM. When
-claude times out and openai answers, `source` is `SOURCE_LLM`, exactly the
-same value as when claude answers on the first try. So after Phase 3 the audit
+groq times out and gemini answers, `source` is `SOURCE_LLM`, exactly the
+same value as when groq answers on the first try. So after Phase 3 the audit
 trail will be structurally unable to show that a fallback happened, which is
 the one thing `PRD.md` section 12 promises to demonstrate ("one record where
 the LLM call failed and fell back to rules").
@@ -106,7 +135,7 @@ The whole resilience claim rests on the rules engine being last.
 `provider/chain.go:26`'s `NewChain` requires at least one name and rejects
 unknown names. It does not require `rules` to be present, let alone last.
 
-So `LLM_PROVIDER_CHAIN=claude` starts the pod cleanly, and then every
+So `LLM_PROVIDER_CHAIN=groq` starts the pod cleanly, and then every
 classification that fails returns `no rung produced a valid response`
 (`chain.go:80`). The Decision Engine retries `Classify` three times
 (`engine.go:32`, `maxClassifyAttempts = 3`) and dead-letters the record. A
@@ -132,7 +161,7 @@ deadline expires, and the rules rung never runs at all.
 Even with a per-rung timeout added naively, the arithmetic does not work.
 `CALL_TIMEOUT` defaults to 5s (`decision-engine/cmd/main.go:94`) and is what
 bounds the inbound `Classify` call. `LLM_TIMEOUT` defaults to 2s. A
-`claude,openai,rules` chain that fully times out burns 4s of a 5s budget
+`groq,gemini,rules` chain that fully times out burns 4s of a 5s budget
 before the rung that always answers gets a turn, and the response then has to
 marshal and travel back inside the remaining 1s. Add a third LLM rung, or
 tighten `CALL_TIMEOUT`, and the classifier produces a correct answer that
@@ -305,14 +334,16 @@ box.
 | E | Provider hops persisted and retrievable | not started | nothing |
 | F | Populate `history` and `instrument_history` | not started | nothing (but B is decorative without it) |
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
+| H | `LLM_SAMPLE_RATE` and the config profiles | not started | nothing |
 
-**0 of 7 merged.**
+**0 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
 provider". E replaces "rationale stored and retrievable" with the part that is
-actually missing (Flaw 1). F and G are additions the checklist does not
-contain and that Flaws 5 and 8 justify.
+actually missing (Flaw 1). F, G and H are additions the checklist does not
+contain: F and G are justified by Flaws 5 and 8, and H is what makes a
+50-to-100-record demo possible against a 30 RPM free tier.
 
 ---
 
@@ -322,6 +353,8 @@ contain and that Flaws 5 and 8 justify.
   E (3 stacked PRs: migration -> proto -> code)  independent, START FIRST
   A (chain hardening)                            independent, start now
   F (classify history)                           independent, start now
+  H (sample rate + profiles)                     independent of every unit,
+                                                 but collides with F on files
                                                        |
                     A ──> B (real provider rung) <─────┘  soft: B works without F,
                               │                             but is decorative
@@ -331,6 +364,10 @@ contain and that Flaws 5 and 8 justify.
 ```
 
 **The critical path is A -> B.** Nothing else sits on it.
+
+H blocks nothing in code but blocks the *demo*: without it a 100-record batch
+cannot be shown against a 30 RPM free tier. Treat it as required for Phase 3
+to be demonstrable, not as an optional extra.
 
 E should start first despite blocking nothing, because it is three PRs that
 must merge in sequence (a migration is its own PR per `ARCHITECTURE.md`
@@ -435,6 +472,12 @@ opens a proto PR; let it carry the comment update.
   test that proves the DLQ path is closed, and it is the reason this unit
   exists.
 - Provider names containing `:` or `,` are rejected at construction.
+- **`LLM_TIMEOUT` and `CHAIN_RESERVE` are justified in the PR with an
+  arithmetic budget**, not left at the placeholder values. State the sum of
+  the worst-case chain against `CALL_TIMEOUT` and against `PRD.md` section
+  10's 3s p95 target, and show it fits. Unit B replaces the arithmetic with a
+  measurement once a real rung exists; A's job is to make the budget explicit
+  instead of implicit.
 - All six `test/e2e/` tests unchanged and green. Single-rung behaviour must be
   byte-identical, since the default chain is still `rules`.
 - Full suite: `go test -count=1 -race -tags='integration e2e' ./...`, twice.
@@ -454,7 +497,7 @@ must merge before any of them start.
 ## Unit B: The real provider rung
 
 **Status**: not started.
-**Depends on**: A merged, and the provider decision made (top of this file).
+**Depends on**: A merged. The provider decision is resolved (top of this file).
 **Branch**: `svc/classifier/llm-provider`.
 **Files owned**: a new `services/classifier/internal/llm/` package;
 `services/classifier/cmd/main.go`; `.env.example`;
@@ -478,24 +521,44 @@ exists because of this unit.
 ```
 services/classifier/internal/llm/
   provider.go   the Provider implementation: Name(), Classify()
-  client.go     HTTP transport, base URL from config, one vendor's request shape
+  client.go     shared HTTP transport: base URL, key, timeout, status handling
+  groq.go       Groq request/response shape (OpenAI chat-completions)
+  gemini.go     Gemini request/response shape (native generateContent)
+  schema.go     the JSON schema both vendors are handed, built from the enums
   prompt.go     prompt construction, with the record data in a delimited block
   parse.go      response -> ClassifyResponse, enum-strict
   *_test.go     all against httptest, no key, no network
 ```
 
-**The one decision that makes or breaks testability**: the base URL comes from
-config (`ANTHROPIC_BASE_URL`, defaulting to the real endpoint). Every test
-then points at `httptest.NewServer` and exercises the real HTTP client, real
-JSON, real context cancellation, real status code handling, with no key and no
-egress. A rung that hardcodes its endpoint is a rung that can only be tested
-by mocking the layer under test.
+Two rungs, one package, because they differ only in request shape and
+response envelope. Both are registered in `cmd/main.go`; which ones actually
+run is `LLM_PROVIDER_CHAIN`'s business.
 
-**Structured output, two gates.** Use the vendor's tool-use or JSON-schema
-mode so the model can only name a `RootCauseBucket` and an `ActionType` from
-the enum. Then let `provider/validate.go` reject it again on the way out. Two
-gates on purpose: the vendor's schema enforcement is not a guarantee this repo
-controls, and `validate.go` is vendor-independent.
+**The one decision that makes or breaks testability**: the base URL comes from
+config (`GROQ_BASE_URL`, `GEMINI_BASE_URL`, each defaulting to the real
+endpoint). Every test then points at `httptest.NewServer` and exercises the
+real HTTP client, real JSON, real context cancellation, real status code
+handling, with no key and no egress. A rung that hardcodes its endpoint is a
+rung that can only be tested by mocking the layer under test.
+
+**Structured output, two gates, and they are not equally strong.** Build the
+JSON schema in `schema.go` from the proto enums themselves, so a new
+`RootCauseBucket` cannot be added without the schema following.
+
+- **Groq**: `response_format: {type: "json_schema", json_schema: {..., strict:
+  true}}` on `openai/gpt-oss-20b`. Strict mode is token-level constrained
+  decoding, so the model *cannot* emit an out-of-vocabulary bucket. Strict
+  mode requires every field `required` and `additionalProperties: false` on
+  every object; a schema that omits either is rejected by the API, not
+  silently downgraded. Set `reasoning_effort: low`.
+- **Gemini**: native `generateContent` with `responseSchema` and `enum`, not
+  the OpenAI-compatibility endpoint (see the provider decision section).
+  Compliance here is best-effort, and Google says so.
+
+Then `provider/validate.go` rejects it again on the way out. Two gates on
+purpose: Groq's guarantee is real but vendor-controlled, Gemini's is not a
+guarantee at all, and `validate.go` is the one gate this repo owns. Do not
+skip it because strict mode is on.
 
 **`rationale` is the only freeform field.** Cap it (500 chars is generous for
 two sentences), strip control characters and newlines, and never feed it back
@@ -519,6 +582,15 @@ not so it can count.
 whose key is empty, fail in `loadConfig` (`ENGINEERING.md` section 5). Do not
 register a rung that will fail every call. The default chain is `rules`, so
 this never fires for anyone who has not opted in.
+
+**Measure the timeout, do not inherit the placeholder.** Binding finding 3
+from the provider decision section: `LLM_TIMEOUT=2s` is a guess, and
+`gpt-oss-20b` at high reasoning effort is measured at 3.05s time to first
+token. Run the manual live check below at `reasoning_effort: low`, record p50
+and worst-of-ten TTFT in the PR, and set `LLM_TIMEOUT` from that with headroom.
+If the measured value will not fit two live rungs inside `CALL_TIMEOUT`, say
+so and drop the default chain to `groq,rules` rather than shipping a budget
+that only works on paper.
 
 **Announce a live chain.** When the resolved chain contains any non-rules
 rung, log at `Warn` at startup naming the chain, so a run that costs money is
@@ -585,12 +657,12 @@ transport error, HTTP 5xx, HTTP 429, invalid JSON, and valid JSON with an
 out-of-vocabulary enum, assert the rung is recorded with the *specific* result
 string Unit A introduced, and the next rung runs. Then a two-LLM-rung chain
 where the first fails and the second answers: hops must be
-`[{claude,timeout},{openai,ok}]`, in that order, and `source` must be
+`[{groq,timeout},{gemini,ok}]`, in that order, and `source` must be
 `SOURCE_LLM`.
 
 **e2e tier**, against the real classifier binary: the test runs its own
 `httptest.NewServer` that always returns 500, starts the stack with
-`LLM_PROVIDER_CHAIN=claude,rules` and `ANTHROPIC_BASE_URL` pointed at it, and
+`LLM_PROVIDER_CHAIN=groq,rules` and `GROQ_BASE_URL` pointed at it, and
 submits a record. The record must still reach `RECOVERED`, and `source` on its
 audit trail must still be `SOURCE_RULES_FALLBACK`.
 
@@ -671,6 +743,36 @@ Three states, closed / open / half-open. Config:
 `LLM_BREAKER_THRESHOLD` (consecutive failures, default 5),
 `LLM_BREAKER_COOLDOWN` (default 30s), one trial request in half-open.
 
+**A 429 is not the same failure as an outage, and this is the case that
+actually matters here.** Both free tiers this project runs on are rate
+limited (30 RPM on Groq, 10 to 15 RPM on Gemini), so rate limiting is the
+failure mode most likely to fire in a demo, not a provider going down. Plain
+consecutive-failure counting makes the pipeline pay five failed calls before
+the breaker opens, which on stage is a visible five to fifteen second stall
+while records grind through rejections that were never going to succeed.
+
+So the breaker treats HTTP 429 as its own case:
+
+- **open immediately** on the first 429, without waiting for the threshold;
+- **cooldown from the provider's `Retry-After` header** when it sends one,
+  falling back to `LLM_BREAKER_COOLDOWN` when it does not. Confirm whether
+  Groq and Gemini actually send it as the first task in this unit rather than
+  assuming, and record the answer in the PR either way;
+- record the hop as `HopRateLimited` (a seventh vocabulary constant, added
+  here rather than in Unit A because this is the unit that produces it) so the
+  audit trail can tell "we were throttled" apart from "the provider was
+  broken". Those call for completely different operator responses.
+
+This is what makes the failover in `PRD.md` section 12 step 5 look
+deliberate rather than stuttering: Groq rejects instantly at zero cost, Gemini
+answers, and the record never notices.
+
+It is also what makes `groq,gemini,rules` viable at all. The three-rung
+latency worry in Flaw 3 assumes each rung *times out*. A rate-limited rung
+costs approximately nothing because no call is made, so the throttled path is
+groq (instant reject) plus gemini plus rules, which fits the budget
+comfortably.
+
 **This is where the injected clock belongs.** The cooldown is an interval the
 breaker measures itself, so it takes a `clock.Clock` and a test drives it with
 `clock.Fake`. Contrast Unit A's `rungCtx`, which must not. `SPEC.md` section 8
@@ -700,6 +802,10 @@ on wall-clock time:
 1. After `LLM_BREAKER_THRESHOLD` consecutive failures, the wrapped provider's
    call count stops increasing across the next 50 requests, and all 50 still
    receive a valid rules answer.
+1a. **A single 429 opens the breaker on its own**, with no second call made,
+   and the hop records `rate_limited` rather than `error`. A `Retry-After`
+   header sets the cooldown; its absence falls back to the configured one.
+   Both branches tested.
 2. Each of those 50 records a `circuit_open` hop.
 3. Advancing `clock.Fake` past the cooldown admits **exactly one** trial call
    to the provider, proven under concurrency.
@@ -770,7 +876,7 @@ already stored as TEXT (`record_state.current_state`, `pending_action`,
 `intervention_attempt.action_type`, `outcome`, `audit_entry.source`), and both
 halves of a hop are closed vocabularies once Unit A lands. Encoding is
 `provider:result` pairs joined by `,`, for example
-`claude:timeout,openai:ok`. Readable in `psql` without a JSON operator, which
+`groq:timeout,gemini:ok`. Readable in `psql` without a JSON operator, which
 is worth something for a project whose whole pitch is an auditable trail.
 
 One `hops.go` holding `encodeHops`/`decodeHops` and nothing else, with a
@@ -806,7 +912,7 @@ has not merged, add the check here rather than assuming it.
   plus nil. Table-driven over the vocabulary constants so a seventh result
   string cannot be added without a test covering it.
 - Integration tier (`-tags integration ./services/audit/...`): an entry seeded
-  with `claude:timeout,openai:ok` comes back as two `ProviderHop` messages in
+  with `groq:timeout,gemini:ok` comes back as two `ProviderHop` messages in
   order.
 - e2e: a record classified through the default rules-only chain has exactly
   one hop, `rules:ok`, on its `NEW -> SCORING` entry, retrievable through a
@@ -822,7 +928,7 @@ Seed an entry with three hops and assert two; confirm red with the real count.
 Then, separately, seed a provider name containing a `:` and confirm the
 encoding either round-trips it or rejects it, whichever the implementation
 chose. A delimiter-based encoding whose delimiter case is untested is a bug
-waiting for the first provider named `claude:v2`.
+waiting for the first provider named `groq:v2`.
 
 ### Collision notes
 
@@ -1024,25 +1130,175 @@ output.
 
 ---
 
+## Unit H: `LLM_SAMPLE_RATE` and the config profiles
+
+**Status**: not started.
+**Depends on**: nothing. Collides with F, see Collision notes.
+**Branch**: `svc/decision-engine/llm-sample-rate`.
+**Files owned**: `services/decision-engine/internal/engine/clients.go`,
+`engine.go`, `cmd/main.go`; new `configs/demo.env` and `configs/dev.env`;
+`.env.example`; `docs/ARCHITECTURE.md` section 17 (one new row).
+
+### What it is
+
+A per-record decision about whether this record is worth a live model call,
+plus the checked-in config profiles that set it and the other demo knobs.
+
+### Why it matters
+
+Without it there is no demo. `PRD.md` section 12 step 1 calls for 50 to 100
+records; Groq's free tier is 30 RPM. Those two numbers do not fit, and the
+failure is not graceful in the way that matters: the first thirty records get
+a model, the rest get rate limited, the breaker opens, and which records ended
+up with a real rationale is decided by scheduling luck. Step 4 asks a judge to
+drill into a record's LLM reasoning, and there is no way to know in advance
+that the record they pick has any.
+
+`ClassifyRequest.force_rules_only` already exists as a **per-request** field
+(`classifier.proto`, and `ARCHITECTURE.md` section 5 calls it the cost-safety
+switch). `SPEC.md` section 3 confirms nothing has ever set it. This unit is
+the thing that sets it.
+
+### LLD
+
+```go
+// in clients.classify, before building the request
+ForceRulesOnly: !sampledForLLM(record.GetId(), cfg.LLMSampleRate)
+```
+
+**Sample deterministically, by hash of `record_id`.** Not `rand`. Re-run
+safety is a headline claim of this project and `test/e2e/rerun_safety_test.go`
+asserts identical outcomes on replay. Random sampling would not break CI today
+(the default chain is `rules`, so the sampled and unsampled paths produce the
+same answer), but it makes the guarantee conditional on a config value, and
+determinism costs one FNV hash. Use `hash(record_id) % 10000 < rate*10000` so
+the same record always takes the same path, on every replay, forever.
+
+`LLM_SAMPLE_RATE` is a float in `[0,1]`, **default 0.0**, validated at
+startup. Default-off means every existing test and every default run is
+provably free, and it means this unit changes no observable behaviour when it
+merges.
+
+What the rate buys at 100 records:
+
+| `LLM_SAMPLE_RATE` | Live calls | What it is for |
+|---|---|---|
+| `0.0` | 0 | the default, and the setting the Phase 6 load run must use |
+| `0.15` | ~15 | full record volume, real rationales, comfortably under 30 RPM, no failover |
+| `0.5` | ~50 | **deliberately trips the real rate limit**: live failover to Gemini, then rules, with real `rate_limited` hops in the trail |
+
+That last row is the point worth understanding. It stages `PRD.md` section 12
+step 5's "graceful failure" beat using an *actual* provider rate limit and the
+*actual* breaker, not a simulated outage. One number moves the demo between
+smooth and dramatic, and both are honest.
+
+**The profiles, and why not a `MODE` enum.** A single `MODE=demo|dev|prod`
+switch silently changes many behaviours at once, which is how a demo becomes
+unreproducible and how "does this work in production?" stops being answerable.
+`ARCHITECTURE.md` section 17 has deliberately gone the other way: a table of
+individually named knobs, each with its documented real-world counterpart.
+
+So: checked-in `configs/demo.env` and `configs/dev.env` that set the existing
+named knobs. The code never learns what "demo" means, it just reads variables.
+Every behaviour stays individually visible and individually overridable, and
+production is not a code path that only ever runs on the judge's laptop.
+
+```
+# configs/demo.env
+DEMO_TIME_SCALE=300000
+LLM_PROVIDER_CHAIN=groq,gemini,rules
+LLM_SAMPLE_RATE=0.15
+```
+
+Note `DEMO_TIME_SCALE` is already built and already threaded through
+`config.Common.Scale()`; the e2e harness runs at 300000 today. The "make it
+run fast" half of the demo is solved. This unit adds the other half.
+
+**Add one row to `ARCHITECTURE.md` section 17**: hackathon value
+`LLM_SAMPLE_RATE=0.15`, real-world value "route by ambiguity rather than by
+hash: call the model when the deterministic table is not confident, which is
+the same cost posture for a different reason". That is the honest framing, and
+it is a better production design than a fixed rate. Do not build it here; note
+it as the real-world counterpart, which is what section 17 is for.
+
+### Definition of done
+
+- Deterministic: the same `record_id` produces the same sampling decision
+  across process restarts, asserted directly rather than inferred.
+- Distribution: over 10,000 synthetic ids, a rate of 0.15 selects within a
+  sane band of 15%. Assert a band, not an exact count.
+- `0.0` selects nothing and `1.0` selects everything, both asserted.
+- Out-of-range values fail at startup, not at request time.
+- `force_rules_only` actually arrives on the wire: an integration test
+  asserting the field is set on the `ClassifyRequest` the classifier receives,
+  not just that the helper returned false.
+- All six e2e tests green and unchanged, at the default rate of 0.0.
+- `configs/demo.env` and `configs/dev.env` checked in;
+  `ARCHITECTURE.md` section 17 row added.
+- Full suite twice.
+
+### Prove the test can fail
+
+Swap the hash for `rand.Float64()` and confirm the determinism test goes red.
+Then set the rate to 0.15 and assert 100% selection, and confirm the
+distribution test goes red with the real proportion in the message.
+
+### Collision notes
+
+Owns `services/decision-engine/internal/engine/clients.go`, which **Unit F
+also owns**. Both add to `classify`. Do not run H and F in parallel; F first
+is the better order, because F's two new request fields and H's one new
+request field land in the same function and F is the larger change.
+
+---
+
 ## Parallelization guide
 
-**Start immediately, no coordination:** A, and either E or F.
+Three units touch `services/decision-engine/internal/engine/`
+(E's third PR, F, and H), so the parallelism ceiling is lower than eight units
+suggests. The waves below are the maximum genuinely-safe fan-out.
 
-**E and F collide** on `services/decision-engine/internal/engine/store.go`,
-but only on E's *third* PR. So: E's migration PR and proto PR can run
-alongside F from day one, and only E's service-code PR needs to wait for F to
-merge (or vice versa).
+### Wave 1: three agents, zero file overlap
 
-**After A merges:** B.
+| Agent | Unit | Owns | Needs the docker stack? |
+|---|---|---|---|
+| 1 | **A** | `services/classifier/internal/provider/`, classifier `cmd/main.go` | no, pure unit tests |
+| 2 | **E, PRs 1 and 2 only** (migration, proto) | `migrations/`, `proto/` | migration only, briefly |
+| 3 | **F** | `services/decision-engine/internal/engine/` | yes, integration tier |
 
-**After B merges:** C, D and G, all three in parallel. They share no files
-except `cmd/main.go`, which C does not touch, and D and G touch different
-services' copies.
+These three share no file. Agent 2 deliberately stops after the proto PR: E's
+third PR touches `store.go`, which agent 3 owns.
 
-The tempting mistake is starting B first because it is the headline. Started
-before A, it lands three latent DLQ paths (Flaws 2, 3, 4) in the same commit
-as the feature, and started before F it lands a model that cannot beat the
-lookup table it sits in front of (Flaw 5).
+### Wave 2: after wave 1 merges
+
+- **E, PR 3** (decision-engine `store.go`, audit service). Needs F merged.
+- **H** (sample rate, profiles). Needs F merged; it shares `clients.go`.
+
+These two do not collide with each other (E is `store.go`, H is
+`clients.go`/`engine.go`), so they can run in parallel as two agents.
+
+### Wave 3: after A merges
+
+- **B**, the real provider rung. This is the judgment-heavy one: prompt
+  design, the injection surface, two vendors' schema modes, and a measured
+  timeout that changes the config if it comes out wrong. Not a good fan-out
+  candidate.
+
+### Wave 4: after B merges
+
+- **C**, **D** and **G**, all three in parallel. They share no files: C is
+  `test/e2e/` plus one additive harness change, D is a new file in
+  `internal/provider/`, G is the decision-engine.
+
+### The two tempting mistakes
+
+Starting **B** first because it is the headline. Before A it lands three
+latent DLQ paths (Flaws 2, 3 and 4) in the same commit as the feature; before
+F it lands a model that cannot beat the lookup table it sits in front of
+(Flaw 5).
+
+Treating **H** as optional polish. It blocks no code, and it blocks the
+entire demo.
 
 ## Shared hazards
 
@@ -1063,6 +1319,25 @@ restructure. **This file is not union-merged**, so two units updating their own
 status here will conflict, exactly as `PHASE2_IMPLEMENTATION.md` did during
 Phase 2. Merge locally, not through GitHub's web UI, which does not apply the
 driver.
+
+**There is exactly one docker stack on this machine, and every worktree
+shares it.** `docker-compose.yml` hardcodes the project name `momotaro` and
+fixed host ports, so `make up` from a second worktree attaches to the same
+Postgres, Kafka and Redis rather than starting its own. Consequences for
+anyone running a unit in a worktree:
+
+- **Never run `make down-clean`.** It destroys the shared volumes, including
+  another agent's in-flight integration run. `make up` and `make migrate-up`
+  are safe and idempotent.
+- **Two agents running the integration or e2e tier at the same time can
+  interfere.** The Decision Engine's scheduler polls `record_state`
+  system-wide by design, so one worktree's scheduler can claim another's
+  seeded rows. This has already cost this repo real time twice
+  (`docs/INCIDENTS.md`, and the reason `test/e2e/harness_test.go` gives every
+  stack its own Kafka topics and consumer group). Coordinate: unit-tier work
+  is unrestricted, tagged-tier runs take turns.
+- A migration applied from one worktree is applied for everybody. Unit E's
+  migration PR lands first for exactly this reason.
 
 **Nothing in this phase may make CI depend on a provider.** `ci.yml`'s
 `build-test` job runs `go test -race ./...` with no tags, no secrets and no
