@@ -330,13 +330,13 @@ box.
 | A | Chain hardening: terminal rung, deadline budget, hop vocabulary | **merged** | B, C, D |
 | B | The real provider rung | **merged** | C, D, G |
 | C | Fallback path proven per failure mode | not started | nothing |
-| D | Circuit breaker per provider | not started | nothing |
+| D | Circuit breaker per provider | **merged** | nothing |
 | E | Provider hops persisted and retrievable | not started | nothing |
 | F | Populate `history` and `instrument_history` | not started | nothing (but B is decorative without it) |
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
 | H | `LLM_SAMPLE_RATE` and the config profiles | not started | nothing |
 
-**2 of 8 merged.**
+**3 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -812,7 +812,7 @@ but the change must stay additive.
 
 ## Unit D: Circuit breaker per provider
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: B merged. Independent of C, E, F, G.
 **Branch**: `svc/classifier/circuit-breaker`.
 **Files owned**: a new `services/classifier/internal/provider/breaker.go` and
@@ -925,11 +925,49 @@ deferred `llm_circuit_state` metric, see the deferral note above). A measured
 wall-clock number reported in the PR for the demo narrative, explicitly not
 asserted. `SPEC.md` section 8 updated. Full suite twice.
 
+### What actually shipped
+
+As scoped, plus three things worth recording.
+
+**The breaker validates responses itself, for counting purposes only.**
+`chain.go` runs `validate()` *after* a rung returns, so a provider emitting
+well-formed garbage reports `nil` to the breaker and would never trip it. Since
+`breaker.go` lives in the same package it calls the same `validate()`, which is
+a second cheap call rather than duplicated logic, and passes the response
+through unchanged so the chain still records `schema_invalid`. Without this the
+"does schema_invalid count?" decision recorded in `DECISIONS.md` would have
+been unimplementable.
+
+**`NewBreaker` refuses to wrap the `rules` rung**, which the LLD did not
+mention and which matters more than it sounds: an open breaker in front of the
+one rung that cannot fail would leave the chain with no answer at all,
+destroying exactly the guarantee Unit A had just made structural.
+
+**The 429 path needed a way for `provider` to recognise throttling without
+importing `llm`.** Solved with a structural interface (`rateLimited`, exposing
+`RateLimited() time.Duration`) that `llm.RateLimitedError` satisfies via one
+method. The dependency points one way: a vendor package may know the chain's
+vocabulary, the chain must never know which vendors exist.
+
 ### Prove the test can fail
 
-Set the threshold above 50 so the breaker never opens, and confirm assertion 1
-goes red with the real call count in the message. Then set the half-open trial
-limit to 2 and confirm assertion 3 goes red.
+Two adversarial checks, both reverted.
+
+**Never opening the circuit** (both the threshold branch and the 429 branch
+disabled) turns **seven** tests red, including the chain-level one asserting
+the `circuit_open` hop.
+
+**Letting half-open admit everyone** turns the concurrency test red. That one
+needed a second pass, and it is the most useful thing in this unit: the first
+version caught the broken locking only **4 times in 20 runs**, because the
+first admitted racer's failure re-opened the circuit before the other 24
+reached `admit()`, so they were refused for the wrong reason and the test
+passed. Holding the trial genuinely in flight (a gate on the fake rung, closed
+once every racer has piled up) keeps all 25 in the half-open window, which is
+the state actually under test. Re-measured: **20/20 against broken locking,
+0/20 false positives against correct locking**. This is the same failure mode
+as Phase 2's Unit L (`docs/INCIDENTS.md` 2026-08-26) and it was caught only
+because the catch rate was measured rather than assumed from one red run.
 
 ---
 

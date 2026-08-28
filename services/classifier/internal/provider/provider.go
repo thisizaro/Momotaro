@@ -38,10 +38,13 @@ const (
 	// was paid for.
 	HopDeadlineExhausted = "deadline_exhausted"
 	// HopCircuitOpen: the rung was skipped because its circuit breaker is
-	// open. No producer yet; the breaker is Phase 3 Unit D
-	// (docs/PHASE3_IMPLEMENTATION.md). Named here so the vocabulary lives in
-	// one place rather than growing a second home when Unit D lands.
+	// open (breaker.go). No call was made.
 	HopCircuitOpen = "circuit_open"
+	// HopRateLimited: the provider answered 429. Kept distinct from
+	// HopError because "we were throttled" and "the provider is broken"
+	// call for different responses: the first is self-inflicted and
+	// resolves on a known schedule, the second needs someone to look.
+	HopRateLimited = "rate_limited"
 )
 
 // RulesName is the rung name the deterministic rules engine registers

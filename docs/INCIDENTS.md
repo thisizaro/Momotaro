@@ -949,3 +949,38 @@ re-running `go test` in the *same* shell invocation reported a stale FAIL. Two
 separate runs afterwards, and five more for good measure, were all clean. If
 an adversarial check's revert looks like it failed, run it again as its own
 command before believing it.
+
+### 2026-08-28, a concurrency test that went red on demand still only caught the bug 4 times in 20
+
+Unit D. The circuit breaker's half-open state must admit **exactly one** trial
+request. The test raced 25 goroutines against it and, with the locking
+deliberately broken, went red. Green on correct code, red on broken code, done.
+
+Except the catch rate was measured rather than assumed, and it was **4/20**.
+Four runs in five, the bug would have shipped.
+
+The cause is subtle and is the interesting part. With broken locking the first
+racer *is* admitted, calls the provider, fails, and `record()` immediately
+re-opens the circuit. The other 24 then arrive and are refused, correctly, but
+for the **wrong reason**: they hit the "circuit is open" branch rather than the
+"a trial is already in flight" branch. The test could not tell those apart, so
+it saw one admitted call and passed. Only when the goroutine scheduling
+happened to let a second racer through before `record()` ran did it notice.
+
+Fix: hold the trial genuinely in flight. The fake rung gained a gate channel;
+the test starts 25 racers, sleeps briefly so every one of them reaches
+`admit()` while the trial is still blocked, then releases. Now all 25 are in
+the half-open window, which is the state under test. Re-measured: **20/20
+against broken locking, 0/20 false positives**.
+
+This is the same lesson as 2026-08-26 (Unit L's scheduler test caught nothing
+at 2 racers and needed 25 plus a redesign), and it generalises past
+concurrency: **a test going red once when you break the code is not evidence
+that it will go red when someone else breaks it.** Measure the catch rate over
+enough runs to see the distribution, and check *why* the assertion fires, not
+just that it does. A test can be right for the wrong reason and that is
+indistinguishable from being right, until it isn't.
+
+The wall-clock sleep in the fixed version is deliberate and fails safe: a
+longer sleep only makes the pile-up more complete, and the assertion is a call
+count, not a duration.

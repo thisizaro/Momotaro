@@ -32,6 +32,12 @@ type RateLimitedError struct {
 	RetryAfter time.Duration
 }
 
+// RateLimited implements the provider package's structural check for
+// throttling. Declared as a method rather than having provider import this
+// package, so the dependency points one way: a vendor may know the chain's
+// vocabulary, the chain must not know which vendors exist.
+func (e *RateLimitedError) RateLimited() time.Duration { return e.RetryAfter }
+
 func (e *RateLimitedError) Error() string {
 	if e.RetryAfter > 0 {
 		return fmt.Sprintf("%s rate limited, retry after %s", e.Provider, e.RetryAfter)

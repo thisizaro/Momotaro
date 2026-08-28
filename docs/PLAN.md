@@ -423,18 +423,53 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 > `ClassifyRequest.history`/`instrument_history` are never populated. Read it
 > before picking up any item here.
 
-- [ ] LLM provider(s) decided (cost/rate-limit evaluation still open, see
+- [x] LLM provider(s) decided (cost/rate-limit evaluation still open, see
       `AGENTS.md` locked decisions) and wired into the provider chain
       → `ARCHITECTURE.md` §5, `docs/PHASE3_IMPLEMENTATION.md` Units A, B
+      Chain is `groq,gemini,rules`, Groq running `openai/gpt-oss-20b` at
+      `reasoning_effort: low`, chosen for **guaranteed constrained decoding**
+      (`json_schema` + `strict: true` is token-level, so the model cannot emit
+      a bucket outside the enum) and for being the fastest inference measured.
+      Unit A first hardened the chain the rungs plug into: the terminal-rung
+      invariant is now enforced at startup rather than assumed, and each rung
+      is bounded by `LLM_TIMEOUT` with a `CHAIN_RESERVE` held back so a hanging
+      provider can no longer consume the caller's whole deadline and get a
+      classifiable record dead-lettered.
+      Two scope notes. **Gemini is built, unit-tested and confirmed working
+      against the live API, but held OUT of the default chain** on measured
+      latency: Groq p50 ~570ms / max 688ms versus Gemini p50 3.01s / max
+      6.19s, and no single `LLM_TIMEOUT` serves both without either making
+      Gemini decorative or overrunning the Decision Engine's 5s
+      `CALL_TIMEOUT`. Re-enabling it honestly needs per-rung timeouts. And the
+      **default `LLM_PROVIDER_CHAIN` everywhere stays `rules`**, including the
+      e2e harness, so no automated tier ever spends quota; the live chain is
+      opt-in. Metric export deferred to Phase 4 as everywhere else.
+      Full reasoning and the measurements in `docs/DECISIONS.md` 2026-08-28.
 - [ ] Fallback path deliberately tested (simulate timeout/error per
       provider, confirm the chain falls through correctly and every hop
       tried is recorded) → `ARCHITECTURE.md` §5,
       `docs/PHASE3_IMPLEMENTATION.md` Unit C
-- [ ] Circuit breaker per provider, with a test proving that a sustained
+- [x] Circuit breaker per provider, with a test proving that a sustained
       provider outage does **not** make every record pay the full timeout
       → `ARCHITECTURE.md` §5, `docs/PHASE3_IMPLEMENTATION.md` Unit D
-      (note: assert call counts and hop results, never wall-clock time, see
-      that document's Flaw 6)
+      Per-pod, in-memory, closed/open/half-open, wrapping a rung and itself a
+      `Provider` so `chain.go`'s walk needed no change. `NewBreaker` refuses to
+      wrap the `rules` rung: an open breaker in front of the rung that cannot
+      fail would leave the chain with no answer at all.
+      **HTTP 429 is a first-class case, not just another failure**: it opens on
+      the first one rather than after `LLM_BREAKER_THRESHOLD`, takes its
+      cooldown from `Retry-After` when the provider sends one, and records its
+      own `rate_limited` hop. On a capped free tier throttling is the failure
+      most likely to actually fire, and threshold-counting would pay four more
+      doomed calls first. Gemini's live rate limit sent no `Retry-After` at
+      all, so the fallback branch is exercised in practice, not just in test.
+      Per Flaw 6 the tests assert **call counts and hop results, never
+      wall-clock time**. The half-open "exactly one trial" property is raced
+      with 25 goroutines; a first version caught deliberately broken locking
+      only 4 times in 20 runs, and holding the trial in flight took that to
+      20/20 with 0/20 false positives (`docs/INCIDENTS.md` 2026-08-28).
+      Metric export (`llm_circuit_state`) deferred to Phase 4; a `Warn` on
+      every state change is the compensating control.
 - [ ] Rationale stored and retrievable from the audit trail for a full
       record → `PRD.md` §2a
       Note (found while planning Phase 3): the rationale half of this is

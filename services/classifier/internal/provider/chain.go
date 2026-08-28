@@ -157,16 +157,24 @@ func (c *Chain) Classify(ctx context.Context, req *classifierv1.ClassifyRequest)
 	return nil, fmt.Errorf("provider chain: no rung produced a valid response")
 }
 
-// hopResultForError separates a rung that ran out of time from a rung that
-// broke. common.proto documents both as distinct result values, and they call
-// for different responses: a timeout says tighten the budget or the provider
-// is degraded, an error says the provider is broken. Flattening both to
-// "error", as this chain did before Unit A, loses that.
+// hopResultForError maps a rung failure onto the hop vocabulary. Four
+// distinct outcomes, because they call for four different responses and
+// flattening them (as this chain did before Unit A) loses the difference:
+// a timeout says tighten the budget or the provider is degraded, a 429 says
+// we are spending faster than the tier allows, an open circuit says we
+// already knew and did not bother asking, and an error says something is
+// actually broken.
 func hopResultForError(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, ErrCircuitOpen):
+		return HopCircuitOpen
+	case isRateLimited(err):
+		return HopRateLimited
+	case errors.Is(err, context.DeadlineExceeded):
 		return HopTimeout
+	default:
+		return HopError
 	}
-	return HopError
 }
 
 func onlyRulesRung(rungs []Provider) []Provider {

@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
@@ -68,12 +69,25 @@ const defaultLLMTimeout = 2 * time.Second
 // protobuf marshal, and cheap against a 5s CALL_TIMEOUT.
 const defaultChainReserve = 150 * time.Millisecond
 
+// Circuit breaker defaults (Phase 3 Unit D). Five consecutive failures is a
+// clear signal rather than a blip; thirty seconds is long enough that a real
+// outage is not re-probed every request and short enough that a recovered
+// provider rejoins within a demo. A 429 ignores the threshold entirely and
+// prefers the provider's own Retry-After (breaker.go).
+const (
+	defaultBreakerThreshold = 5
+	defaultBreakerCooldown  = 30 * time.Second
+)
+
 // serviceConfig adds this service's own settings to the shared ones.
 type serviceConfig struct {
 	config.Common
 	ProviderChain []string
 	LLMTimeout    time.Duration
 	ChainReserve  time.Duration
+
+	BreakerThreshold int
+	BreakerCooldown  time.Duration
 
 	GroqAPIKey    string
 	GroqBaseURL   string
@@ -90,6 +104,9 @@ func loadConfig() (serviceConfig, error) {
 		ProviderChain: splitCSV(l.StrDefault("LLM_PROVIDER_CHAIN", defaultProviderChain)),
 		LLMTimeout:    l.Duration("LLM_TIMEOUT", defaultLLMTimeout),
 		ChainReserve:  l.Duration("CHAIN_RESERVE", defaultChainReserve),
+
+		BreakerThreshold: l.Int("LLM_BREAKER_THRESHOLD", defaultBreakerThreshold),
+		BreakerCooldown:  l.Duration("LLM_BREAKER_COOLDOWN", defaultBreakerCooldown),
 
 		// Keys are read but never required here: a chain that does not name a
 		// provider must not need its key. The requirement is enforced in
@@ -146,7 +163,13 @@ func slogFallback() *slog.Logger {
 }
 
 func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
-	registry, err := buildRegistry(cfg, log)
+	// Real clock in production; the breaker takes it injected so its cooldown
+	// is drivable from a test (ENGINEERING.md section 2). Note budget.go's
+	// rungCtx deliberately does NOT use this: it compares against a real
+	// context deadline, which is wall-clock by construction.
+	clk := clock.New()
+
+	registry, err := buildRegistry(cfg, clk, log)
 	if err != nil {
 		return err
 	}
@@ -211,7 +234,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 // rules-only default genuinely free rather than merely unused, and it is what
 // keeps CI, which has no keys and no guaranteed egress, from ever depending on
 // a provider.
-func buildRegistry(cfg serviceConfig, log *slog.Logger) (map[string]provider.Provider, error) {
+func buildRegistry(cfg serviceConfig, clk clock.Clock, log *slog.Logger) (map[string]provider.Provider, error) {
 	named := make(map[string]bool, len(cfg.ProviderChain))
 	for _, n := range cfg.ProviderChain {
 		named[n] = true
@@ -230,7 +253,11 @@ func buildRegistry(cfg serviceConfig, log *slog.Logger) (map[string]provider.Pro
 		if err != nil {
 			return nil, fmt.Errorf("build %s rung: %w", llm.GroqName, err)
 		}
-		registry[llm.GroqName] = p
+		wrapped, err := breaker(cfg, p, clk, log)
+		if err != nil {
+			return nil, err
+		}
+		registry[llm.GroqName] = wrapped
 	}
 
 	if named[llm.GeminiName] {
@@ -242,7 +269,11 @@ func buildRegistry(cfg serviceConfig, log *slog.Logger) (map[string]provider.Pro
 		if err != nil {
 			return nil, fmt.Errorf("build %s rung: %w", llm.GeminiName, err)
 		}
-		registry[llm.GeminiName] = p
+		wrapped, err := breaker(cfg, p, clk, log)
+		if err != nil {
+			return nil, err
+		}
+		registry[llm.GeminiName] = wrapped
 	}
 
 	// A live chain costs real money against a capped free tier, so it should
@@ -252,4 +283,19 @@ func buildRegistry(cfg serviceConfig, log *slog.Logger) (map[string]provider.Pro
 			"chain", strings.Join(cfg.ProviderChain, ","))
 	}
 	return registry, nil
+}
+
+// breaker wraps one live rung so a failing provider stops costing a full
+// timeout per record. The rules rung is never wrapped, and NewBreaker refuses
+// to: it is the rung that cannot fail, and an open breaker in front of it
+// would leave the chain with no answer at all.
+func breaker(cfg serviceConfig, p provider.Provider, clk clock.Clock, log *slog.Logger) (provider.Provider, error) {
+	b, err := provider.NewBreaker(p, provider.BreakerConfig{
+		Threshold: cfg.BreakerThreshold,
+		Cooldown:  cfg.BreakerCooldown,
+	}, clk, log)
+	if err != nil {
+		return nil, fmt.Errorf("wrap %s in a circuit breaker: %w", p.Name(), err)
+	}
+	return b, nil
 }
