@@ -79,6 +79,24 @@ func (s *stack) restartDecisionEngine(t *testing.T) {
 // section 5a).
 func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 	t.Helper()
+	return startStackWithEnv(ctx, t, retryDelay, nil, nil)
+}
+
+// startStackWithEnv is startStack plus extra env vars merged into the
+// classifier's and/or the Decision Engine's process, for a test that needs
+// to point the live provider chain at a fake endpoint rather than the
+// rules-only default (Phase 3 Unit C: proving the fallback path with the
+// real classifier binary and a real HTTP failure, not a fake rung). Both
+// maps matter: the classifier's LLM_PROVIDER_CHAIN decides which rungs
+// EXIST, but the Decision Engine's LLM_SAMPLE_RATE decides whether any given
+// record is even allowed to reach them (ClassifyRequest.force_rules_only,
+// Phase 3 Unit H) -- a test that only overrides the classifier's env still
+// gets force_rules_only=true at the default sample rate 0.0, and the LLM
+// rung is filtered out before it is ever called, same as a request that
+// never named it. A new function rather than parameters on startStack
+// itself, so the other seven existing callers need no change.
+func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, classifierEnv, decisionEngineEnv map[string]string) *stack {
+	t.Helper()
 
 	root := repoRoot(t)
 	binDir := t.TempDir()
@@ -128,7 +146,7 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 	s.executorAddr = executorAddr
 	s.gatewayHTTP = fmt.Sprintf("127.0.0.1:%d", gwHTTPPort)
 
-	procs = append(procs, startProcess(t, "classifier", classifierBin, commonEnv(classifierPort, classifierMetrics)))
+	procs = append(procs, startProcess(t, "classifier", classifierBin, merge(commonEnv(classifierPort, classifierMetrics), classifierEnv)))
 	procs = append(procs, startProcess(t, "executor", executorBin, commonEnv(executorPort, executorMetrics)))
 	procs = append(procs, startProcess(t, "audit", auditBin, commonEnv(auditPort, auditMetrics)))
 	procs = append(procs, startProcess(t, "ingestion", ingestionBin, merge(commonEnv(ingestionPort, ingestionMetrics), map[string]string{
@@ -165,6 +183,7 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 		"NUDGE_DELAY":             retryDelay,
 		"SCHEDULER_POLL_INTERVAL": "300ms",
 	})
+	deEnv = merge(deEnv, decisionEngineEnv)
 	deProc := startProcess(t, "decision-engine", decisionEngineBin, deEnv)
 	procs = append(procs, deProc)
 	s.decisionEngineBin = decisionEngineBin

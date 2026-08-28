@@ -1006,3 +1006,42 @@ service's business logic".
 The general lesson: **when a plan assigns file ownership, check whether the
 data crosses a service boundary.** A shared column has at least two owners by
 definition, and the encoding of that column belongs to neither of them.
+
+### 2026-08-28, an e2e test that pointed the classifier at a fake Groq and never called it
+
+Unit C's e2e half, caught before merge because the test asserted its own
+precondition rather than trusting the setup. The first version pointed
+`GROQ_BASE_URL` at an httptest.Server that always returns 500, set
+`LLM_PROVIDER_CHAIN=groq,rules` on the classifier, submitted a record, and
+asserted the audit trail showed `SOURCE_RULES_FALLBACK` with a `{groq,error}`
+hop. It passed, but for the wrong reason: the guard added specifically to
+catch this (`if groqCalls == 0 { t.Fatal(...) }`) fired, because the fake
+server had received zero requests.
+
+The cause is a Unit H interaction Unit C's own LLD never mentions. The
+classifier's `LLM_PROVIDER_CHAIN` decides which rungs *exist*, but the
+Decision Engine's `LLM_SAMPLE_RATE` (default `0.0`) decides whether any given
+record is even allowed to reach them: it sets `ClassifyRequest.
+force_rules_only`, and the chain filters every non-rules rung out before
+calling any of them (`onlyRulesRung`, `provider/chain.go`). A test that only
+overrides the classifier's environment gets a chain with `groq` in it and a
+request that is never allowed to use it, so it reaches `SOURCE_RULES_FALLBACK`
+by never trying `groq` at all, indistinguishable from reaching it by trying
+`groq` and having it fail. Exactly the "test that asserts a fallback
+happened, against a stack where the primary was never going to answer
+anyway, proves nothing" failure Unit C's own brief warned about, just from an
+unexpected direction.
+
+Fix: `startStackWithEnv` in `test/e2e/harness_test.go` takes a second env map
+for the Decision Engine, and the test sets `LLM_SAMPLE_RATE=1.0` there so this
+record is unconditionally sampled. Re-run: the fake server logs one request,
+the audit trail shows `{groq,error}` then `{rules,ok}`, and the "prove it can
+fail" check (make the fake server return a valid classification instead)
+correctly turns the `SOURCE_RULES_FALLBACK` assertion red.
+
+The general lesson: **a test asserting "X happened via the fallback path" must
+also assert the primary path was actually reachable**, not just that the
+final state looks like a fallback. Two independent code paths can produce the
+same observable outcome, and a per-record cost-safety gate (Unit H) is exactly
+the kind of thing that silently makes the primary unreachable without erroring
+anywhere.

@@ -329,14 +329,14 @@ box.
 |---|---|---|---|
 | A | Chain hardening: terminal rung, deadline budget, hop vocabulary | **merged** | B, C, D |
 | B | The real provider rung | **merged** | C, D, G |
-| C | Fallback path proven per failure mode | not started | nothing |
+| C | Fallback path proven per failure mode | **merged** | nothing |
 | D | Circuit breaker per provider | **merged** | nothing |
 | E | Provider hops persisted and retrievable | **merged** | nothing |
 | F | Populate `history` and `instrument_history` | **merged** | H |
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
 | H | `LLM_SAMPLE_RATE` and the config profiles | **merged** | nothing |
 
-**6 of 8 merged.**
+**7 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -738,7 +738,7 @@ not flaky.
 
 ## Unit C: Fallback path proven per failure mode
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: A and B merged.
 **Branch**: `test/classifier-fallback-path`.
 **Files owned**: a new `services/classifier/internal/provider/fallback_test.go`;
@@ -783,6 +783,12 @@ requires E's persistence. Until E lands, assert the failed hop by calling
 `Classify` directly over gRPC from the test (the harness already exposes
 service addresses) and assert the record's `source` through the audit trail.
 Note in the PR that the audit-trail hop assertion belongs to E.
+
+(By the time C was actually picked up, E had already merged, so this
+workaround was unnecessary: the e2e test asserts hops straight through
+`GetRecordAudit`, the same way `walking_skeleton_test.go` already does for
+the rules-only default chain. Left here for the historical reasoning, since
+it explains why the DoD below only asks for the audit trail.)
 
 ### Definition of done
 
