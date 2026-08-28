@@ -148,14 +148,26 @@ type fakeClassifier struct {
 	err   error
 	failN int32 // if err is set: fail exactly this many calls before succeeding; 0 means fail every call
 	calls int32
+
+	mu      sync.Mutex
+	lastReq *classifierv1.ClassifyRequest
 }
 
 func (f *fakeClassifier) Classify(ctx context.Context, in *classifierv1.ClassifyRequest, opts ...grpc.CallOption) (*classifierv1.ClassifyResponse, error) {
 	n := atomic.AddInt32(&f.calls, 1)
+	f.mu.Lock()
+	f.lastReq = in
+	f.mu.Unlock()
 	if f.err != nil && (f.failN == 0 || n <= f.failN) {
 		return nil, f.err
 	}
 	return f.resp, nil
+}
+
+func (f *fakeClassifier) lastRequest() *classifierv1.ClassifyRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReq
 }
 func (f *fakeClassifier) ComposeNudge(ctx context.Context, in *classifierv1.ComposeNudgeRequest, opts ...grpc.CallOption) (*classifierv1.ComposeNudgeResponse, error) {
 	return nil, errors.New("not used in Phase 1")

@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/thisizaro/Momotaro/internal/platform/hopcodec"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
@@ -342,6 +345,96 @@ func (s *store) loadAttemptHistory(ctx context.Context, recordID string) (attemp
 		return attemptHistory{}, fmt.Errorf("load attempt history for %s: %w", recordID, err)
 	}
 	return h, nil
+}
+
+// instrumentHistoryLimit caps loadInstrumentHistory: a popular instrument
+// accumulates rows indefinitely, and an unbounded read here is both a
+// growing per-record query and a growing prompt (Phase 3 Unit F).
+const instrumentHistoryLimit = 10
+
+// loadAttemptRows returns recordID's own prior intervention attempts, oldest
+// first, for ClassifyRequest.history (classifier.proto: "so the model can
+// reason about what has already been tried rather than starting cold").
+//
+// Deliberately not loadAttemptHistory reused: that query returns aggregate
+// counts and a cooldown timestamp for the guardrails, this returns rows for
+// the classifier's prompt, and merging them would couple a compliance check
+// to a prompt-shaping read (Phase 3 Unit F).
+func (s *store) loadAttemptRows(ctx context.Context, recordID string) ([]*commonv1.InterventionAttempt, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT attempt_number, action_type, outcome, executed_at, cost_paise
+		FROM intervention_attempt
+		WHERE record_id = $1
+		ORDER BY executed_at ASC`, recordID)
+	if err != nil {
+		return nil, fmt.Errorf("load attempt rows for %s: %w", recordID, err)
+	}
+	defer rows.Close()
+
+	attempts, err := scanAttemptRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("load attempt rows for %s: %w", recordID, err)
+	}
+	return attempts, nil
+}
+
+// loadInstrumentHistory returns attempts on OTHER records sharing
+// instrumentRef, most recent first, capped at instrumentHistoryLimit, for
+// ClassifyRequest.instrument_history: "signal for distinguishing this rail
+// is flaky right now from this card is dead" (classifier.proto). Callers
+// must not call this with an empty instrumentRef (nullable in the schema);
+// that means "skip the query", not "query for the empty string".
+//
+// record_instrument_idx (00001_initial_schema.sql) is partial on
+// instrument_ref IS NOT NULL, so this join is indexed without a migration.
+func (s *store) loadInstrumentHistory(ctx context.Context, instrumentRef, excludeRecordID string) ([]*commonv1.InterventionAttempt, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ia.attempt_number, ia.action_type, ia.outcome, ia.executed_at, ia.cost_paise
+		FROM intervention_attempt ia
+		JOIN record r ON r.id = ia.record_id
+		WHERE r.instrument_ref = $1 AND ia.record_id != $2
+		ORDER BY ia.executed_at DESC
+		LIMIT $3`, instrumentRef, excludeRecordID, instrumentHistoryLimit)
+	if err != nil {
+		return nil, fmt.Errorf("load instrument history for %s: %w", instrumentRef, err)
+	}
+	defer rows.Close()
+
+	attempts, err := scanAttemptRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("load instrument history for %s: %w", instrumentRef, err)
+	}
+	return attempts, nil
+}
+
+// scanAttemptRows scans the common projection shared by loadAttemptRows and
+// loadInstrumentHistory: attempt_number, action_type, outcome, executed_at,
+// cost_paise, in that order.
+func scanAttemptRows(rows pgx.Rows) ([]*commonv1.InterventionAttempt, error) {
+	var attempts []*commonv1.InterventionAttempt
+	for rows.Next() {
+		var (
+			attemptNumber int32
+			actionType    string
+			outcome       string
+			executedAt    time.Time
+			costPaise     int64
+		)
+		if err := rows.Scan(&attemptNumber, &actionType, &outcome, &executedAt, &costPaise); err != nil {
+			return nil, fmt.Errorf("scan attempt row: %w", err)
+		}
+		attempts = append(attempts, &commonv1.InterventionAttempt{
+			AttemptNumber: attemptNumber,
+			ActionType:    commonv1.ActionType(commonv1.ActionType_value[actionType]),
+			Outcome:       commonv1.Outcome(commonv1.Outcome_value[outcome]),
+			ExecutedAt:    timestamppb.New(executedAt),
+			CostPaise:     costPaise,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return attempts, nil
 }
 
 // encodedHops renders a classification's provider hops for storage, returning

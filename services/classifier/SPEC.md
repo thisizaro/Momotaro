@@ -109,39 +109,38 @@ thing to get wrong. `services/decision-engine/internal/engine/clients.go`
 builds the request as:
 
 ```go
-&classifierv1.ClassifyRequest{Record: record}
+&classifierv1.ClassifyRequest{
+	Record:            record,
+	History:           history,
+	InstrumentHistory: instrumentHistory,
+}
 ```
 
-That is all. Concretely:
+Concretely, as of Phase 3 Unit F:
 
-- `history` is **always empty**. Nothing populates it.
-- `instrument_history` is **always empty**. Nothing populates it.
-- `force_rules_only` is **always false**. Nothing sets it.
+- `history` carries this record's own prior `INTERVENTION_ATTEMPT` rows,
+  oldest first. For a brand new record (the only case Decision Engine calls
+  `Classify` for today, since a retry re-scores rather than re-classifies)
+  this is empty; it exists so a future re-classification path has real
+  input to reason from.
+- `instrument_history` carries up to ten prior attempts on *other* records
+  sharing the same `instrument_ref`, most recent first, excluding this
+  record's own rows. Empty when `instrument_ref` is empty (nullable in the
+  schema): Decision Engine skips the query entirely rather than querying for
+  the empty string.
+- `force_rules_only` is **always false**. Nothing sets it yet (Unit H).
 - `record` is populated from the `raw.events` payload
   (`services/decision-engine/internal/engine/rawevent.go`), so
   `id`, `batch_id`, `type`, `amount_paise`, `currency`, `failure_code`,
-  `instrument_ref`, `created_at` all arrive. `instrument_ref` may be empty
-  (it is nullable in the schema).
+  `instrument_ref`, `created_at` all arrive. `instrument_ref` may be empty.
 
-**Therefore**: your rules engine must produce a correct answer from
-`failure_code` and `type` alone. Read `history`/`instrument_history` if
-present (defensively, they are the documented inputs and Phase 2/3 will fill
-them), but never require them. A rules engine that degrades when history is
-absent is fine; one that misclassifies or errors is not.
-
-**Do not fix this by populating history yourself.** Two paths exist and
-neither is yours to take unilaterally:
-
-- The Decision Engine reads `INTERVENTION_ATTEMPT` and fills the request.
-  This matches the proto's design intent and is the recommended fix.
-- The Classifier queries `INTERVENTION_ATTEMPT` itself.
-  `ARCHITECTURE.md` §10a does list Classifier as a *reader* of that table,
-  so this is permitted, but it adds a database dependency to a currently
-  stateless service and duplicates a read the caller is better placed to do.
-
-Either way it is a cross-service change. Per
-`services/classifier/AGENTS.md`, **stop and propose it**, do not build it.
-It is not blocking: Phase 1's mapping does not need history.
+**Therefore**: your rules engine must still produce a correct answer from
+`failure_code` and `type` alone, since `history`/`instrument_history` are
+routinely empty (a fresh record, or one on an instrument seen for the first
+time). A rules engine that degrades when history is absent is fine; one that
+misclassifies or errors is not. An LLM rung, by contrast, now genuinely has
+more to reason about than the rules table does, which is the whole point of
+Unit F (`docs/PHASE3_IMPLEMENTATION.md`).
 
 ---
 
@@ -474,8 +473,9 @@ logic", which is satisfied here by having no time in the business logic at
 all. Phase 3's provider calls need a context deadline, not a clock.
 
 **Database.** You do not need one. Do not add `POSTGRES_DSN` or a pool. See
-§2's ground-truth boundary, and §3 on why the history gap is not yours to
-close.
+§2's ground-truth boundary, and §3: the Decision Engine reads
+`INTERVENTION_ATTEMPT` and fills `history`/`instrument_history` on the
+request, so the Classifier stays stateless.
 
 ---
 
@@ -537,8 +537,10 @@ Resist two tempting changes:
 
 - Adding a provider-name string to `Source` or `ClassifyResponse`. Provider
   identity belongs in `hops` (§4.6).
-- Adding fields for history the caller does not populate. The fields exist
-  already; the gap is in the caller (§3).
+- Adding new history-shaped fields. `history` and `instrument_history`
+  already exist and are populated by the caller (§3); a use case that needs
+  more should extend `InterventionAttempt` in `common.proto`, not add a
+  parallel field here.
 
 If you conclude a proto change is genuinely required, **stop and propose it**
 per `services/classifier/AGENTS.md`. Proto changes are their own PR, merged
@@ -552,9 +554,9 @@ already works. Nothing to add. Same "stop and propose" rule if you disagree.
 
 ### Cross-service items to raise, not build
 
-1. **`ClassifyRequest.history` and `instrument_history` are never
-   populated** (§3). Recommend the Decision Engine fill them from
-   `INTERVENTION_ATTEMPT`. Not blocking for Phase 1.
+1. ~~`ClassifyRequest.history` and `instrument_history` are never
+   populated`~~ — done, Phase 3 Unit F. The Decision Engine now fills both
+   from `INTERVENTION_ATTEMPT` before every `Classify` call (§3).
 2. **Confidence threshold enforcement does not exist.**
    `classifier.proto` documents `confidence` as "Below the configured
    threshold the record is escalated rather than acted on", and

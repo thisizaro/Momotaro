@@ -488,14 +488,28 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       so the trail cannot show *which* provider answered or what the ones
       before it did. Replaced by `docs/PHASE3_IMPLEMENTATION.md` Unit E
       (migration + proto + code, three sequenced PRs).
-- [ ] (unplanned, found while planning Phase 3) populate
+- [x] (unplanned, found while planning Phase 3) populate
       `ClassifyRequest.history` and `instrument_history` from the Decision
-      Engine. Both have been empty since Phase 1
+      Engine. Both had been empty since Phase 1
       (`services/classifier/SPEC.md` §3 documented it and §10 item 1 raised it
       as a cross-service item), so a model rung would see exactly the two
-      inputs the rules table sees and could not improve on it. Without this,
-      the whole reasoning layer is decorative
+      inputs the rules table sees and could not improve on it.
       → `docs/PHASE3_IMPLEMENTATION.md` Unit F
+      Two new store queries: `loadAttemptRows` (this record's own attempts,
+      oldest first) and `loadInstrumentHistory` (up to ten most recent
+      attempts on other records sharing the instrument, excluding this
+      record's own rows). Both load before `Classify` is called, not after
+      like the guardrails' aggregate counters, since they are its inputs.
+      Deliberately not merged with `loadAttemptHistory`: that query serves
+      the guardrails' counts and cooldown timestamp, this serves the
+      classifier's prompt rows, and combining them would couple a compliance
+      check to a prompt-shaping read.
+      A brand new record has no rows of its own yet, since `Classify` is
+      only ever called once per record before any attempts exist in the
+      current architecture; `history` is real plumbing for a future
+      re-classification path rather than something today's flow exercises,
+      and the tests seed rows directly to prove the plumbing works. All six
+      e2e tests unchanged, since the rules engine ignores both fields.
 - [ ] (unplanned, found while planning Phase 3) enforce the classification
       confidence threshold in the Decision Engine. `classifier.proto`
       documents it, `ARCHITECTURE.md` §5 assigns it here, and both
