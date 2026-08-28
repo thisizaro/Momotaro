@@ -601,8 +601,22 @@ type ProviderHop struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Provider string `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"` // e.g. "claude", "openai", "rules"
-	Result   string `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`     // e.g. "ok", "timeout", "schema_invalid", "circuit_open"
+	Provider string `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"` // e.g. "groq", "gemini", "rules"
+	// One of a closed set, defined as the Hop* constants in
+	// services/classifier/internal/provider/provider.go:
+	//
+	//	"ok"                  this rung answered and the answer validated
+	//	"error"               the rung failed for a reason that is not the below
+	//	"timeout"             the rung exceeded its share of the deadline
+	//	"rate_limited"        the provider answered 429
+	//	"schema_invalid"      answered, but outside the enums or confidence range
+	//	"circuit_open"        skipped, its breaker is open; no call was made
+	//	"deadline_exhausted"  skipped, too little of the caller's deadline left
+	//
+	// Neither field may contain ':' or ',': they are persisted as delimited
+	// pairs in audit_entry.provider_hops (migration 00005), and NewChain
+	// rejects provider names containing either.
+	Result string `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`
 }
 
 func (x *ProviderHop) Reset() {

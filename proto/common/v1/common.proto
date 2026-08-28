@@ -126,6 +126,18 @@ message InterventionAttempt {
 // shows what was actually tried rather than only the final answer
 // (docs/ARCHITECTURE.md section 5).
 message ProviderHop {
-  string provider = 1;  // e.g. "claude", "openai", "rules"
-  string result = 2;    // e.g. "ok", "timeout", "schema_invalid", "circuit_open"
+  string provider = 1;  // e.g. "groq", "gemini", "rules"
+  // One of a closed set, defined as the Hop* constants in
+  // services/classifier/internal/provider/provider.go:
+  //   "ok"                  this rung answered and the answer validated
+  //   "error"               the rung failed for a reason that is not the below
+  //   "timeout"             the rung exceeded its share of the deadline
+  //   "rate_limited"        the provider answered 429
+  //   "schema_invalid"      answered, but outside the enums or confidence range
+  //   "circuit_open"        skipped, its breaker is open; no call was made
+  //   "deadline_exhausted"  skipped, too little of the caller's deadline left
+  // Neither field may contain ':' or ',': they are persisted as delimited
+  // pairs in audit_entry.provider_hops (migration 00005), and NewChain
+  // rejects provider names containing either.
+  string result = 2;
 }
