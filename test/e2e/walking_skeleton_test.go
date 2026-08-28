@@ -414,6 +414,23 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 	if classify.GetRationale() == "" {
 		t.Error("classify entry Rationale is empty")
 	}
+	// The provider hops survive the whole trip: chain -> gRPC response ->
+	// decision-engine -> audit_entry.provider_hops -> GetRecordAudit
+	// (Phase 3 Unit E). The default chain is rules-only, so exactly one hop,
+	// and it answered. This is the assertion that would catch the column
+	// being written but never selected, or selected but never decoded.
+	hops := classify.GetHops()
+	if len(hops) != 1 {
+		t.Fatalf("classify entry hops = %+v, want exactly one for the rules-only default chain", hops)
+	}
+	if hops[0].GetProvider() != "rules" || hops[0].GetResult() != "ok" {
+		t.Errorf("classify entry hop = %s/%s, want rules/ok", hops[0].GetProvider(), hops[0].GetResult())
+	}
+	// A claim or an outcome transition involves no classification, so it must
+	// carry no hops. NULL and "tried nothing" are different facts.
+	if got := entries[len(entries)-1].GetHops(); len(got) != 0 {
+		t.Errorf("outcome entry hops = %+v, want none: no provider was called for an execute outcome", got)
+	}
 
 	outcome := entries[len(entries)-1]
 	if outcome.GetToState() != commonv1.RecordState_RECORD_STATE_RECOVERED {

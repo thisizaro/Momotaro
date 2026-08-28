@@ -3,8 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/thisizaro/Momotaro/internal/platform/hopcodec"
+	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
@@ -44,12 +47,19 @@ func (s *store) recordStateExists(ctx context.Context, recordID string) (bool, e
 // (docs/PHASE2_IMPLEMENTATION.md Unit G); it is the zero value when the
 // record never reached scoring (an explicit escalation), in which case
 // nothing is stored rather than a misleading zero.
-func (s *store) scheduleNew(ctx context.Context, evt RawEvent, bucket commonv1.RootCauseBucket, steps []stateStep, pendingAction commonv1.ActionType, rationale string, source commonv1.Source, score economics.Score, dueAt *time.Time, now time.Time) error {
+func (s *store) scheduleNew(ctx context.Context, log *slog.Logger, evt RawEvent, bucket commonv1.RootCauseBucket, steps []stateStep, pendingAction commonv1.ActionType, rationale string, source commonv1.Source, hops []*commonv1.ProviderHop, score economics.Score, dueAt *time.Time, now time.Time) error {
 	if len(steps) == 0 {
 		return fmt.Errorf("schedule %s: no transitions to record", evt.RecordID)
 	}
 	final := steps[len(steps)-1].To
 	evScore, pRecovery := scoreColumns(score)
+
+	// Which provider rungs were actually tried, so the trail can show a
+	// fallback rather than only the coarse Source (Phase 3 Unit E). An
+	// encoding failure must not lose the record: the hops are diagnostic, the
+	// classification is not, so log and store NULL rather than failing the
+	// whole transaction.
+	hopsCol := encodedHops(hops, log)
 
 	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		if _, err := tx.Exec(ctx, `
@@ -64,9 +74,9 @@ func (s *store) scheduleNew(ctx context.Context, evt RawEvent, bucket commonv1.R
 		// a record of why (docs/ARCHITECTURE.md section 10a).
 		for _, step := range steps {
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, rationale, source, actor, attempt_number)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'system', 0)`,
-				evt.RecordID, evt.BatchID, now, step.From.String(), step.To.String(), step.Reason, rationale, source.String(),
+				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, rationale, source, provider_hops, actor, attempt_number)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'system', 0)`,
+				evt.RecordID, evt.BatchID, now, step.From.String(), step.To.String(), step.Reason, rationale, source.String(), hopsCol,
 			); err != nil {
 				return fmt.Errorf("insert audit_entry %s -> %s: %w", step.From, step.To, err)
 			}
@@ -245,6 +255,14 @@ func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stat
 		); err != nil {
 			return fmt.Errorf("update record_state for %s: %w", c.RecordID, err)
 		}
+		// provider_hops is deliberately NOT written in this loop, so it stays
+		// NULL. A re-score does not re-classify (scoreAndRoute re-prices what
+		// the Classifier already said, with one more attempt spent), so no
+		// provider call was made. Carrying the original classification's hops
+		// forward onto a later entry would misrepresent the trail as "we asked
+		// the model again", which is the quiet overstatement the field exists
+		// to prevent (Phase 3 Unit E).
+		//
 		// The cost of the attempt that just ran belongs on the first step
 		// (ClaimedState -> Scoring, the actual aftermath of that attempt);
 		// the second step (Scoring -> next state) is a pure decision and
@@ -324,4 +342,32 @@ func (s *store) loadAttemptHistory(ctx context.Context, recordID string) (attemp
 		return attemptHistory{}, fmt.Errorf("load attempt history for %s: %w", recordID, err)
 	}
 	return h, nil
+}
+
+// encodedHops renders a classification's provider hops for storage, returning
+// NULL rather than an error when they cannot be encoded.
+//
+// The asymmetry is deliberate. The hops are diagnostic; the classification and
+// the state transition are not. Failing the transaction because a hop label
+// contained a delimiter would lose a real record over a cosmetic problem, and
+// the record is what matters. hopcodec.Encode only rejects input that
+// provider.NewChain already refuses at startup, so this should be unreachable
+// in practice, which is exactly why it warrants a Warn rather than silence:
+// reaching it means an invariant somewhere upstream has gone.
+//
+// Returns a *string so a nil result stores SQL NULL. NULL means "no
+// classification happened here", which is different from the empty string and
+// the column's comment (migration 00005) says so.
+func encodedHops(hops []*commonv1.ProviderHop, log *slog.Logger) *string {
+	if len(hops) == 0 {
+		return nil
+	}
+	encoded, err := hopcodec.Encode(hops)
+	if err != nil {
+		// log is the record-scoped logger from HandleMessage, so this
+		// already carries record_id and batch_id.
+		log.Warn("could not encode provider hops, storing NULL", logger.KeyError, err)
+		return nil
+	}
+	return &encoded
 }
