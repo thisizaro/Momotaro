@@ -23,6 +23,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
+	"github.com/thisizaro/Momotaro/services/classifier/internal/llm"
 	"github.com/thisizaro/Momotaro/services/classifier/internal/provider"
 	"github.com/thisizaro/Momotaro/services/classifier/internal/rules"
 	"github.com/thisizaro/Momotaro/services/classifier/internal/server"
@@ -31,19 +32,33 @@ import (
 
 const serviceName = "classifier"
 
-// defaultProviderChain is rules-only: the LLM provider(s) are deliberately
-// not decided yet (AGENTS.md, ARCHITECTURE.md section 5), so the default
-// config runs the classifier at zero cost with no real API calls.
+// defaultProviderChain stays rules-only even though the providers are now
+// decided (groq,gemini,rules, docs/DECISIONS.md 2026-08-28).
+//
+// That is deliberate, not leftover. Both free tiers are capped per day (Groq
+// gives 1,000 requests/day on gpt-oss-20b, org-wide rather than per key), and
+// the whole test suite plus every e2e run would otherwise spend that quota on
+// records whose answers nobody reads. The live chain is opt-in through
+// configs/demo.env (Phase 3 Unit H). One accidental loop against a live chain
+// burns the day, and it will happen at the worst possible moment.
 const defaultProviderChain = "rules"
 
 // defaultLLMTimeout caps any single non-terminal rung.
 //
-// PLACEHOLDER, not a measurement. Phase 3 Unit B must replace it with a real
-// number: GPT-OSS models are reasoning models, and gpt-oss-20b at high
-// reasoning effort measures 3.05s time-to-first-token on Groq, which alone
-// exceeds both this value and PRD.md section 10's 3s p95 target for the LLM
-// path. reasoning_effort:low is the fix, but the timeout still has to come
-// from measurement (docs/DECISIONS.md 2026-08-28).
+// MEASURED, not guessed. 16 live Groq calls against gpt-oss-20b at
+// reasoning_effort:low: min 237ms, p50 ~570ms, max 688ms. 2s is roughly three
+// times the observed maximum, and the worst case for the default groq,rules
+// chain is 2s + CHAIN_RESERVE = 2.15s, inside the Decision Engine's 5s
+// CALL_TIMEOUT and inside PRD.md section 10's 3s p95 target.
+//
+// The value is unchanged from the pre-Unit-B placeholder; its status is not.
+// It was a guess that happened to be right, and the published 3.05s
+// time-to-first-token figure for this model (which is the HIGH reasoning
+// variant) said it was wrong. Only the measurement settled it.
+//
+// Note this does not fit Gemini, measured at p50 3.0s and max 6.19s. See
+// docs/DECISIONS.md 2026-08-28 for why that keeps Gemini out of the default
+// chain rather than raising this number.
 const defaultLLMTimeout = 2 * time.Second
 
 // defaultChainReserve is held back from the caller's deadline so the terminal
@@ -59,6 +74,13 @@ type serviceConfig struct {
 	ProviderChain []string
 	LLMTimeout    time.Duration
 	ChainReserve  time.Duration
+
+	GroqAPIKey    string
+	GroqBaseURL   string
+	GroqModel     string
+	GeminiAPIKey  string
+	GeminiBaseURL string
+	GeminiModel   string
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -68,6 +90,16 @@ func loadConfig() (serviceConfig, error) {
 		ProviderChain: splitCSV(l.StrDefault("LLM_PROVIDER_CHAIN", defaultProviderChain)),
 		LLMTimeout:    l.Duration("LLM_TIMEOUT", defaultLLMTimeout),
 		ChainReserve:  l.Duration("CHAIN_RESERVE", defaultChainReserve),
+
+		// Keys are read but never required here: a chain that does not name a
+		// provider must not need its key. The requirement is enforced in
+		// buildRegistry, where we know which rungs are actually in play.
+		GroqAPIKey:    l.StrDefault("GROQ_API_KEY", ""),
+		GroqBaseURL:   l.StrDefault("GROQ_BASE_URL", llm.DefaultGroqBaseURL),
+		GroqModel:     l.StrDefault("GROQ_MODEL", llm.DefaultGroqModel),
+		GeminiAPIKey:  l.StrDefault("GEMINI_API_KEY", ""),
+		GeminiBaseURL: l.StrDefault("GEMINI_BASE_URL", llm.DefaultGeminiBaseURL),
+		GeminiModel:   l.StrDefault("GEMINI_MODEL", llm.DefaultGeminiModel),
 	}
 	return cfg, l.Err()
 }
@@ -114,9 +146,9 @@ func slogFallback() *slog.Logger {
 }
 
 func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
-	rulesProvider := rules.New(log)
-	registry := map[string]provider.Provider{
-		provider.RulesName: rulesProvider,
+	registry, err := buildRegistry(cfg, log)
+	if err != nil {
+		return err
 	}
 	chainCfg := provider.Config{RungTimeout: cfg.LLMTimeout, Reserve: cfg.ChainReserve}
 	chain, err := provider.NewChain(cfg.ProviderChain, registry, chainCfg, log)
@@ -166,4 +198,58 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		grpcServer.GracefulStop()
 		return nil
 	})
+}
+
+// buildRegistry constructs only the rungs the configured chain actually names.
+//
+// Two properties worth stating, because both are easy to lose in a refactor.
+//
+// A provider named in LLM_PROVIDER_CHAIN without its key is a startup failure,
+// not a rung that fails every request (docs/ENGINEERING.md section 5). And a
+// provider NOT named costs nothing: no client, no key requirement, no
+// possibility of an outbound call. That second property is what makes the
+// rules-only default genuinely free rather than merely unused, and it is what
+// keeps CI, which has no keys and no guaranteed egress, from ever depending on
+// a provider.
+func buildRegistry(cfg serviceConfig, log *slog.Logger) (map[string]provider.Provider, error) {
+	named := make(map[string]bool, len(cfg.ProviderChain))
+	for _, n := range cfg.ProviderChain {
+		named[n] = true
+	}
+
+	registry := map[string]provider.Provider{
+		provider.RulesName: rules.New(log),
+	}
+
+	if named[llm.GroqName] {
+		p, err := llm.NewGroq(llm.Config{
+			APIKey:  cfg.GroqAPIKey,
+			BaseURL: cfg.GroqBaseURL,
+			Model:   cfg.GroqModel,
+		}, log)
+		if err != nil {
+			return nil, fmt.Errorf("build %s rung: %w", llm.GroqName, err)
+		}
+		registry[llm.GroqName] = p
+	}
+
+	if named[llm.GeminiName] {
+		p, err := llm.NewGemini(llm.Config{
+			APIKey:  cfg.GeminiAPIKey,
+			BaseURL: cfg.GeminiBaseURL,
+			Model:   cfg.GeminiModel,
+		}, log)
+		if err != nil {
+			return nil, fmt.Errorf("build %s rung: %w", llm.GeminiName, err)
+		}
+		registry[llm.GeminiName] = p
+	}
+
+	// A live chain costs real money against a capped free tier, so it should
+	// never be a surprise discovered from a bill or a 429. Say so loudly.
+	if len(registry) > 1 {
+		log.Warn("live provider chain enabled, this makes real API calls",
+			"chain", strings.Join(cfg.ProviderChain, ","))
+	}
+	return registry, nil
 }

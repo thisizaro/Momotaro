@@ -328,7 +328,7 @@ box.
 | Unit | What | Status | Blocks |
 |---|---|---|---|
 | A | Chain hardening: terminal rung, deadline budget, hop vocabulary | **merged** | B, C, D |
-| B | The real provider rung | not started | C, D, G |
+| B | The real provider rung | **merged** | C, D, G |
 | C | Fallback path proven per failure mode | not started | nothing |
 | D | Circuit breaker per provider | not started | nothing |
 | E | Provider hops persisted and retrievable | not started | nothing |
@@ -336,7 +336,7 @@ box.
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
 | H | `LLM_SAMPLE_RATE` and the config profiles | not started | nothing |
 
-**1 of 8 merged.**
+**2 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -544,7 +544,7 @@ must merge before any of them start.
 
 ## Unit B: The real provider rung
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: A merged. The provider decision is resolved (top of this file).
 **Branch**: `svc/classifier/llm-provider`.
 **Files owned**: a new `services/classifier/internal/llm/` package;
@@ -668,12 +668,71 @@ second method can be added without restructuring; do not add it.
   decision on providers updated to record the choice.
 - Full suite twice.
 
+### What actually shipped
+
+Both rungs, in one package, sharing everything except wire shape:
+`schema.go` (output schema derived from the proto enums, in two dialects),
+`prompt.go`, `parse.go`, `client.go` (shared HTTP, typed errors), `groq.go`,
+`gemini.go`, `provider.go`. Plus `livecheck_test.go` under a **`manual` build
+tag**, which no automated tier runs, for the two jobs a fake server cannot do:
+confirming the request shapes are what the vendors actually accept, and
+measuring real latency.
+
+Four findings from the live check, all of which changed something.
+
+**1. The measurement moved the default chain to `groq,rules`.** Groq
+`gpt-oss-20b` at `reasoning_effort: low`, 16 calls: min 237ms, p50 ~570ms,
+max 688ms, comfortably inside every budget. Gemini `gemini-2.5-flash`, 6
+calls: p50 3.01s, max 6.19s, roughly five times slower. No single
+`LLM_TIMEOUT` serves both: near Groq's profile Gemini always times out and the
+rung is decorative, above Gemini's max one rung alone exceeds the whole 5s
+`CALL_TIMEOUT`. Even Groq-rate-limited (instant 429) plus Gemini overruns it.
+This unit's own definition of done specified this outcome in advance, and
+taking that exit is why the clause existed. The Gemini rung is implemented,
+unit-tested and confirmed working live; it is one config value from returning,
+and doing so honestly needs per-rung timeouts rather than one chain-wide
+`LLM_TIMEOUT`. Full reasoning in `docs/DECISIONS.md` 2026-08-28.
+
+**2. `LLM_TIMEOUT=2s` is now measured rather than guessed, and the value did
+not change.** Worth stating plainly: the placeholder was right, and the
+published 3.05s time-to-first-token figure for this model said it was wrong.
+That figure is the *high* reasoning variant. Only the measurement settled it,
+which is the argument for having demanded one.
+
+**3. The model fabricated a confident diagnosis, and the prompt fixed it.**
+Groq initially answered a deliberately undiagnosable failure code
+(`ERR_7734_XQ`) with `HARD_DECLINE` at confidence **0.90**, despite the prompt
+already instructing it to answer `UNSPECIFIED` and escalate. Naming the
+failure mode and its consequence, rather than only the desired behaviour,
+moved it to `UNSPECIFIED` + `ESCALATE` at confidence **0.30**. Two things
+follow, both recorded in `DECISIONS.md`: a prompt instruction is not a
+guarantee, so the enum gates remain the actual control; and Unit G's
+confidence threshold would have caught nothing before this fix and catches
+exactly the right record after it, so **Unit G's value depends on prompt
+quality rather than being independent of it**. Unit G should say so.
+
+**4. The rungs disagree on `EXPIRED_INSTRUMENT`** (Groq says
+`USER_ACTION_NEEDED`, Gemini and the rules table say `HARD_DECLINE`), and that
+is deliberately left standing. All three recommend the same action so no
+spending decision changes, but the bucket keys the priors and Phase 5's
+accuracy scoring. Recorded rather than tuned away.
+
+One implementation note for whoever writes Unit D: the 429 detection already
+exists here. `client.go` returns a typed `*RateLimitedError` carrying
+`RetryAfter` parsed from the header in both RFC 9110 forms. Detecting it
+belongs in the only code that sees an HTTP status; acting on it is the
+breaker's job. **Gemini's live rate limit sent no `Retry-After` header at
+all**, so the fallback-to-configured-cooldown branch is not hypothetical.
+
 ### Prove the test can fail
 
-Point the fake server at a response that is valid JSON with a bucket outside
-the enum, and confirm the rung is recorded as a failure and the rules rung
-answers. Then make the same response valid and confirm the assertion that the
-rules rung answered goes red.
+Removing the enum gate in `parse.go` (accepting whatever bucket the model
+names) turns four tests red, across both vendors:
+`TestParseAnswerRejectsAnythingItCannotVerify/bucket_outside_the_enum`,
+`/lowercase_bucket`, and
+`TestProviderRejectsEveryUntrustworthyResponse/bucket_outside_the_enum` for
+groq and gemini. Reverted, then re-run five times to confirm the package is
+not flaky.
 
 ---
 

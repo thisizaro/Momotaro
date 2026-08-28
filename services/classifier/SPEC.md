@@ -65,7 +65,7 @@ building it early makes a large PR that is hard to review and blocks nobody.
 
 | Thing | Where it belongs | Why not now |
 |---|---|---|
-| Any real LLM provider (Anthropic, OpenAI, ...) | Phase 3 | Provider choice is an open question in `docs/PRD.md` §13, still pending cost/rate-limit evaluation. `PLAN.md` Phase 1 says "the LLM provider-chain interface stubbed but not wired to a real provider yet". |
+| Any real LLM provider (Anthropic, OpenAI, ...) | Phase 3 | ~~Provider choice is an open question in `docs/PRD.md` §13, still pending cost/rate-limit evaluation.~~ **Done: Phase 3 Unit B shipped `internal/llm` with Groq (primary, `gpt-oss-20b`, strict structured output) and Gemini (built and proven, held out of the default chain on measured latency). `docs/DECISIONS.md` 2026-08-28.** The default `LLM_PROVIDER_CHAIN` is still `rules`, so this service still makes no outbound call unless deliberately configured to. |
 | Circuit breakers | Phase 3, its own PLAN item | Needs a real provider to breaker. Build the chain so a breaker *wraps a rung* later without restructuring, and stop there. |
 | `ComposeNudge` | Phase 5 (Hinglish nudge composition) | No caller exists. Decision Engine never calls it in Phase 1. Leave it returning `codes.Unimplemented`. |
 | Prometheus metrics (`llm_fallback_total`, `llm_call_duration_seconds`, `llm_circuit_state`) | Phase 4 | These come from the shared gRPC interceptor work across every service, not per-service hand-wiring. See §9 below for what to do instead. |

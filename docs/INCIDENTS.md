@@ -910,3 +910,42 @@ not compile. Here a package-scoped run hid a failure in a package it did not
 compile. The rule generalises: **after changing any shared signature, run
 `go vet ./...` before believing a scoped test run**, and the full tagged suite
 before believing anything.
+
+### 2026-08-28, an httptest handler that waits only on r.Context() hangs the whole package
+
+Unit B. The test for "a hung provider must surface as
+`context.DeadlineExceeded`" used the obvious handler:
+
+```go
+h := func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
+```
+
+The client times out at 100ms and the assertion passes, but the **package**
+hangs until Go's test timeout kills it. `httptest.Server.Close()`, registered
+via `t.Cleanup`, blocks until every in-flight handler returns, and the server
+did not observe the client's disconnect: the handler sat on `r.Context()`
+forever.
+
+The panic trace pointed at the `Close()` line in a shared helper rather than
+at the test, which is what made it non-obvious. `go test -timeout 25s` is what
+turned a two-minute mystery into a stack trace naming the line.
+
+Fix is a safety valve, so the handler returns whether or not the server ever
+notices:
+
+```go
+select {
+case <-r.Context().Done():
+case <-time.After(time.Second):
+}
+```
+
+The first version used a 5s valve and the package took 11s for two subtests,
+because the valve is what actually fires. 1s is enough and cuts it to 3s. A
+slow suite is a suite people stop running.
+
+**Also worth knowing**: reverting a deliberately-broken file and immediately
+re-running `go test` in the *same* shell invocation reported a stale FAIL. Two
+separate runs afterwards, and five more for good measure, were all clean. If
+an adversarial check's revert looks like it failed, run it again as its own
+command before believing it.

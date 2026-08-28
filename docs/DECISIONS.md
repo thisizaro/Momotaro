@@ -880,3 +880,60 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   guarantee conditional on a config value. An FNV hash costs nothing and
   removes the question. Default is 0.0, so every default run and every
   existing test is provably free.
+- 2026-08-28: **Gemini is built and proven but stays OUT of the default
+  chain, on measured latency.** Unit B's live check (the `manual` build tag in
+  `services/classifier/internal/llm/livecheck_test.go`) measured both rungs
+  against real endpoints. Groq `gpt-oss-20b` at `reasoning_effort: low`, 16
+  calls: min 237ms, p50 ~570ms, max 688ms. Gemini `gemini-2.5-flash`, 6 calls:
+  min 2.38s, p50 3.01s, max 6.19s, roughly five times slower.
+  There is no single `LLM_TIMEOUT` that serves both. Set it near Groq's
+  profile (2s) and Gemini times out on essentially every call, making the rung
+  decorative. Set it above Gemini's max (7s) and one rung alone exceeds the
+  Decision Engine's entire 5s `CALL_TIMEOUT`, so a `groq,gemini,rules` chain
+  where both fail cannot return inside the caller's deadline at all, which is
+  the exact DLQ path Unit A exists to close. Even the favourable case does not
+  fit: Groq rate-limited (instant 429, ~0ms) plus Gemini at 6.19s still
+  overruns 5s, and `PRD.md` section 10's 3s p95 target is blown by Gemini's
+  p50 on its own.
+  So the default chain is **`groq,rules`**, and `LLM_TIMEOUT=2s` is now a
+  measured value rather than the placeholder it was. This is exactly the
+  escape hatch Unit B's definition of done specified in advance ("if the
+  measured value will not fit two live rungs inside CALL_TIMEOUT, say so and
+  drop the default chain to groq,rules rather than shipping a budget that only
+  works on paper"), and it is the reason that clause was written.
+  The Gemini rung is **not** deleted: it is implemented, unit-tested against
+  `httptest`, and confirmed working against the live API. Re-enabling it is one
+  config value. Getting it back into the default chain honestly needs
+  **per-rung timeouts** rather than one `LLM_TIMEOUT` for the whole chain,
+  which is a small change to `provider.Config` and a natural follow-up if the
+  demo wants a vendor-to-vendor failover on stage.
+- 2026-08-28: **Confidence, as produced by a real model, is close to useless
+  as a safety signal in its raw form**, which is an input to Unit G rather
+  than an argument against it. Across the live runs, every recognised failure
+  code came back at 0.90 to 1.00 from both vendors, including one the model
+  got arguably wrong. The single genuinely undiagnosable record initially came
+  back from Groq as a **fabricated `HARD_DECLINE` at confidence 0.90** even
+  though the prompt already instructed it to answer `UNSPECIFIED` and
+  escalate. Strengthening that instruction (naming the failure mode and its
+  consequence rather than just the desired behaviour) moved it to
+  `UNSPECIFIED` + `ESCALATE` at **confidence 0.30**, which is the honest
+  answer. Two things follow. A prompt instruction is not a guarantee, so the
+  enum gates and `validate.go` remain the actual controls. And a
+  `CLASSIFY_CONFIDENCE_THRESHOLD` set anywhere useful, say 0.5, would have
+  caught nothing before the prompt fix and catches exactly the right record
+  after it, so Unit G's value depends on prompt quality rather than being
+  independent of it. Unit G should say so.
+- 2026-08-28: **The two rungs disagree on `EXPIRED_INSTRUMENT`, and that is
+  left standing rather than tuned away.** The rules table maps it to
+  `HARD_DECLINE` (`SPEC.md` section 4.2); Groq consistently answers
+  `USER_ACTION_NEEDED`; Gemini answers `HARD_DECLINE`. All three then
+  recommend the same action, `NUDGE_METHOD_UPDATE`, so no spending decision
+  changes. The bucket is not cosmetic though: it keys the recovery priors and
+  the cause-aware retry timing, and Phase 5's reporting scores classification
+  accuracy by bucket against ground truth. Both readings are defensible (an
+  expired card is a dead instrument, and it is also something the customer
+  must act on), and forcing the model onto the table's answer would defeat the
+  point of a hybrid where the model contributes the bucket. Recorded so
+  Phase 5's accuracy scorer treats a bucket disagreement between rungs as a
+  known property rather than a bug, and so nobody quietly "fixes" the prompt
+  to match the table.
