@@ -333,10 +333,10 @@ box.
 | D | Circuit breaker per provider | **merged** | nothing |
 | E | Provider hops persisted and retrievable | **merged** | nothing |
 | F | Populate `history` and `instrument_history` | **merged** | H |
-| G | Confidence threshold enforced in the Decision Engine | not started | nothing |
+| G | Confidence threshold enforced in the Decision Engine | **merged** | nothing |
 | H | `LLM_SAMPLE_RATE` and the config profiles | **merged** | nothing |
 
-**7 of 8 merged.**
+**8 of 8 merged. Phase 3 complete.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -1238,7 +1238,7 @@ PR also touches. **Do not run F and E's third PR in parallel.**
 
 ## Unit G: Confidence threshold enforced in the Decision Engine
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: B merged. Meaningless while confidence is a table constant.
 **Branch**: `svc/decision-engine/confidence-threshold`.
 **Files owned**: `services/decision-engine/internal/engine/engine.go`,

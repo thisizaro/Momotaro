@@ -141,6 +141,12 @@ func directPath(to commonv1.RecordState, reason string) []stateStep {
 // economics model are both pure once loaded, so this is table-driven
 // testable without Postgres.
 //
+// Deliberately takes bucket, not a ClassifyResponse: the re-entry path
+// (scheduler.go's handleFailedAttempt) never re-classifies, so it has no
+// fresh confidence value to check. The confidence threshold (Phase 3 Unit
+// G, engine.go's decide) therefore applies only on the New path, by
+// construction rather than by a guard against a stale or zero value here.
+//
 // Two independent stops keep a record from cycling through Scoring forever,
 // and both are visible in this one function:
 //

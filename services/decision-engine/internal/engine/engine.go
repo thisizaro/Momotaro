@@ -60,6 +60,13 @@ type Config struct {
 	// ForceRulesOnly. Default 0.0, validated at startup in [0,1] by
 	// cmd/main.go, so every existing test and every default run stays free.
 	LLMSampleRate float64
+	// ClassifyConfidenceThreshold is CLASSIFY_CONFIDENCE_THRESHOLD
+	// (docs/PHASE3_IMPLEMENTATION.md Unit G, classifier.proto): below this,
+	// a classification is escalated as a safety call rather than priced.
+	// Default 0.0, validated at startup in [0,1] by cmd/main.go, so a
+	// deployment that never sets it escalates nothing on confidence (the
+	// rules engine's own confidence values are all > 0).
+	ClassifyConfidenceThreshold float64
 }
 
 // Engine consumes raw.events: classify a fresh record and schedule its
@@ -186,9 +193,31 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHistory, amountPaise int64, now time.Time) ([]stateStep, commonv1.ActionType, economics.Score) {
 	none := commonv1.ActionType_ACTION_TYPE_UNSPECIFIED
 
+	// Below the configured confidence threshold is a safety call, exactly
+	// like an explicit escalation recommendation: bypass economics entirely
+	// rather than price a diagnosis the classifier itself was not confident
+	// in (classifier.proto, ARCHITECTURE.md section 5, Phase 3 Unit G).
+	// Checked before the recommended-action escalate check below on
+	// purpose, because the rules engine's unknown-code path always returns
+	// confidence 0.0 AND recommends ESCALATE (rules/actions.go), so once a
+	// threshold above 0.0 is configured, both conditions are true for that
+	// same record. The reason string names whichever is the REAL cause
+	// rather than whichever branch happened to run first, so the audit
+	// trail can still tell "we do not recognise this failure code" from
+	// "the model was unsure" -- those call for different human follow-up.
+	// Threshold 0.0 (the default) never fires here, since every rules
+	// engine confidence value is > 0: this changes no existing behaviour
+	// until deliberately turned on.
+	if resp.GetConfidence() < e.cfg.ClassifyConfidenceThreshold {
+		reason := "classification confidence below threshold"
+		if resp.GetRecommendedAction() == commonv1.ActionType_ACTION_TYPE_ESCALATE {
+			reason = "classifier recommended escalation"
+		}
+		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, reason), none, economics.Score{}
+	}
+
 	// Escalation is the one recommendation that bypasses economics. A risk
-	// hold or a low-confidence classification is a safety call, and pricing it
-	// would imply it were negotiable.
+	// hold is a safety call, and pricing it would imply it were negotiable.
 	if resp.GetRecommendedAction() == commonv1.ActionType_ACTION_TYPE_ESCALATE {
 		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, "classifier recommended escalation"), none, economics.Score{}
 	}

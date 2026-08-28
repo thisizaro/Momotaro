@@ -531,14 +531,36 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       re-classification path rather than something today's flow exercises,
       and the tests seed rows directly to prove the plumbing works. All six
       e2e tests unchanged, since the rules engine ignores both fields.
-- [ ] (unplanned, found while planning Phase 3) enforce the classification
+- [x] (unplanned, found while planning Phase 3) enforce the classification
       confidence threshold in the Decision Engine. `classifier.proto`
       documents it, `ARCHITECTURE.md` §5 assigns it here, and both
-      `engine/state.go` and `engine/engine.go` already carry comments saying a
-      low-confidence classification is a safety call that bypasses pricing,
-      but no code reads `confidence`. Harmless while it is a table constant,
-      a real gap once a model produces it
+      `engine/state.go` and `engine/engine.go` already carried comments
+      saying a low-confidence classification is a safety call that bypasses
+      pricing, but no code read `confidence`. Harmless while it was a table
+      constant, a real gap once a model produces it
       → `docs/PHASE3_IMPLEMENTATION.md` Unit G
+      New `CLASSIFY_CONFIDENCE_THRESHOLD`, default `0.0` (validated `[0,1]`
+      at startup), checked in `Engine.decide` before the existing
+      recommended-action-escalate check: below it, a classification is
+      escalated (`directPath`, bypassing economics entirely) with reason
+      "classification confidence below threshold". Default `0.0` escalates
+      nothing, since every rules-engine confidence value is `> 0`, so this
+      is provably a no-op until deliberately configured, and all six e2e
+      tests stayed unaffected.
+      The one interaction worth recording: the rules engine's unknown-code
+      path always returns confidence `0.0` **and** recommends `ESCALATE`
+      (`rules/actions.go`), so once a threshold above `0.0` is set, both the
+      new check and the pre-existing recommended-action check are satisfied
+      by the same record. The reason string names whichever is the real
+      cause rather than whichever branch runs first: an unknown-code record
+      still gets "classifier recommended escalation", never "classification
+      confidence below threshold", so the audit trail can tell "we do not
+      recognise this failure code" from "the model was unsure" -- proven by
+      a dedicated integration test asserting both reason strings land on
+      the right record. The re-entry path (`scheduler.go`'s
+      `handleFailedAttempt`) never re-classifies, so it has no fresh
+      confidence to check; `scoreAndRoute`'s doc comment now says so, so
+      nobody adds a check there against a stale or zero value.
 - [x] (unplanned, found while planning Phase 3) `LLM_SAMPLE_RATE` and the
       checked-in demo/dev config profiles. `PRD.md` §12 calls for a
       50-to-100-record demo batch; Groq's free tier is 30 RPM. Those two
