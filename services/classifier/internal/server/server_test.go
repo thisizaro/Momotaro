@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
@@ -22,6 +23,7 @@ func newTestServer(t *testing.T) *Server {
 	c, err := provider.NewChain(
 		[]string{provider.RulesName},
 		map[string]provider.Provider{provider.RulesName: rules.New(log)},
+		provider.Config{RungTimeout: 2 * time.Second, Reserve: 150 * time.Millisecond},
 		log,
 	)
 	if err != nil {

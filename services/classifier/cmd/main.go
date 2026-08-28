@@ -36,15 +36,29 @@ const serviceName = "classifier"
 // config runs the classifier at zero cost with no real API calls.
 const defaultProviderChain = "rules"
 
-// defaultLLMTimeout documents intent for the Phase 3 provider calls this
-// service does not make yet (SPEC.md section 8).
+// defaultLLMTimeout caps any single non-terminal rung.
+//
+// PLACEHOLDER, not a measurement. Phase 3 Unit B must replace it with a real
+// number: GPT-OSS models are reasoning models, and gpt-oss-20b at high
+// reasoning effort measures 3.05s time-to-first-token on Groq, which alone
+// exceeds both this value and PRD.md section 10's 3s p95 target for the LLM
+// path. reasoning_effort:low is the fix, but the timeout still has to come
+// from measurement (docs/DECISIONS.md 2026-08-28).
 const defaultLLMTimeout = 2 * time.Second
+
+// defaultChainReserve is held back from the caller's deadline so the terminal
+// rules rung and the response marshal always fit inside it, however badly the
+// rungs above it behave. See provider/budget.go for why a per-rung timeout on
+// its own is not enough. 150ms is generous for a pure-CPU table lookup plus a
+// protobuf marshal, and cheap against a 5s CALL_TIMEOUT.
+const defaultChainReserve = 150 * time.Millisecond
 
 // serviceConfig adds this service's own settings to the shared ones.
 type serviceConfig struct {
 	config.Common
 	ProviderChain []string
 	LLMTimeout    time.Duration
+	ChainReserve  time.Duration
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -53,6 +67,7 @@ func loadConfig() (serviceConfig, error) {
 		Common:        config.LoadCommon(l, serviceName),
 		ProviderChain: splitCSV(l.StrDefault("LLM_PROVIDER_CHAIN", defaultProviderChain)),
 		LLMTimeout:    l.Duration("LLM_TIMEOUT", defaultLLMTimeout),
+		ChainReserve:  l.Duration("CHAIN_RESERVE", defaultChainReserve),
 	}
 	return cfg, l.Err()
 }
@@ -103,10 +118,23 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	registry := map[string]provider.Provider{
 		provider.RulesName: rulesProvider,
 	}
-	chain, err := provider.NewChain(cfg.ProviderChain, registry, log)
+	chainCfg := provider.Config{RungTimeout: cfg.LLMTimeout, Reserve: cfg.ChainReserve}
+	chain, err := provider.NewChain(cfg.ProviderChain, registry, chainCfg, log)
 	if err != nil {
 		return fmt.Errorf("build provider chain: %w", err)
 	}
+	// The budget is worth stating at startup rather than leaving to be
+	// reconstructed from two env vars during an incident: worst case is every
+	// non-terminal rung burning its full timeout before the rules rung
+	// answers, and that sum has to fit inside the caller's deadline
+	// (CALL_TIMEOUT, 5s by default in the Decision Engine).
+	worstCase := time.Duration(len(cfg.ProviderChain)-1)*cfg.LLMTimeout + cfg.ChainReserve
+	log.Info("provider chain built",
+		"chain", strings.Join(cfg.ProviderChain, ","),
+		"rung_timeout", cfg.LLMTimeout.String(),
+		"chain_reserve", cfg.ChainReserve.String(),
+		"worst_case_before_terminal_rung", worstCase.String(),
+	)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 	if err != nil {

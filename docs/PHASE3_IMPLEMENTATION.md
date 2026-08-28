@@ -327,7 +327,7 @@ box.
 
 | Unit | What | Status | Blocks |
 |---|---|---|---|
-| A | Chain hardening: terminal rung, deadline budget, hop vocabulary | not started | B, C, D |
+| A | Chain hardening: terminal rung, deadline budget, hop vocabulary | **merged** | B, C, D |
 | B | The real provider rung | not started | C, D, G |
 | C | Fallback path proven per failure mode | not started | nothing |
 | D | Circuit breaker per provider | not started | nothing |
@@ -336,7 +336,7 @@ box.
 | G | Confidence threshold enforced in the Decision Engine | not started | nothing |
 | H | `LLM_SAMPLE_RATE` and the config profiles | not started | nothing |
 
-**0 of 8 merged.**
+**1 of 8 merged.**
 
 Mapping back to `PLAN.md`: A and B are the "providers decided and wired"
 checkbox. C is "fallback path deliberately tested". D is "circuit breaker per
@@ -378,7 +378,7 @@ section 9), so it has the longest wall-clock floor of any unit here.
 
 ## Unit A: Chain hardening
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: nothing.
 **Branch**: `svc/classifier/chain-hardening`.
 **Files owned**: `services/classifier/internal/provider/chain.go`,
@@ -486,6 +486,54 @@ opens a proto PR; let it carry the comment update.
 
 Set `reserve` to 0 and confirm the Flaw 3 test goes red with the classifier's
 answer arriving after the deadline. Revert. Paste the real output.
+
+### What actually shipped
+
+All three defects as scoped, plus two things the LLD did not anticipate.
+
+**`NewChain` gained a `provider.Config`** (`RungTimeout`, `Reserve`) rather
+than two loose duration arguments, and validates both: a non-positive rung
+timeout or a negative reserve fails at construction alongside the chain-shape
+checks. That changed the signature, which touched **eight** call sites, not
+the seven in `chain_test.go` that a package-scoped run compiles.
+`services/classifier/internal/server/server_test.go` also builds a real chain,
+and only `go vet ./...` across the whole repo caught it. Worth noting for the
+next unit that changes a shared constructor: `go test ./services/classifier/...`
+was green while the repo did not compile.
+
+**The terminal rung is exempt from both the cap and the reserve, and always
+runs**, including when the caller's deadline has already expired. `rungCtx`
+returns the parent context unchanged for it. The LLD implied it would be
+budgeted like any other rung; that is wrong, because the rules engine does no
+I/O and cannot fail, so capping it only creates a path where the chain
+produces no answer at all, and refusing to run it past the deadline guarantees
+the failure that running it might still avoid.
+
+`budget.go` carries a long comment on why its arithmetic uses `ctx.Deadline()`
+and `time.Until` rather than an injected `clock.Clock`, since that reads as an
+`ENGINEERING.md` section 2 violation and is not one. Unit D's breaker
+cooldown is the contrasting case and the comment names it.
+
+Verified with two clean full-suite runs (`go test -count=1 -race
+-tags='integration e2e' ./...`) and two adversarial checks, both reverted:
+
+1. **Reserve set to 0** (the pre-Unit-A behaviour) makes the Flaw 3 test go
+   red with `chain answered after the caller's deadline expired (context
+   deadline exceeded): the Decision Engine would dead-letter this record`. The
+   first dead rung consumes the whole 600ms deadline and the rules answer
+   arrives too late, which is exactly the DLQ path this unit closes.
+2. **The terminal-rung invariant deleted** makes three of the five
+   construction cases go red (`rules not last`, `rules listed twice`, `rules
+   absent`). The other two, empty chain and unknown name, stay green because
+   the pre-existing checks already covered them, which is the correct result
+   rather than a gap.
+
+Deliberately deferred, and said out loud rather than quietly skipped:
+`ENGINEERING.md` section 11 item 3's exported metric goes to Phase 4 with the
+rest of observability (`ARCHITECTURE.md` section 13: shared interceptor, not
+per-service wiring). The chain logs a `Warn` per failed and per skipped rung,
+and `cmd/main.go` logs the computed worst-case budget at startup so it does
+not have to be reconstructed from two env vars during an incident.
 
 ### Collision notes
 

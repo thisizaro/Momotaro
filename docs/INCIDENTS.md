@@ -868,3 +868,45 @@ recurring lesson, now for the sixth time in three days: a test that has
 never been run against the real system, or an assumption that has never
 been checked against the real code, reads exactly like a correct one until
 someone runs it.
+
+### 2026-08-28, GitHub SSH on port 22 is blocked on this network, and `go test ./services/<one>/...` was green while the repo did not compile
+
+Two unrelated things from Unit A, both cheap to hit again.
+
+**Port 22 to github.com is blocked** on the network this project is currently
+developed from (college wifi). Symptom is not an error, it is a hang: `git
+fetch` and `git push` sit until they time out, exit 124 or 128, with no
+message pointing at the network. Confirmed with
+`bash -c 'cat < /dev/null > /dev/tcp/github.com/22'` failing while both
+`github.com:443` and `ssh.github.com:443` succeed.
+
+Two workarounds, neither requiring a config change:
+
+```bash
+# GitHub's alternate SSH endpoint. HostKeyAlias matters: without it the key
+# comes back under a different hostname and verification fails.
+GIT_SSH_COMMAND="ssh -o HostName=ssh.github.com -o Port=443 -o HostKeyAlias=github.com" \
+  git push origin main
+
+# Or HTTPS through the gh credential helper, which is already authenticated.
+git -c credential.helper='!gh auth git-credential' push https://github.com/thisizaro/Momotaro.git main
+```
+
+Note `gh auth status` reports "Git operations protocol: ssh", so having `gh`
+authenticated does **not** on its own make `git push` work: the remote is an
+SSH URL and git never consults gh for it. The permanent fix, if this network
+is the normal one, is a `Host github.com` block in `~/.ssh/config` with
+`Hostname ssh.github.com` and `Port 443`.
+
+**Separately**: Unit A changed `provider.NewChain`'s signature.
+`go test ./services/classifier/...` passed, and the repo did not compile.
+`services/classifier/internal/server/server_test.go` builds a real chain too,
+and its package was not in the path being tested at the moment the signature
+changed. `go vet ./...` across the whole repo caught it immediately.
+
+This is the same shape as the 2026-08-26 and 2026-08-27 entries, one level
+out: there, a package-scoped or untagged run hid a failure in a tier it did
+not compile. Here a package-scoped run hid a failure in a package it did not
+compile. The rule generalises: **after changing any shared signature, run
+`go vet ./...` before believing a scoped test run**, and the full tagged suite
+before believing anything.

@@ -11,6 +11,39 @@ import (
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 )
 
+// Hop result vocabulary. ProviderHop.result (proto/common/v1/common.proto)
+// documents these as the values a hop may carry; before Unit A they existed
+// only as bare string literals at three call sites in chain.go, which meant a
+// timeout was indistinguishable from a 500 in the audit trail and two of the
+// documented values had no producer at all.
+//
+// Keep this the single source of the vocabulary. Unit E encodes hops into one
+// delimited column, so a value added here without thought is a value that has
+// to survive that round trip.
+const (
+	// HopOK: this rung answered and its answer passed validation.
+	HopOK = "ok"
+	// HopError: the rung returned an error that was not a deadline.
+	HopError = "error"
+	// HopTimeout: the rung exceeded the per-rung budget (or the caller's
+	// deadline expired while it was working).
+	HopTimeout = "timeout"
+	// HopSchemaInvalid: the rung answered, but named a bucket or action
+	// outside the enum, or a confidence outside [0,1]. An answer this
+	// service cannot trust is a rung failure, not an answer (validate.go).
+	HopSchemaInvalid = "schema_invalid"
+	// HopDeadlineExhausted: the rung was never called, because too little of
+	// the caller's deadline remained to be worth spending on it (budget.go).
+	// Distinct from HopTimeout on purpose: nothing was attempted, so nothing
+	// was paid for.
+	HopDeadlineExhausted = "deadline_exhausted"
+	// HopCircuitOpen: the rung was skipped because its circuit breaker is
+	// open. No producer yet; the breaker is Phase 3 Unit D
+	// (docs/PHASE3_IMPLEMENTATION.md). Named here so the vocabulary lives in
+	// one place rather than growing a second home when Unit D lands.
+	HopCircuitOpen = "circuit_open"
+)
+
 // RulesName is the rung name the deterministic rules engine registers
 // under. The chain uses it to resolve the coarse Source (SPEC.md section
 // 4.6) and to filter for force_rules_only (SPEC.md section 4.8), so it must

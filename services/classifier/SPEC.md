@@ -291,6 +291,15 @@ Build the shape, not the providers.
 - An unknown name in `LLM_PROVIDER_CHAIN` must fail at **startup**, not at
   request time (`ENGINEERING.md` §5). A typo in a config value should stop the
   pod, not silently degrade every classification.
+  **Updated by Phase 3 Unit A**: `NewChain` now also rejects, at construction,
+  a chain where `rules` is absent, listed more than once, or not last, and any
+  provider name containing `:` or `,`. Until then "the rules engine is always
+  the last rung" was a convention this file asserted and nothing enforced, so
+  `LLM_PROVIDER_CHAIN=groq` started cleanly and dead-lettered records at
+  request time. Each rung is also bounded by `LLM_TIMEOUT` with a
+  `CHAIN_RESERVE` held back for the terminal rung, so a hanging provider can
+  no longer consume the caller's whole deadline
+  (`internal/provider/budget.go`).
 - Structure the loop so a rung can later be wrapped (by a circuit breaker, a
   timeout, a metric) without rewriting the loop. Do not build the wrapper.
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
@@ -25,6 +26,12 @@ func (f *fakeRung) Name() string { return f.name }
 func (f *fakeRung) Classify(ctx context.Context, req *classifierv1.ClassifyRequest) (*classifierv1.ClassifyResponse, error) {
 	f.calls++
 	return f.resp, f.err
+}
+
+// testConfig is a generous budget: these tests are about chain behaviour, not
+// about timing. The tests that care about the budget build their own Config.
+func testConfig() Config {
+	return Config{RungTimeout: 2 * time.Second, Reserve: 150 * time.Millisecond}
 }
 
 func validResponse() *classifierv1.ClassifyResponse {
@@ -72,7 +79,7 @@ func TestValidate(t *testing.T) {
 
 func TestChainSingleRulesRung(t *testing.T) {
 	rules := &fakeRung{name: RulesName, resp: validResponse()}
-	c, err := NewChain([]string{RulesName}, map[string]Provider{RulesName: rules}, logger.Discard())
+	c, err := NewChain([]string{RulesName}, map[string]Provider{RulesName: rules}, testConfig(), logger.Discard())
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -93,7 +100,7 @@ func TestChainSingleRulesRung(t *testing.T) {
 func TestChainRungErrorFallsThroughToNextRung(t *testing.T) {
 	failing := &fakeRung{name: "llm", err: errors.New("boom")}
 	rules := &fakeRung{name: RulesName, resp: validResponse()}
-	c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": failing, RulesName: rules}, logger.Discard())
+	c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": failing, RulesName: rules}, testConfig(), logger.Discard())
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -120,7 +127,7 @@ func TestChainInvalidResponseFallsThroughToNextRung(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			badRung := &fakeRung{name: "llm", resp: bad}
 			rules := &fakeRung{name: RulesName, resp: validResponse()}
-			c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": badRung, RulesName: rules}, logger.Discard())
+			c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": badRung, RulesName: rules}, testConfig(), logger.Discard())
 			if err != nil {
 				t.Fatalf("NewChain: %v", err)
 			}
@@ -143,7 +150,7 @@ func TestChainInvalidResponseFallsThroughToNextRung(t *testing.T) {
 func TestChainStopsAtFirstSuccessfulRung(t *testing.T) {
 	first := &fakeRung{name: "llm", resp: validResponse()}
 	second := &fakeRung{name: RulesName, resp: validResponse()}
-	c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": first, RulesName: second}, logger.Discard())
+	c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": first, RulesName: second}, testConfig(), logger.Discard())
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -164,7 +171,7 @@ func TestChainAlwaysTerminatesWhenRulesIsLast(t *testing.T) {
 	failingA := &fakeRung{name: "a", err: errors.New("boom")}
 	failingB := &fakeRung{name: "b", resp: invalidResponses()["bucket outside enum"]}
 	rules := &fakeRung{name: RulesName, resp: validResponse()}
-	c, err := NewChain([]string{"a", "b", RulesName}, map[string]Provider{"a": failingA, "b": failingB, RulesName: rules}, logger.Discard())
+	c, err := NewChain([]string{"a", "b", RulesName}, map[string]Provider{"a": failingA, "b": failingB, RulesName: rules}, testConfig(), logger.Discard())
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -181,7 +188,7 @@ func TestChainAlwaysTerminatesWhenRulesIsLast(t *testing.T) {
 func TestChainForceRulesOnlySkipsNonRulesRungs(t *testing.T) {
 	llm := &fakeRung{name: "llm", resp: validResponse()}
 	rules := &fakeRung{name: RulesName, resp: validResponse()}
-	c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": llm, RulesName: rules}, logger.Discard())
+	c, err := NewChain([]string{"llm", RulesName}, map[string]Provider{"llm": llm, RulesName: rules}, testConfig(), logger.Discard())
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -200,7 +207,7 @@ func TestChainForceRulesOnlySkipsNonRulesRungs(t *testing.T) {
 
 func TestNewChainRejectsUnknownProviderName(t *testing.T) {
 	registry := map[string]Provider{RulesName: &fakeRung{name: RulesName, resp: validResponse()}}
-	if _, err := NewChain([]string{"nonexistent"}, registry, logger.Discard()); err == nil {
+	if _, err := NewChain([]string{"nonexistent"}, registry, testConfig(), logger.Discard()); err == nil {
 		t.Fatal("NewChain with unknown provider name: want error, got nil")
 	}
 }
