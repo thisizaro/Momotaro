@@ -15,6 +15,15 @@ Convention: `[ ]` open, `[x]` done. Each item ends with `→ detail: <doc §>`.
 > or tick lines rather than reordering or restructuring, union merge handles
 > additions well and rewrites badly. Same applies to `docs/DECISIONS.md`.
 
+> **Deliberately parked work lives in `docs/BACKLOG.md`**, not here as a
+> forever-unchecked box. Check there before assuming something unchecked
+> below was simply forgotten.
+
+> **Learning companion**: `docs/CONCEPTS.md` explains, at a conceptual
+> level (not code), every pattern and technology this project applies and
+> why. Grows as the project does; read it to understand what was built,
+> not just that it was built.
+
 ## Phase 0: Foundations & scaffold
 
 **Phase 0 is deliberately sequential and must be finished and merged before
@@ -598,10 +607,11 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 - [x] Prometheus metrics in every service via a shared gRPC interceptor
       plus Kafka consumer lag exporter → `ARCHITECTURE.md` §13,
       `docs/PHASE4_IMPLEMENTATION.md` Units A, B
-- [ ] OpenTelemetry tracing across gRPC + Kafka hops, `record_id` as trace id
-      → `ARCHITECTURE.md` §13
-- [ ] Structured logging correlated by `record_id`/`trace_id`
-      → `ARCHITECTURE.md` §13
+- [ ] **Deferred, see `docs/BACKLOG.md`**: OpenTelemetry tracing across
+      gRPC + Kafka hops, `record_id` as trace id → `ARCHITECTURE.md` §13
+- [ ] Structured logging correlated by `record_id` (already true
+      everywhere via `logger.ForRecord`) / `trace_id` (blocked on the
+      item above) → `ARCHITECTURE.md` §13
 - [x] Alertmanager rules (consumer lag, LLM fallback rate, stopping-rule
       violation) → `ARCHITECTURE.md` §13, `docs/PHASE4_IMPLEMENTATION.md` Unit D
 - [x] Grafana dashboards, per-service and business metrics

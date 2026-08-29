@@ -4,7 +4,10 @@ Notes for any AI agent (or human) working in this folder. If you are new to
 this project: read this file first, then `docs/PRD.md`, then
 `docs/ARCHITECTURE.md`. This file is the quick reference for *what* was
 decided; those two have the full reasoning, and `docs/DECISIONS.md` has the
-chronology of *why*.
+chronology of *why*. `docs/CONCEPTS.md` explains the patterns and
+technology choices at a conceptual level, for anyone (agent or human)
+building understanding rather than just shipping the next item.
+`docs/BACKLOG.md` tracks work deliberately deferred, not forgotten.
 
 > **Before you write a single line of code, read `docs/ENGINEERING.md`.**
 > It is mandatory, not advisory. It covers TDD expectations, clock
