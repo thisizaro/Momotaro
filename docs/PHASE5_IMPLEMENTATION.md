@@ -27,7 +27,7 @@ scope from the checklist alone.
 | C | World Simulator (real) | not started | A |
 | D | Executor: wire real World/Notification Simulator clients | not started | C |
 | E | Hinglish nudge composition (Classifier) | not started | A (for the caller; the Classifier-side work itself is independent) |
-| F | Reporting Service | not started | nothing strictly, more useful once B/C produce real data |
+| F | Reporting Service | in progress: unary RPCs merged, `StreamBatchUpdates` deferred | nothing strictly, more useful once B/C produce real data |
 | G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
 | H | Dashboard: wire to real Gateway | not started | G |
 | I | Razorpay's real error codes as the failure vocabulary | merged | nothing |
@@ -685,6 +685,81 @@ through to the audit entry touches the same `scoreAndRoute` ->
 `scheduleNew`/`recordRescore` plumbing Unit M is about to rework to persist
 the EV ranking, so it is picked up there rather than threaded twice. Tracked
 in `docs/BACKLOG.md` if Unit M does not end up covering it.
+
+## Unit F: Reporting Service
+
+**Status**: in progress. `GetBatchReport` and `ListBatchRecords` merged;
+`StreamBatchUpdates` deferred. **Depends on**: nothing strictly, more
+useful once B/C produce real data. **Rough size**: half a day for the
+unary half, done; streaming is its own, more expensive unit.
+
+**What it is**: the one clause the rubric audit found completely
+unimplemented ("measured money recovered across a batch"). Mirrors
+`services/audit/` almost exactly, since it is the closest existing
+service in shape: pure gRPC reader, no Kafka in this pass, Postgres only,
+same `New(pool)`/`store` split (`docs/ENGINEERING.md` section 14).
+
+**Design**:
+- `store.go` holds every SQL statement, `server.go` is orchestration only.
+  `loadHeadline` computes the top-level counts and sums in one query
+  (`record` LEFT JOIN `record_state`); `interventionSpend` is a second,
+  separate query against `intervention_attempt` rather than folded into
+  the same join, because joining a one-to-many table into the headline
+  aggregate would multiply `record` rows per attempt and corrupt every
+  other count and sum in that query.
+- `by_root_cause` and `by_intervention` are each their own `GROUP BY`
+  query. A record with no `record_state` row yet (not yet classified) has
+  no bucket and is excluded from `by_root_cause`, not counted as an
+  unknown bucket: it is not yet evidence for or against any bucket's
+  recovery rate.
+- `by_intervention`'s `recovered_paise` attributes a record's full amount
+  to whichever attempt actually succeeded for it, by joining
+  `intervention_attempt` to `record` filtered on
+  `outcome = 'OUTCOME_SUCCESS'`. This cannot double-count: a record
+  recovers via exactly one successful attempt (success terminates it,
+  `ARCHITECTURE.md` section 7), so there is exactly one matching row per
+  recovered record.
+- **Accuracy is nil, not zeroed, when the batch has no `GROUND_TRUTH`.**
+  `docs/API_GATEWAY.md`'s own contract is explicit: "a missing key means
+  no answer key exists, distinct from a real zero." `classificationAccuracy`
+  returns `nil` when the confusion-count query returns zero rows (real
+  traffic, no answer key), never a populated struct with zeroed fields.
+- `ListBatchRecords`' `page_token` is a stringified integer offset.
+  `docs/API_GATEWAY.md` only requires it be opaque, not that it encode
+  anything cleverer, and batches in this system are demo-scale (tens to
+  low hundreds of records); a real keyset pagination scheme would be
+  solving a problem this system does not have yet.
+- `cost_per_rupee_recovered` and every bucket/intervention rate are
+  computed with an explicit zero-denominator guard returning `0`, not
+  `+Inf` or `NaN`, since neither round-trips through JSON on the Gateway.
+
+**A real gap found while implementing, not papered over**:
+`processing_failure_count` cannot be computed from Postgres at all with
+the current schema. A dead-lettered record (`services/decision-engine/
+internal/engine/dlq.go`) is published to Kafka's `raw.events.dlq` and left
+in whatever `RECORD_STATE` it was claimed into; no table, column, or
+audit row marks it as a processing failure specifically, by design
+(`docs/PLAN.md`'s DLQ entry: "not written as a `RecordState` value, none
+exists for it"). Reporting's own package doc says it reads Postgres only,
+never Kafka, as a source of numbers, so there is currently no honest way
+to report this figure as anything but `0`. Returns `0` with a code
+comment explaining why, and tracked as a real gap in `docs/BACKLOG.md`
+rather than silently guessed at. The eventual fix belongs to whoever owns
+the Decision Engine's DLQ path (writing a queryable trace at
+dead-letter time), not to Reporting alone.
+
+**Definition of done, this pass**: `GetBatchReport` and `ListBatchRecords`
+covered by 10 tests against real Postgres (`go test -tags=integration`),
+including the headline aggregate math, both `GROUP BY` breakdowns, the
+ground-truth accuracy/confusion computation and its deliberate absence
+without ground truth, pagination advancing across pages, and the
+not-found/invalid-argument edges. Adversarially verified: inverted
+`net_recovered_paise`'s subtraction to addition and confirmed the
+headline test caught the wrong number; separately removed the
+zero-confusion-rows nil guard and confirmed the ground-truth-absence
+test caught a populated-but-empty `Accuracy` appearing where it must not.
+Both reverted, confirmed green. `docs/PLAN.md`'s checkbox stays unticked
+until `StreamBatchUpdates` also lands, per its own Definition of Done.
 
 ## Unit K: baseline comparison in Reporting
 

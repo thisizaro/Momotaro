@@ -69,6 +69,33 @@ guardrail refusal reasons. Thread a "why this due_at" string through the
 same change rather than adding a second plumbing pass. If Unit M ships
 without covering it, this stays open on its own.
 
+## Persist a queryable trace for dead-lettered records (Phase 5 Unit F follow-up)
+
+**Status**: not started.
+**Decided**: 2026-08-29, while implementing Unit F.
+
+`reporting.v1.BatchReport.processing_failure_count` cannot be computed
+today: it returns `0` unconditionally
+(`services/reporting/internal/server/server.go`). A record whose
+processing keeps failing for a non-transient reason is dead-lettered
+(`services/decision-engine/internal/engine/dlq.go`), published to Kafka's
+`raw.events.dlq`, and left in whatever `RECORD_STATE` it was claimed
+into, by design (`docs/PLAN.md`'s DLQ entry: "not written as a
+`RecordState` value, none exists for it"). Reporting reads Postgres only,
+never Kafka, as a source of numbers (its own package doc), so there is
+currently no persisted signal it can query.
+
+**Where to pick this up**: this is a Decision Engine change, not a
+Reporting one. The natural fix is for `deadLetterPublisher.Publish` (or
+its three call sites in `engine.go`/`scheduler.go`) to also write a row
+Reporting can count, most likely reusing `audit_entry` with a sentinel
+`reason`/`actor` rather than adding a new table, since every other
+processing-failure-adjacent event already lives there. Whoever picks this
+up should propose the exact shape first (`docs/ARCHITECTURE.md` section
+10a's ownership table needs no new table if `audit_entry` is reused, but
+does if a new one is added), per `AGENTS.md`'s "a migration is always its
+own PR" rule.
+
 ## Production-grade hardening pass
 
 **Status**: not started, not yet scoped in detail.
