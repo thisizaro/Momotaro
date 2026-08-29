@@ -118,12 +118,13 @@ up:
 	docker compose up -d
 	@echo "kafka ui: http://localhost:8080"
 
-## up-observability: up, plus Prometheus/Alertmanager scraping the fixed run-<service> ports
+## up-observability: up, plus Prometheus/Alertmanager/Grafana scraping the fixed run-<service> ports
 up-observability:
 	docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
 	@echo "kafka ui:     http://localhost:8080"
 	@echo "prometheus:   http://localhost:9900"
 	@echo "alertmanager: http://localhost:9901"
+	@echo "grafana:      http://localhost:9902 (admin/momotaro, or anonymous viewer)"
 
 ## down: stop local infra (base stack and observability, if either is up)
 down:

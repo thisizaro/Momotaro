@@ -1,10 +1,11 @@
 # Optional local-dev observability stack (docs/PHASE4_IMPLEMENTATION.md
-# Units C and D). Kept out of docker-compose.yml deliberately: that file
+# Units C, D and E). Kept out of docker-compose.yml deliberately: that file
 # backs `make up`, which `make test-integration` also depends on, and
-# integration tests assert nothing about metrics or alerts, so there is no
-# reason for every CI integration run to also pull and start these.
+# integration tests assert nothing about metrics, alerts, or dashboards, so
+# there is no reason for every CI integration run to also pull and start
+# these.
 #
-#   make up-observability   start the base stack plus Prometheus + Alertmanager
+#   make up-observability   start the base stack plus Prometheus/Alertmanager/Grafana
 #   make down                stop everything, base stack included
 #
 # App services are not containers on this network (docker-compose.yml's own
@@ -35,3 +36,22 @@ services:
     ports: ["9901:9093"]
     volumes:
       - ./deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    # Host port 9902: 9900/9901 are Prometheus/Alertmanager on this same host.
+    ports: ["9902:3000"]
+    environment:
+      # Static demo login, same spirit as API_KEY in .env.example (PRD.md
+      # section 17): zero setup for a judge, not meant as real auth.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: momotaro
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    # One mount, not two: a second volume mounted at a path inside this one
+    # would need Docker to create a mountpoint inside an already-mounted
+    # read-only tree, which fails outright (docs/INCIDENTS.md 2026-08-29).
+    # Dashboard JSON lives under provisioning/dashboards/files instead.
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [prometheus]

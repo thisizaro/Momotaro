@@ -23,7 +23,7 @@ all, rather than built speculatively.
 | B | Kafka consumer-lag exporter (decision-engine) | merged | nothing |
 | C | docker-compose Prometheus wiring + scrape config | merged | A, B |
 | D | Alertmanager rules | merged | C |
-| E | Grafana dashboards | not started | C |
+| E | Grafana dashboards | merged | C |
 | F | OpenTelemetry tracing across gRPC + Kafka hops | on hold | pending a go/no-go decision |
 
 ---
@@ -296,10 +296,56 @@ anything already merged.
 
 ## Unit E: Grafana dashboards
 
-**Status**: not started. **Depends on**: C.
+**Status**: merged. **Depends on**: C.
 
-Per-service and business-metrics dashboards, provisioned (not clicked
-together by hand) so they survive a container restart.
+Two dashboards, provisioned (not clicked together by hand) so they survive
+a container restart, covering only metrics that actually exist today
+(Units A, B, D) rather than panels for the longer ARCHITECTURE.md section
+13 list Unit D's write-up already flags as unbuilt follow-up work.
+
+**Files**:
+- `deploy/observability/grafana/provisioning/datasources/datasource.yml`
+  (new): the Prometheus datasource, fixed `uid: prometheus` so every
+  dashboard panel can reference it deterministically without a
+  per-dashboard datasource template variable.
+- `deploy/observability/grafana/provisioning/dashboards/dashboards.yml`
+  (new): the file-based dashboard provider, pointed at `./files` in the
+  same directory.
+- `deploy/observability/grafana/provisioning/dashboards/files/
+  service-health.json` (new): request rate, error rate, and p95 latency
+  by method, templated on a `$job` variable populated from
+  `label_values(requests_total, job)` -- only the jobs that actually emit
+  gRPC-server metrics (audit, classifier, executor, ingestion; api-gateway
+  and decision-engine have no inbound gRPC server, per Unit A).
+- `deploy/observability/grafana/provisioning/dashboards/files/
+  business-reliability.json` (new): `kafka_consumer_lag` by partition,
+  the `llm_fallback_total` ratio (same PromQL as the Alertmanager rule),
+  and three stat panels (stopping-rule violations, incomplete audit
+  trails, impossible transitions) that go red above zero, mirroring the
+  three critical alerts.
+- `docker-compose.observability.yml`: new `grafana` container. Static
+  admin login (`admin`/`momotaro`, same zero-setup-for-a-judge spirit as
+  `.env.example`'s `API_KEY`) plus anonymous viewer access enabled, so a
+  judge does not need credentials to look at a dashboard. **One** volume
+  mount (`./provisioning` at `/etc/grafana/provisioning`), not two: see
+  the incident below for why the dashboard JSON lives inside the
+  provisioning tree (`dashboards/files/`) instead of its own top-level
+  directory.
+- `Makefile`: `up-observability`'s echo gains the Grafana URL.
+
+**Verification**: `docker compose config -q` and both dashboard JSON files
+parse as valid JSON. Ran the full stack (`make up-observability`) and
+confirmed directly via the Grafana HTTP API: `/api/health` reports
+database ok, `/api/datasources` shows the Prometheus datasource
+provisioned with the expected fixed uid, `/api/search` shows both
+dashboards loaded into a "Momotaro" folder, and fetching each dashboard
+back (`/api/dashboards/uid/...`) shows every panel (3 on Service Health, 5
+on Business & Reliability) present with the right title and type --
+proving Grafana actually parsed the JSON, not just that the file exists.
+Also queried three representative PromQL expressions
+(`kafka_consumer_lag`, `stopping_rule_violation_total`, `requests_total`)
+through Grafana's own datasource proxy and confirmed each returns
+`"status": "success"`.
 
 ## Unit F: OpenTelemetry tracing
 

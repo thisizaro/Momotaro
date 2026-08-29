@@ -1,0 +1,12 @@
+# Auto-loads every JSON file in ../../dashboards (docs/PHASE4_IMPLEMENTATION.md
+# Unit E), so dashboards are checked-in and reproducible rather than
+# clicked together by hand and lost on a container restart.
+apiVersion: 1
+
+providers:
+  - name: momotaro
+    folder: Momotaro
+    type: file
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/files

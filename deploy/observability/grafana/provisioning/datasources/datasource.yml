@@ -1,0 +1,13 @@
+# Auto-provisioned datasource (docs/PHASE4_IMPLEMENTATION.md Unit E), so a
+# fresh `make up-observability` has Prometheus wired up with no manual
+# click-through. prometheus:9090 is the container's own network name and
+# port, not the host-mapped 9900 (docs/DECISIONS.md).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
