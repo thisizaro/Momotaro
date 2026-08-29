@@ -35,7 +35,7 @@ scope from the checklist alone.
 | K | Baseline comparison in Reporting | not started | F |
 | L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
 | M | Persist EV candidate ranking + guardrail refusal reasons | not started | nothing |
-| N | Correct three stale claims in checked-in files | not started | nothing |
+| N | Correct three stale claims in checked-in files | merged | nothing |
 | **O** | **Freeze the API Gateway contract** | **merged** | **nothing. Blocked G, H and the whole frontend track. Done first.** |
 
 **Units I to N were added 2026-08-29**, after the actual judging rubric was
@@ -784,12 +784,14 @@ visual.
 
 ## Unit N: correct three stale claims in checked-in files
 
-**Status**: not started. **Depends on**: nothing. **Rough size**: 1 hour.
+**Status**: merged. **Depends on**: nothing. **Rough size**: 1 hour.
 
 Each of these is a checked-in file asserting something about this codebase
 that is no longer true. All three were verified against the source on
-2026-08-29. They matter more than their size because they sit in the files a
-panel is most likely to read closely, and each is a self-accusation.
+2026-08-29, and fixed in the same PR that recorded the rubric audit itself,
+before this list existed as its own tracked unit. They matter more than
+their size because they sit in the files a panel is most likely to read
+closely, and each is a self-accusation.
 
 1. **`configs/intervention_costs.yaml`'s `executor_reconciliation` block says
    `agrees_today: false`**, claiming `whatsappCostPaise` is 60 (should be 14)

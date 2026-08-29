@@ -746,8 +746,10 @@ ordered by value per hour. Detail for each is in
       refusal reasons, both currently computed and discarded, so the audit
       trail can answer "why not the alternatives"
       → `docs/PHASE5_IMPLEMENTATION.md` Unit M
-- [ ] Correct three stale claims in checked-in files that currently accuse
-      the codebase of defects it does not have
+- [x] Correct three stale claims in checked-in files that currently accuse
+      the codebase of defects it does not have. Done in the same PR that
+      recorded the rubric audit, before this checklist item existed as its
+      own line, the box was just never ticked
       → `docs/PHASE5_IMPLEMENTATION.md` Unit N
 
 ## Phase 6: Load testing & performance validation
