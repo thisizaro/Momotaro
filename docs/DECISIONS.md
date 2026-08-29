@@ -1274,3 +1274,59 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   a comment on each table entry, since threading it through at runtime
   would restructure the map for a "reads as domain-aware" nicety rather than
   a correctness need.
+- 2026-08-29: **Two compliance guardrails are enforced, not just cited**
+  (Phase 5 Unit J). `docs/PRD.md` §11a named TRAI TCCCPR's contact-hour
+  window and the RBI e-mandate framework's pre-debit lead time; this makes
+  both real. `contactHourWindow` (schedule.go) defers a nudge's `due_at` to
+  the next 10:00 IST open if it would otherwise land outside 10:00-21:00
+  IST; `mandateLeadTimeFloor` refuses to schedule a `RECORD_TYPE_MANDATE`
+  retry sooner than `RETRY_MANDATE_LEAD_TIME` (default 24h) from now.
+  **The floor composes with the existing salary-window logic rather than
+  replacing it**: `retryDueAt` computes the bucket-specific timing first
+  (unchanged), then applies the mandate floor only if the record type is
+  `MANDATE`, pulling an earlier date up to the floor but never pulling a
+  later one down. A `MANDATE` record whose `INSUFFICIENT_FUNDS` salary
+  window already lands three weeks out is untouched; one whose
+  `TRANSIENT_BANK` timing would otherwise retry in 30 minutes is floored to
+  24 hours.
+  **Threading record type through required a schema-adjacent change**:
+  `claimedRecord` (store.go) had no `RecordType` field, since nothing
+  before this needed one. Added it, backed by `r.type` already present in
+  `record`, populated by both `claimDue` and `loadNudged` (the latter
+  matters because `ResumeNudge`'s failure path also calls `retryDueAt`).
+  **IST is `time.FixedZone`, not a tzdata lookup**: fixed UTC+5:30, no DST,
+  and a distroless runtime image may not carry tzdata at all.
+  **Scope cut, tracked in `docs/BACKLOG.md`**: the audit `reason` string
+  does not yet cite the specific rule when a deferral or floor actually
+  fires (it still describes the scoring decision). Folded into Unit M's
+  planned rework of the same plumbing rather than threaded twice.
+- 2026-08-29: **The audit trail now records every candidate action considered
+  and every action the guardrails refused, not just the winner** (Phase 5
+  Unit M). `economics.Model.Best` used to discard every losing candidate
+  the instant it was beaten, `continue`d before ever being compared, and
+  `guardrailVerdict.blocked` was thrown away right after being used to
+  filter the permitted set. Both are now captured in a new
+  `DecisionTrace{Candidates, Blocked}` returned by `scoreAndRoute` and
+  persisted as `audit_entry.decision_trace` (migration 00006, JSONB).
+  **`Best` is now defined in terms of the new `ScoreAll`/`BestOf`, not a
+  second copy of the same loop**: `ScoreAll` scores every candidate
+  unfiltered, `BestOf` picks the winner from an already-scored slice, and
+  `Best` is just `BestOf(ScoreAll(...))`. This was the deliberate design
+  choice, not an afterthought: two independently-maintained selection loops
+  could drift on which candidate wins, and the one thing this unit must
+  never do is change that. Proven byte-identical with a dedicated
+  equivalence test and confirmed by every pre-existing `economics` test
+  passing unchanged.
+  **The trace attaches to exactly one audit row per decision**: the step
+  where `From == RECORD_STATE_SCORING`, since that is the one instant a
+  real comparison happened; `scoringPath`/`rescoringPath`'s other step
+  (entering Scoring) and `directPath`'s escalation-bypass step never ran an
+  economics comparison and get NULL. Verified against real Postgres
+  (`TestHandleMessageSchedulesRetryPersistsDecisionTrace`), and
+  adversarially: inverting the `From == SCORING` check was caught by that
+  same integration test; separately dropping a candidate from `ScoreAll`'s
+  loop was caught by a dedicated coverage test. Both reverted.
+  **Encoding failures are diagnostic, not load-bearing**: `encodeDecisionTrace`
+  mirrors the existing `encodedHops` pattern exactly, logging and storing
+  NULL on a JSON marshal failure rather than losing the transaction over
+  data that exists to explain a decision, not to make one.
