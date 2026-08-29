@@ -36,7 +36,7 @@ scope from the checklist alone.
 | L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
 | M | Persist EV candidate ranking + guardrail refusal reasons | not started | nothing |
 | N | Correct three stale claims in checked-in files | not started | nothing |
-| **O** | **Freeze the API Gateway contract** | **not started** | **nothing. Blocks G, H and the whole frontend track. Do it first.** |
+| **O** | **Freeze the API Gateway contract** | **merged** | **nothing. Blocked G, H and the whole frontend track. Done first.** |
 
 **Units I to N were added 2026-08-29**, after the actual judging rubric was
 read and recorded in `PRD.md` §0. They are not scope creep: I, J, M and N
@@ -124,8 +124,9 @@ frozen contract, the Gateway agent never needs to know.
 
 ## Unit O: freeze the API Gateway contract
 
-**Status**: not started. **Depends on**: nothing. **Blocks**: G, H, and the
-whole frontend track. **Rough size**: 1 hour. **Do this first.**
+**Status**: merged 2026-08-29. **Depends on**: nothing. **Blocked**: G, H, and
+the whole frontend track, now unblocked. **Actual size**: about an hour, as
+estimated.
 
 **What it is**: `docs/API_GATEWAY.md` is the interface between the frontend
 track and the backend track, and it is not currently precise enough to build
@@ -180,7 +181,49 @@ comparison block, `AuditEntry.hops[]`, `trail_complete`, and the
 with an exact request and response shape; every field name matches what the
 Gateway will actually emit; the enum wire spelling is stated once and
 referenced everywhere; and `web/AGENTS.md` still truthfully says the doc is
-the only thing a frontend agent needs to read.
+the only thing a frontend agent needs to read. All met, see `docs/API_GATEWAY.md`
+(now marked FROZEN) and the resolutions below.
+
+**Resolutions, one per gap above**:
+
+1. Added `GET /v1/batches`, newest first, backed by a new `ListBatches` RPC
+   (not yet wired, flagged in the doc as a small proto/Gateway addition for
+   whoever picks up Unit G).
+2. Every money field in the doc now ends in `_paise` and matches
+   `reporting.proto`'s own names exactly (`at_risk_paise`,
+   `recovered_paise`, `net_recovered_paise`, etc).
+3. Picked the full proto constant string (`"RECORD_STATE_RETRY_SCHEDULED"`,
+   not `"RetryScheduled"`) for every enum, over hand-writing a second
+   spelling. Reasoning: the wire value then greps straight back to
+   `common.proto` with no translation table on either side to drift out of
+   sync. Stated once in the doc's new "Closed vocabularies" section rather
+   than repeated per endpoint.
+4. That same "Closed vocabularies" section lists every member of every enum
+   (all 7 `RootCauseBucket` values included), so the frontend's lookup maps
+   can be exhaustive over the real vocabulary from the start rather than
+   discovering members at runtime. `failure_code` is called out explicitly
+   as an open string, not a closed enum, so it gets a fallback, never an
+   exhaustive table.
+5. Picked the WebSocket subprotocol (what the frontend already sends) over
+   a query parameter, specifically because a query parameter would put the
+   API key in server access logs and browser history by default and a
+   subprotocol does not. The Gateway side needs to switch from checking
+   `X-API-Key` to checking the negotiated subprotocol on this one route.
+6. `POST /v1/batches` now accepts either `records` (explicit, unchanged) or
+   `count` (for the demo generate button), with the ground-truth boundary
+   stated explicitly: a `count`-submitted batch never gets a `GROUND_TRUTH`
+   row (only `scripts/batchgen` may write that table), so its report has no
+   `accuracy` or `baseline_comparison` block, same as real production
+   traffic. A demo run that needs the accuracy story should seed with
+   `scripts/batchgen` ahead of time and select that batch via the new
+   `GET /v1/batches`, rather than pressing generate.
+
+Two follow-on items were surfaced but deliberately left for the proto PR that
+actually implements them, since a contract-freeze pass isn't the place to
+touch `.proto` files: `AuditEntry` needs `ev_score_at_decision` and
+`p_recovery_at_decision` added before Unit L's provenance UI can show them
+(the data already exists on `INTERVENTION_ATTEMPT`, just not surfaced yet),
+and `SubmitBatchRequest` needs the `count` field Ingestion will act on.
 
 ## The frontend track, in order
 
