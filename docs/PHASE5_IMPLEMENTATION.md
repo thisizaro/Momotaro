@@ -31,7 +31,7 @@ scope from the checklist alone.
 | G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
 | H | Dashboard: wire to real Gateway | not started | G |
 | I | Razorpay's real error codes as the failure vocabulary | merged | nothing |
-| J | Compliance guardrails (TRAI contact hours, RBI mandate lead time) | not started | nothing |
+| J | Compliance guardrails (TRAI contact hours, RBI mandate lead time) | merged | nothing |
 | K | Baseline comparison in Reporting | not started | F |
 | L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
 | M | Persist EV candidate ranking + guardrail refusal reasons | not started | nothing |
@@ -621,7 +621,8 @@ reviewing the table, which was the actual goal.
 
 ## Unit J: compliance guardrails, cited
 
-**Status**: not started. **Depends on**: nothing. **Rough size**: 2 to 3 hours.
+**Status**: merged. **Depends on**: nothing. **Rough size**: 2 to 3 hours, as
+estimated.
 
 **What it is**: the track asks for "compliant escalation" and this system used
 the word without naming a rule. `PRD.md` §11a now specifies two real ones and
@@ -663,8 +664,27 @@ instants, not `time.Now()`.
 **Definition of done additions**: a nudge due at 03:00 IST is deferred to
 10:00 and not dropped; a nudge due at 14:00 is untouched; a mandate retry
 requested 5 minutes out is floored to 24 hours; a mandate retry whose salary
-window already lands 20 days out is *not* pulled back to 24 hours; and the
-audit reason names the rule in each case.
+window already lands 20 days out is *not* pulled back to 24 hours. All four
+covered by `TestContactHourWindow`, `TestDueAtForDefersOutsideContactHours`,
+`TestRetryDueAtFloorsMandateRetriesToTheLeadTime`, and
+`TestRetryDueAtMandateFloorNeverPullsALaterDateEarlier`. Adversarially
+verified: broke the contact-hour close boundary to an off-by-one (`<=` for
+`<`) and confirmed the boundary test caught it; separately made the mandate
+floor apply unconditionally and confirmed the non-mandate guard test caught
+it; both reverted and confirmed green.
+
+**One design bullet scoped out, deliberately, not silently**: "the audit
+reason names the rule" (e.g. *deferred to 10:00 IST per TRAI contact-hour
+window*) is not yet wired in. The two timing functions
+(`contactHourWindow`, `mandateLeadTimeFloor`) are pure and correctly change
+`due_at`, which is itself provable and tested, but the audit `reason`
+string written alongside a transition still describes the *scoring*
+decision (e.g. "best expected value: ..."), not a timing adjustment made
+after that decision. Wiring a "why this due_at, specifically" citation
+through to the audit entry touches the same `scoreAndRoute` ->
+`scheduleNew`/`recordRescore` plumbing Unit M is about to rework to persist
+the EV ranking, so it is picked up there rather than threaded twice. Tracked
+in `docs/BACKLOG.md` if Unit M does not end up covering it.
 
 ## Unit K: baseline comparison in Reporting
 

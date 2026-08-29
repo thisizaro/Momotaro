@@ -40,8 +40,13 @@ type SchedulerConfig struct {
 	DLQTopic     string
 	RetryDelay   time.Duration
 	NudgeDelay   time.Duration
-	TimeScale    float64
-	Guardrails   GuardrailConfig
+	// RetryMandateLeadTime: see engine.Config's field of the same name.
+	// Duplicated here rather than shared because the two configs already
+	// duplicate RetryDelay/NudgeDelay/TimeScale the same way, one config
+	// per caller of retryDueAt/dueAtFor.
+	RetryMandateLeadTime time.Duration
+	TimeScale            float64
+	Guardrails           GuardrailConfig
 }
 
 // Scheduler is docs/ARCHITECTURE.md section 7a's scheduler worker. Without
@@ -155,9 +160,9 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 	state, pendingAction, reason, score := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
 	var dueAt *time.Time
 	if state == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
-		dueAt = retryDueAt(c.RootCauseBucket, now, s.cfg.RetryDelay, s.cfg.TimeScale)
+		dueAt = retryDueAt(c.RootCauseBucket, c.Type, now, s.cfg.RetryDelay, s.cfg.RetryMandateLeadTime, s.cfg.TimeScale)
 	} else {
-		dueAt = dueAtFor(state, s.cfg.NudgeDelay, now)
+		dueAt = dueAtFor(state, s.cfg.NudgeDelay, now, s.cfg.TimeScale)
 	}
 	steps := rescoringPath(c.ClaimedState, state, reason)
 
@@ -222,9 +227,9 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 		toState, pending, reason, sc := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
 		pendingAction, score = pending, sc
 		if toState == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
-			dueAt = retryDueAt(c.RootCauseBucket, now, s.cfg.RetryDelay, s.cfg.TimeScale)
+			dueAt = retryDueAt(c.RootCauseBucket, c.Type, now, s.cfg.RetryDelay, s.cfg.RetryMandateLeadTime, s.cfg.TimeScale)
 		} else {
-			dueAt = dueAtFor(toState, s.cfg.NudgeDelay, now)
+			dueAt = dueAtFor(toState, s.cfg.NudgeDelay, now, s.cfg.TimeScale)
 		}
 		steps = rescoringPath(c.ClaimedState, toState, reason)
 	default:

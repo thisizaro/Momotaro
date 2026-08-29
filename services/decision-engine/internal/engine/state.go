@@ -205,10 +205,17 @@ func guardrailRefusalReason(v guardrailVerdict) string {
 // failed attempt (scheduler.go), so both compute timing the same way.
 // RETRY_SCHEDULED is now handled by retryDueAt (schedule.go) for
 // cause-aware timing; this function only covers NUDGE_SCHEDULED.
-func dueAtFor(state commonv1.RecordState, nudgeDelay time.Duration, now time.Time) *time.Time {
+//
+// The result also passes through contactHourWindow (schedule.go, docs/PRD.md
+// section 11a): every non-nil result here is a customer-contacting nudge's
+// due time by construction (the only state this function computes one for),
+// so the TRAI contact-hour rule applies unconditionally, with no need to
+// separately check the pending action.
+func dueAtFor(state commonv1.RecordState, nudgeDelay time.Duration, now time.Time, timeScale float64) *time.Time {
 	if state != commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED {
 		return nil
 	}
 	due := now.Add(nudgeDelay)
+	due = contactHourWindow(due, timeScale)
 	return &due
 }

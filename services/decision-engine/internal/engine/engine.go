@@ -45,7 +45,14 @@ type Config struct {
 	// action family.
 	RetryDelay time.Duration
 	NudgeDelay time.Duration
-	DLQTopic   string
+	// RetryMandateLeadTime is RETRY_MANDATE_LEAD_TIME (docs/PRD.md section
+	// 11a, docs/PHASE5_IMPLEMENTATION.md Unit J): the RBI e-mandate
+	// framework's minimum pre-debit notification lead time, enforced by
+	// retryDueAt as a floor on a MANDATE record's retry timing. Left
+	// unscaled here for the same reason RetryDelay is: retryDueAt scales it
+	// itself via TimeScale below.
+	RetryMandateLeadTime time.Duration
+	DLQTopic             string
 	// TimeScale is DEMO_TIME_SCALE (docs/ARCHITECTURE.md section 17),
 	// threaded from config.Common so retryDueAt can compress salary-window
 	// waits for a live demo.
@@ -164,9 +171,9 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 	final := steps[len(steps)-1].To
 	var dueAt *time.Time
 	if final == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
-		dueAt = retryDueAt(classifyResp.GetBucket(), now, e.cfg.RetryDelay, e.cfg.TimeScale)
+		dueAt = retryDueAt(classifyResp.GetBucket(), record.GetType(), now, e.cfg.RetryDelay, e.cfg.RetryMandateLeadTime, e.cfg.TimeScale)
 	} else {
-		dueAt = dueAtFor(final, e.cfg.NudgeDelay, now)
+		dueAt = dueAtFor(final, e.cfg.NudgeDelay, now, e.cfg.TimeScale)
 	}
 
 	if err := e.store.scheduleNew(ctx, log, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), classifyResp.GetHops(), score, dueAt, now); err != nil {

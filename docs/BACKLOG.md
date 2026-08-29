@@ -47,6 +47,28 @@ cross-service timing, genuinely nice, not currently blocking anything.
 **Decision**: build Phase 5 (demo realism, the actual thing standing
 between this project and a working demo) first, then come back.
 
+## Cite the compliance rule in the audit reason (Phase 5 Unit J follow-up)
+
+**Status**: not started.
+**Decided**: 2026-08-29, while implementing Unit J.
+
+Unit J's two compliance guardrails (TRAI contact-hour window, RBI mandate
+lead time, `docs/PRD.md` section 11a) are implemented as pure functions
+(`contactHourWindow`, `mandateLeadTimeFloor` in
+`services/decision-engine/internal/engine/schedule.go`) that correctly
+change a record's `due_at`, tested against fixed instants and adversarially
+verified. What is not yet wired in is the audit `reason` string actually
+naming the rule when it fires (e.g. *deferred to 10:00 IST per TRAI
+contact-hour window*): today the reason recorded alongside the transition
+still describes the scoring decision, not a timing adjustment made after
+it.
+
+**Where to pick this up**: the same `scoreAndRoute` -> `scheduleNew`/
+`recordRescore` plumbing Unit M reworks to persist the EV ranking and
+guardrail refusal reasons. Thread a "why this due_at" string through the
+same change rather than adding a second plumbing pass. If Unit M ships
+without covering it, this stays open on its own.
+
 ## Production-grade hardening pass
 
 **Status**: not started, not yet scoped in detail.

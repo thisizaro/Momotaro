@@ -63,6 +63,13 @@ type serviceConfig struct {
 	RetryDelay   time.Duration
 	NudgeDelay   time.Duration
 	PollInterval time.Duration
+	// RetryMandateLeadTime is RETRY_MANDATE_LEAD_TIME (docs/PRD.md section
+	// 11a, docs/PHASE5_IMPLEMENTATION.md Unit J): the RBI e-mandate
+	// framework's minimum pre-debit notification lead time. Deliberately
+	// NOT scaled here, same reason as RetryDelay above: retryDueAt scales
+	// it itself (schedule.go's mandateLeadTimeFloor), so scaling it here
+	// too would compress it twice.
+	RetryMandateLeadTime time.Duration
 	// Guardrails: the hard limits from docs/PRD.md section 11. MaxRetries
 	// mirrors NPCI-style mandate debit limits. The two durations are scaled
 	// by DEMO_TIME_SCALE like every other wall-clock wait, because a 7 day
@@ -113,17 +120,18 @@ func guardrailsFrom(cfg serviceConfig) engine.GuardrailConfig {
 func loadConfig() (serviceConfig, error) {
 	l := config.NewLoader()
 	cfg := serviceConfig{
-		Common:         config.LoadCommon(l, serviceName),
-		ClassifierAddr: l.Str("CLASSIFIER_ADDR"),
-		ExecutorAddr:   l.Str("EXECUTOR_ADDR"),
-		CallTimeout:    l.Duration("CALL_TIMEOUT", 5*time.Second),
-		Topic:          l.StrDefault("RAW_EVENTS_TOPIC", defaultRawEventsTopic),
-		ConsumerGroup:  l.StrDefault("RAW_EVENTS_CONSUMER_GROUP", defaultRawEventsConsumerGroup),
-		DLQTopic:       l.StrDefault("RAW_EVENTS_DLQ_TOPIC", defaultDLQTopic),
-		WorkerPoolSize: l.Int("WORKER_POOL_SIZE", 32),
-		RetryDelay:     l.Duration("RETRY_DELAY", 30*time.Second),
-		NudgeDelay:     l.Duration("NUDGE_DELAY", 30*time.Second),
-		PollInterval:   l.Duration("SCHEDULER_POLL_INTERVAL", 2*time.Second),
+		Common:               config.LoadCommon(l, serviceName),
+		ClassifierAddr:       l.Str("CLASSIFIER_ADDR"),
+		ExecutorAddr:         l.Str("EXECUTOR_ADDR"),
+		CallTimeout:          l.Duration("CALL_TIMEOUT", 5*time.Second),
+		Topic:                l.StrDefault("RAW_EVENTS_TOPIC", defaultRawEventsTopic),
+		ConsumerGroup:        l.StrDefault("RAW_EVENTS_CONSUMER_GROUP", defaultRawEventsConsumerGroup),
+		DLQTopic:             l.StrDefault("RAW_EVENTS_DLQ_TOPIC", defaultDLQTopic),
+		WorkerPoolSize:       l.Int("WORKER_POOL_SIZE", 32),
+		RetryDelay:           l.Duration("RETRY_DELAY", 30*time.Second),
+		NudgeDelay:           l.Duration("NUDGE_DELAY", 30*time.Second),
+		PollInterval:         l.Duration("SCHEDULER_POLL_INTERVAL", 2*time.Second),
+		RetryMandateLeadTime: l.Duration("RETRY_MANDATE_LEAD_TIME", 24*time.Hour),
 
 		InterventionCostsPath: l.StrDefault("INTERVENTION_COSTS_PATH", "configs/intervention_costs.yaml"),
 		RecoveryPriorsPath:    l.StrDefault("RECOVERY_PRIORS_PATH", "configs/recovery_priors.yaml"),
@@ -157,6 +165,12 @@ func loadConfig() (serviceConfig, error) {
 	// that range could only ever mean a typo, never a deliberate setting.
 	if cfg.ClassifyConfidenceThreshold < 0 || cfg.ClassifyConfidenceThreshold > 1 {
 		return cfg, fmt.Errorf("CLASSIFY_CONFIDENCE_THRESHOLD must be in [0,1], got %v", cfg.ClassifyConfidenceThreshold)
+	}
+	// Fail-fast like every other timing knob (docs/ENGINEERING.md section
+	// 11): a zero or negative lead time would silently stop enforcing the
+	// RBI pre-debit notification rule rather than refusing to start.
+	if cfg.RetryMandateLeadTime <= 0 {
+		return cfg, fmt.Errorf("RETRY_MANDATE_LEAD_TIME must be positive, got %s", cfg.RetryMandateLeadTime)
 	}
 	return cfg, nil
 }
@@ -267,6 +281,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		// no-ops there) but silently near-instant at any other scale.
 		RetryDelay:                  cfg.RetryDelay,
 		NudgeDelay:                  cfg.Scale(cfg.NudgeDelay),
+		RetryMandateLeadTime:        cfg.RetryMandateLeadTime,
 		DLQTopic:                    cfg.DLQTopic,
 		TimeScale:                   cfg.DemoTimeScale,
 		Guardrails:                  guardrailsFrom(cfg),
@@ -283,10 +298,11 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		PollInterval: cfg.Scale(cfg.PollInterval),
 		DLQTopic:     cfg.DLQTopic,
 		// See engCfg.RetryDelay above: retryDueAt scales this itself.
-		RetryDelay: cfg.RetryDelay,
-		NudgeDelay: cfg.Scale(cfg.NudgeDelay),
-		TimeScale:  cfg.DemoTimeScale,
-		Guardrails: guardrailsFrom(cfg),
+		RetryDelay:           cfg.RetryDelay,
+		NudgeDelay:           cfg.Scale(cfg.NudgeDelay),
+		RetryMandateLeadTime: cfg.RetryMandateLeadTime,
+		TimeScale:            cfg.DemoTimeScale,
+		Guardrails:           guardrailsFrom(cfg),
 	}
 	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), model, schedCfg)
 
