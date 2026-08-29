@@ -633,7 +633,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       nudge-composition caller both need, not itself a `PLAN.md` line item
       before the Phase 5 audit found the gap
       → `docs/PHASE5_IMPLEMENTATION.md` Unit A
-- [ ] Synthetic batch generator: realistic failure codes/amounts, seeded
+- [x] Synthetic batch generator: realistic failure codes/amounts, seeded
       hidden ground-truth recoverability profile per record, written
       straight into `BATCH`/`RECORD`/`GROUND_TRUTH` (table already exists,
       Phase 0) → `ARCHITECTURE.md` §6, §10, `docs/PHASE5_IMPLEMENTATION.md` Unit B

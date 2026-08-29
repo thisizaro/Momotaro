@@ -23,7 +23,7 @@ scope from the checklist alone.
 | Unit | What | Status | Depends on |
 |---|---|---|---|
 | A | Decision Engine gRPC server (`ReportDelayedOutcome`) | merged | nothing |
-| B | Synthetic batch generator | not started | nothing |
+| B | Synthetic batch generator | merged | nothing |
 | C | World Simulator (real) | not started | A |
 | D | Executor: wire real World/Notification Simulator clients | not started | C |
 | E | Hinglish nudge composition (Classifier) | not started | A (for the caller; the Classifier-side work itself is independent) |
@@ -167,3 +167,71 @@ the second call, against the now-`RECOVERED` record, crashed. Fixed
 (`*string`, nil-checked) and the test now forces real `NULL` via a raw
 `UPDATE ... SET pending_action=NULL`, confirmed to fail before the fix and
 pass after. Full account: `docs/INCIDENTS.md` 2026-08-29.
+
+## Unit B: Synthetic batch generator
+
+**Status**: merged.
+**Depends on**: nothing.
+
+**What it is**: `scripts/batchgen`, a CLI that seeds a batch of revenue-
+at-risk records straight into `BATCH`/`RECORD`/`GROUND_TRUTH`, bypassing
+Ingestion entirely (Ingestion's proto has no field for the hidden answer
+key, by design, and only this tool may ever write `GROUND_TRUTH`,
+`docs/ARCHITECTURE.md` §6), then publishes each one to `raw.events` so
+the real pipeline (Classifier, Decision Engine, Executor) picks it up
+exactly as if a real webhook had arrived. Distinct from Phase 6's
+`scripts/loadgen`, which submits through the real HTTP API for throughput
+testing and can never carry ground truth.
+
+**Design**: `scripts/batchgen/profile.go` holds all the pure generation
+logic (no I/O, unit-testable). `bucketProfiles` is a hidden recovery
+model per root-cause bucket, seeded from `docs/ARCHITECTURE.md` §6's own
+worked examples (`TRANSIENT_BANK` 0.80, `HARD_DECLINE` 0.15) and
+extrapolated on the same logic for the rest, deliberately **not** derived
+from the rules engine's own action table (`services/classifier/internal/
+rules/actions.go`): that table says what the agent decides to do, this
+says how reality actually responds, and collapsing them into one table
+would make classification accuracy tautological instead of a real
+measurement. A per-record `unrecoverableChance` (6%) models the "this one
+is genuinely unrecoverable" case regardless of bucket, and a
+`misleadingCodeChance` (12%) deliberately gives some records a hidden
+`true_bucket` that diverges from what the failure code's naive
+rule-table lookup would say, within the same record-type family — without
+this, ground truth would always agree with the rules engine by
+construction and the accuracy metric Reporting will compute (Unit F)
+would be meaningless. A shared instrument-ref pool gives roughly 30% of
+PAYMENT/MANDATE records a repeated `instrument_ref`, so Classifier's
+`instrument_history` feature (Phase 3 Unit F) has real, varied data to
+reason about in a demo instead of every record looking isolated.
+
+**Files**:
+- `scripts/batchgen/profile.go` (new): `bucketProfiles`, the code pools
+  per record type, `generateRecord` (the pure entry point), instrument-ref
+  pooling, and a log-uniform amount distribution (~Rs.50 to Rs.75,000,
+  skewed toward smaller common transaction sizes).
+- `scripts/batchgen/profile_test.go` (new, untagged): every generated
+  record satisfies the schema's own CHECK constraints; a `CHECKOUT`/
+  `INVOICE` record's hidden bucket never leaves its product family;
+  divergence from the "obvious" bucket happens at roughly the configured
+  rate, not never and not always; a fixed seed reproduces byte-identical
+  output; instrument-ref sharing only applies to PAYMENT/MANDATE and
+  actually repeats across records, not just draws unique values.
+- `scripts/batchgen/main.go` (new): CLI (`-dsn`, `-brokers`, `-topic`,
+  `-count`, `-source`, `-seed`, mirroring `scripts/migrate`'s flag
+  conventions), the Postgres writes, and a hand-kept mirror of
+  `services/ingestion/internal/server.RawEvent`'s wire shape (there is no
+  proto for `raw.events`, `docs/ARCHITECTURE.md` §9 applies to gRPC
+  contracts, not this internal topic).
+
+**Verification**: `go build/vet/test ./...`, `gofmt -l .` clean.
+Adversarially broke `pickDivergentBucket` (let it pick any bucket
+regardless of record-type family) and confirmed the family test failed
+with a concrete cross-family example, then reverted. Live-verified against
+a freshly reset stack (`make down-clean`, `make up`, migrate, all six
+services): `go run ./scripts/batchgen -count 40 -seed 7` produced a batch
+whose `record`/`ground_truth` row counts matched exactly, was fully
+consumed by Decision Engine's real consumer group (confirmed via `kafka-
+consumer-groups.sh --describe`, lag 0 across all 12 partitions), and
+reached a fully realistic final-state distribution with no manual
+intervention: 28 nudges parked awaiting delayed outcomes, 6 recovered via
+retry, 3 correctly escalated (`RISK_HOLD`), 3 retries still in flight.
