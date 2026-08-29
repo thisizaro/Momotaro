@@ -647,7 +647,10 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       uneconomic-closed count/value shown separately from escalations,
       recovery rate by bucket/intervention, classification accuracy vs.
       ground truth, all scoped by `batch_id`, plus the `StreamBatchUpdates`
-      server-streaming gRPC method
+      server-streaming gRPC method. **`GetBatchReport` and
+      `ListBatchRecords` are merged**; `StreamBatchUpdates` (Kafka
+      consumer, live feed) is deferred, so this box stays unticked until
+      it lands too, per `docs/ENGINEERING.md` §11's Definition of Done
       → `PRD.md` §8, §9, §2b, `ARCHITECTURE.md` §10, §6a,
       `docs/PHASE5_IMPLEMENTATION.md` Unit F
 - [ ] API Gateway: report/records/audit GET routes plus a WebSocket relay

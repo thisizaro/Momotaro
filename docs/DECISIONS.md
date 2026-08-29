@@ -1330,3 +1330,35 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   mirrors the existing `encodedHops` pattern exactly, logging and storing
   NULL on a JSON marshal failure rather than losing the transaction over
   data that exists to explain a decision, not to make one.
+- 2026-08-29: **Reporting's two unary RPCs are merged; `StreamBatchUpdates`
+  is deliberately deferred** (Phase 5 Unit F). This closes the rubric
+  audit's one confirmed gap ("measured money recovered across a batch");
+  the streaming half (a Kafka consumer plus a gRPC-stream-to-WebSocket
+  bridge) is a separate, materially more expensive unit, and the
+  dashboard's own polling already covers every number that matters
+  without it, per `docs/PHASE5_IMPLEMENTATION.md`'s own ordering advice.
+  `docs/PLAN.md`'s checkbox stays unticked until streaming lands too: the
+  checklist item bundles both, and `docs/ENGINEERING.md` section 11 says
+  not to tick a box before the whole item is done.
+  **Built to mirror `services/audit/` deliberately, not by coincidence**:
+  it is the closest existing service in shape, a pure Postgres reader with
+  no Kafka consumption in this pass, so the same `New(pool)`/`store` split
+  applied directly rather than inventing a new service skeleton.
+  **A real, confirmed gap, not a guess**: `processing_failure_count`
+  cannot be computed from Postgres today. A dead-lettered record is
+  published to Kafka only and leaves no trace in any table by design
+  (`services/decision-engine/internal/engine/dlq.go`), so Reporting,
+  which reads only Postgres, has nothing to count. Returns `0`,
+  documented in code and tracked as its own `docs/BACKLOG.md` entry
+  scoped to whoever owns the Decision Engine's DLQ path, rather than
+  silently reported as if it were a real measurement.
+  **Accuracy is nil, never a populated zero, when a batch has no
+  `GROUND_TRUTH`**: `docs/API_GATEWAY.md`'s own contract requires this
+  distinction ("a missing key means no answer key exists, distinct from a
+  real zero"), and it is adversarially verified: removing the nil guard
+  was caught by `TestGetBatchReportOmitsAccuracyWithoutGroundTruth`.
+  Verified against real Postgres, 10 tests
+  (`services/reporting/internal/server/reporting_test.go`), covering the
+  headline aggregate, both `GROUP BY` breakdowns, ground-truth accuracy
+  and confusion, pagination across pages, and not-found/invalid-argument
+  edges.
