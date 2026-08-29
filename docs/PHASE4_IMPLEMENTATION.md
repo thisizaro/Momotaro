@@ -10,12 +10,9 @@ Every unit below is independently completable and names its dependencies.
 **Phase goal in one sentence**: make it possible to see what the running
 system is doing, without changing what it does.
 
-**Where this sits**: Phases 0 through 3 are complete and merged. Units below
-are ordered easiest/most self-contained first; tracing (Unit F) is
-deliberately last because Kafka does not propagate trace context on its own,
-so every hop through a topic needs manual header injection/extraction. That
-unit is being held pending a decision on whether it is needed for the demo at
-all, rather than built speculatively.
+**Where this sits**: Units A through E are complete and merged. Unit F
+(tracing) is deferred rather than built — see `docs/BACKLOG.md` — in favour
+of Phase 5 (demo realism), decided 2026-08-29. Phase 4 is otherwise done.
 
 | Unit | What | Status | Depends on |
 |---|---|---|---|
@@ -24,7 +21,7 @@ all, rather than built speculatively.
 | C | docker-compose Prometheus wiring + scrape config | merged | A, B |
 | D | Alertmanager rules | merged | C |
 | E | Grafana dashboards | merged | C |
-| F | OpenTelemetry tracing across gRPC + Kafka hops | on hold | pending a go/no-go decision |
+| F | OpenTelemetry tracing across gRPC + Kafka hops | deferred, see `docs/BACKLOG.md` | pending a go/no-go decision |
 
 ---
 
@@ -355,7 +352,11 @@ through Grafana's own datasource proxy and confirmed each returns
 
 ## Unit F: OpenTelemetry tracing
 
-**Status**: on hold pending a go/no-go decision, not built speculatively.
+**Status**: deferred (decided 2026-08-29). See `docs/BACKLOG.md` for the
+full reasoning and where to pick this up. Short version: it's the hardest
+unit in this phase, and `GetRecordAudit` plus `ProviderHop` already cover
+most of what a demo would use tracing to show. Phase 5 (demo realism) is
+the actual blocker and comes first.
 
 Context propagation on every gRPC call, `record_id` forced as the trace id
 rather than a randomly generated one, so one payment's journey across seven
