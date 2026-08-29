@@ -498,12 +498,17 @@ priors_bps:
     # through to `beyond_listed_attempts_bps` of 0 is a safety net, not a
     # modelled decay.
     #
-    # REACHABILITY WARNING. Section 7's state machine has no
-    # `Scoring -> Escalated` edge at all: Scoring goes only to
-    # RetryScheduled, NudgeScheduled or ClosedUneconomic. So a scorer that
-    # faithfully implements section 5a can select ESCALATE as the argmax and
-    # then have nowhere to put the record. These priors are correct and
-    # currently mostly unreachable. Raised in configs/README.md.
+    # REACHABILITY. Historical note, RESOLVED 2026-08-27. This block used to
+    # warn that section 7's state machine had no `Scoring -> Escalated` edge,
+    # so a scorer selecting ESCALATE as the argmax would have nowhere to put
+    # the record. That edge now exists
+    # (services/audit/internal/server/statemachine.go, added when Phase 2's
+    # re-scoring loop first produced the transition for real: a re-entry to
+    # Scoring that finds every spending action guardrail-blocked escalates,
+    # and nothing before Unit H had pushed a record's history far enough to
+    # hit it). See docs/INCIDENTS.md 2026-08-27. The priors below are both
+    # correct and reachable; leaving the old warning in place would have a
+    # future agent "fixing" a state machine that is already right.
 
     TRANSIENT_BANK:
       attempt_1: 800   # a human adds little a retry has not already tried

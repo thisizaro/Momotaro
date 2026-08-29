@@ -997,9 +997,24 @@ erDiagram
         uuid record_id
         string true_bucket
         float recovery_probability
-        string readable_by
+        float wrong_action_probability
+        int response_delay_seconds
     }
 ```
+
+Note on `GROUND_TRUTH`, corrected 2026-08-29 against
+`migrations/00001_initial_schema.sql`, which is the source of truth: this
+diagram previously showed a `readable_by` column and omitted two that the
+World Simulator actually needs. There is **no `readable_by` column**. The
+access rule below is real but is enforced in code and by a test
+(`test/integrity/ground_truth_isolation_test.go`), not by a value in a row,
+which is the stronger of the two options anyway since a column describing who
+may read a table does not stop anyone reading it. The two restored columns
+are what make choosing correctly *matter*: `recovery_probability` is the odds
+given the **correct** intervention, `wrong_action_probability` the odds given a
+**wrong** one (usually near zero), and `response_delay_seconds` models how long
+a customer takes to react to a nudge, which is what drives the delayed-outcome
+path in §6.
 
 `INTERVENTION_ATTEMPT` records `cost_paise` per attempt (that is what makes
 "net recovered" computable rather than estimated) and snapshots the

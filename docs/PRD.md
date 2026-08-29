@@ -2,6 +2,54 @@
 
 Track 03: AI Revenue Recovery
 
+## 0. The bar we are scored against (verbatim)
+
+Recorded here on 2026-08-29 because it was nowhere in the repo before, and
+every triage decision from here should be argued against this text rather
+than against our own summary of it. Source: Razorpay AI Buildathon track
+page.
+
+**Track 03, AI Revenue Recovery:**
+
+> "Build an agent that detects revenue at risk, determines the right
+> intervention, and executes a bounded recovery workflow."
+
+> Must demonstrate "measured money recovered across a batch, with compliant
+> escalation, stopping rules, and an audit trail."
+
+**General evaluation criteria, applied across tracks:**
+
+> **AI Judgment**: whether AI tools, LLMs, or agents were applied
+> appropriately "instead of forcing unnecessary tech stacks".
+
+> **Failure Recovery**: "how you identified system failures at runtime and
+> engineered graceful fallbacks".
+
+Track 01's phrasing is worth borrowing as the house standard for money
+handling, since it states plainly what this track only implies: "Every money
+action explainable, bounded and gated."
+
+**Selection process**: shortlisted builders go straight to a technical
+panel. No aptitude test, no group discussion. **The artefact being judged is
+therefore something defended in conversation, not only something
+demonstrated on a screen.** That materially changes what is worth building:
+depth that can be explained beats surface area that cannot, and
+`docs/DECISIONS.md` plus `docs/INCIDENTS.md` are first-class deliverables
+rather than internal hygiene.
+
+**How each clause maps onto this system**, so a gap is visible rather than
+assumed:
+
+| Rubric clause | Where it lives |
+|---|---|
+| detects revenue at risk | Ingestion, Classifier (§2a) |
+| determines the right intervention | Decision Engine economics scorer (§2b) |
+| bounded recovery workflow | Guardrails: retry budgets, contact caps, cooldowns, recovery window (§11) |
+| stopping rules | §11, plus Audit's continuous invariant verifier proving zero violations |
+| an audit trail | `AUDIT_ENTRY`, `GetRecordAudit`, provider hops |
+| compliant escalation | §11a, the cited TRAI/RBI rules |
+| **measured money recovered across a batch** | **Reporting Service, §9. This is the headline deliverable.** |
+
 ## 1. Product description
 
 **One-liner**: An agent that watches every payment, mandate, checkout, and
@@ -292,6 +340,61 @@ in `docs/ARCHITECTURE.md`, section "NFRs and observability."
 - Any ambiguous or repeated-failure record downgrades automatically to "needs
   human", it never loops forever.
 
+## 11a. What "compliant" actually means (cited, not asserted)
+
+The track asks for "compliant escalation". Until 2026-08-29 this document
+used the word without ever saying which rules it meant, and §13 carried the
+gap as an open question ("how much of the retry-cap logic should mirror real
+RBI/NPCI mandate rules vs. a simplified stand-in"). Two real Indian
+regulations bear directly on what this agent does, and both are cheap to
+honour because the guardrail layer that enforces them already exists.
+
+**TRAI TCCCPR 2018 (customer contact timing).** Commercial communications are
+classified Transactional, Service, Promotional or Government. Promotional
+messages may only be delivered between 10:00 and 21:00 IST and may not be
+sent to numbers registered on DND. Transactional and Service messages carry
+neither restriction.
+
+The interesting question, and the one worth being able to answer at a panel,
+is which category a payment recovery nudge falls into. A message telling an
+existing customer that a payment they initiated has failed is defensibly a
+Service message. A message trying to win back an abandoned checkout is closer
+to Promotional. This system takes the conservative position: **all
+customer-contacting interventions respect the 10:00 to 21:00 IST window**,
+because the cost of being wrong (a regulatory breach and an annoyed customer
+at 3am) exceeds the cost of a delayed nudge, and because a recovery agent
+that can quietly message people overnight is the exact failure mode a
+"bounded" workflow is supposed to prevent. A nudge that becomes due outside
+the window is deferred to the next window open, not dropped.
+
+**RBI Digital Payments E-mandate Framework (recurring debits).** An issuer
+must send a pre-transaction notification to the customer **at least 24 hours
+before** an auto-debit, showing merchant name, amount and debit date, and a
+post-transaction notification afterwards. The mandate itself is registered
+only after additional factor authentication.
+
+Consequence for this system: a retry on a `RECORD_TYPE_MANDATE` record is not
+a free action that can be scheduled minutes out the way a card retry can. It
+carries a mandatory 24 hour notification lead time. `RETRY_MANDATE_LEAD_TIME`
+encodes this, and the cause-aware scheduler treats it as a floor that the
+salary-window calculation may push later but never earlier.
+
+**Both are guardrails, not model decisions.** They sit in the same layer as
+retry budgets and contact caps, are evaluated inside the same transaction as
+the state change they gate, and appear in the audit trail with a reason
+naming the rule. Per §2b's fixed ordering, a guardrail can only ever remove
+an option, never add one, so neither rule can cause an action that would not
+otherwise have happened.
+
+**Stated limits, so this is not oversold.** These are two rules, not a
+compliance programme. DND list checking is not implemented (there is no real
+telecom integration to check against). The 24 hour mandate lead time is
+enforced as a scheduling floor, but this system does not itself send the
+pre-debit notification, since in the real flow that is the issuer's
+obligation, not the merchant's agent's. NPCI's per-mandate presentation
+limits are still the simplified stand-in `docs/ARCHITECTURE.md` §17
+describes.
+
 ## 12. Demo script
 
 1. Load a batch of ~50-100 synthetic at-risk records, each seeded with a
@@ -320,6 +423,57 @@ in `docs/ARCHITECTURE.md`, section "NFRs and observability."
    p50/p95/p99 latency and sustained throughput, then show the same run
    against the minikube deployment with HPA scaling pods under load.
 
+### 12a. What is real and what is simulated (say this out loud)
+
+Two different things in this system get loosely called "fake", and only one
+of them would be a problem if a judge found it. Stating the difference
+plainly is better than being asked.
+
+**The World Simulator is a simulator on purpose, and that is not a
+concession.** When the Executor decides to retry a payment, something has to
+answer "succeeded" or "failed". In production that is a bank. In a hackathon
+there is no bank, so `demo/world-simulator` stands in for one, holding a
+sealed ground truth the decision path provably cannot read
+(`test/integrity/ground_truth_isolation_test.go`). It lives under `demo/`
+rather than `services/` precisely so the boundary is visible in the directory
+structure. This is what makes outcomes *measurable* against a known answer
+instead of merely observed, which is a stronger position than a real
+integration would give us in the time available. Same for
+`demo/notification-simulator`, which logs the message it would have sent.
+
+**The dashboard's mock backend is Phase 0 scaffolding that has already done
+its job.** `web/` was deliberately scaffolded against the written
+`docs/API_GATEWAY.md` contract using mocked responses, specifically so UI
+work could start in parallel with backend work instead of waiting on it
+(`docs/PLAN.md` Phase 0). That was the right call and it worked. Connecting
+it to the real Gateway was always Phase 5 Unit H, not a decision being
+revisited here.
+
+The only thing worth stating explicitly is the difference in *kind* between
+the two stand-ins, because both get loosely called "mock" and they are not
+the same thing. `demo/world-simulator` substitutes for a third party we
+cannot have (a bank), permanently, by design, and it is what makes outcomes
+measurable. `web/src/lib/mockEngine.ts` substitutes for *our own backend*,
+temporarily, as scaffolding, and it is retired as the default the moment
+Unit H lands. Nothing in the demo runs on it: the demo runs with
+`VITE_API_BASE_URL` set against a real Gateway, the frontend renders whatever
+the backend computed and computes nothing itself, and every number on screen
+came through the pipeline.
+
+Mock mode stays supported after Unit H, because being able to develop the
+dashboard without the whole stack running is genuinely useful and losing it
+would be a regression. It just stops being the default.
+
+**Live updates.** `docs/ARCHITECTURE.md` §6a specifies a WebSocket push
+relayed from Reporting's `StreamBatchUpdates`, and that remains the design.
+It is scheduled last in Phase 5 rather than first, because the dashboard
+already refetches on a 2 second interval and every aggregate on the page is
+driven by that refetch, not by the socket. The socket feeds only the
+scrolling event log. So the fallback is invisible on stage while the push
+path is the more expensive item remaining (a server-streaming RPC, Kafka
+consumption in Reporting, and a gRPC-stream-to-WebSocket bridge in the
+Gateway). Ordering, not a downgrade: if it lands, beat 2 is a genuine push.
+
 ## 13. Open questions
 
 - Which LLM provider(s) back the diagnosis call, deliberately deferred, cost
@@ -330,8 +484,13 @@ in `docs/ARCHITECTURE.md`, section "NFRs and observability."
   (no real API calls) mode so cost isn't burned during throughput testing.
   See `docs/ARCHITECTURE.md` section 5. Decide actual provider(s) once
   cost/rate-limit numbers are in hand.
-- How much of the retry-cap logic should mirror real RBI/NPCI mandate rules
-  vs. a simplified stand-in we state explicitly as an assumption?
+- ~~How much of the retry-cap logic should mirror real RBI/NPCI mandate rules
+  vs. a simplified stand-in we state explicitly as an assumption?~~
+  **Answered 2026-08-29, see §11a.** Two real rules are now cited and
+  enforced in the guardrail layer (TRAI TCCCPR contact-hour window, RBI
+  e-mandate 24 hour pre-debit lead time), with the remaining simplifications
+  named explicitly rather than left implied. NPCI per-mandate presentation
+  limits remain a stand-in.
 - Exact latency/throughput NFR numbers in section 10 are starting targets,
   need to be replaced with real measured numbers once the first load test
   runs, and re-confirmed after the minikube/HPA deployment.

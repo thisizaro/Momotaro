@@ -656,13 +656,14 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       calls but `docs/API_GATEWAY.md` never specs — add and document it
       here, not a separate item → `ARCHITECTURE.md` §6a,
       `docs/API_GATEWAY.md`, `docs/PHASE5_IMPLEMENTATION.md` Unit G
-- [ ] Dashboard: recovered amount/rate, record table, one record's audit
-      drill-down, live feed via the WebSocket above, built only against
-      `docs/API_GATEWAY.md`. Already essentially built (Phase 0/pre-Phase-5
-      work): real components, a working mock backend, a WebSocket client
-      already written against the documented contract. This item is wiring
-      to a real Gateway and reconciling contract drift, not new dashboard
-      work → `PRD.md` §1, `web/AGENTS.md`, `docs/PHASE5_IMPLEMENTATION.md` Unit H
+- [ ] **[FRONTEND]** Dashboard: recovered amount/rate, record table, one
+      record's audit drill-down, live feed, built only against
+      `docs/API_GATEWAY.md`. `web/` is a Phase 0 scaffold, built early
+      against the written contract so UI work would not wait on the backend.
+      Not the final UI and not precious. This item is rebuilding against the
+      frozen contract, not preserving what is there
+      → `PRD.md` §1, `web/AGENTS.md`,
+      `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F1/F2
 - [ ] Hinglish nudge composition: `Classifier.ComposeNudge` reusing the
       existing provider chain and circuit breakers, static Hinglish
       template per bucket as fallback, output length-capped and validated
@@ -676,6 +677,68 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       through cooldowns (already done, Phase 2/3) and World Simulator's
       delay/tick timing (folded into Unit C, not a separate item: World
       Simulator has no timing logic to retrofit until it exists)
+
+### Added 2026-08-29, after reading the actual judging rubric
+
+> **Ownership, for running agents in parallel.** Items tagged **[FRONTEND]**
+> live entirely in `web/**` and belong to a dedicated frontend agent that
+> reads only `web/AGENTS.md` and `docs/API_GATEWAY.md`. Everything else is
+> backend and must not touch `web/`. The two tracks are genuinely
+> independent **once `docs/API_GATEWAY.md` is frozen**, which is Unit O and
+> is a real gate, not paperwork: the contract is currently ambiguous in six
+> places, and two agents resolving the same ambiguity in isolation will
+> resolve it differently. Full ownership table and the frontend track
+> breakdown are in `docs/PHASE5_IMPLEMENTATION.md`.
+
+- [ ] **Freeze `docs/API_GATEWAY.md`. Do this before anything else in this
+      phase.** Blocks the Gateway routes and the entire frontend track. Six
+      known gaps: `GET /v1/batches` is called by the dashboard and specced
+      nowhere; money field names differ between doc and proto; the enum wire
+      spelling is undecided; the frontend knows 3 of 7 root-cause buckets;
+      WebSocket auth uses two incompatible mechanisms on the two sides; and
+      the `POST /v1/batches` request body disagrees
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit O
+
+The Track 03 text and the general evaluation criteria are now recorded
+verbatim in `PRD.md` §0. Scored against them, the project has exactly one
+gap ("measured money recovered across a batch", i.e. Unit F) and several
+capabilities that are built but invisible. These items close that, and are
+ordered by value per hour. Detail for each is in
+`docs/PHASE5_IMPLEMENTATION.md` Units I to N.
+
+- [ ] Adopt Razorpay's **published** payment error codes as the classifier's
+      failure-code vocabulary, replacing the invented one, keeping existing
+      codes as aliases → `docs/PHASE5_IMPLEMENTATION.md` Unit I.
+      Also fixes a Unit H blocker: `web/src/lib/format.ts`'s
+      `FAILURE_CODE_LABELS` is keyed lowercase and renders blank against real
+      uppercase codes, so this vocabulary has to be settled either way
+- [ ] Compliance guardrails with citations: TRAI TCCCPR contact-hour window
+      and RBI e-mandate 24 hour pre-debit lead time, enforced in the existing
+      guardrail layer → `PRD.md` §11a, `docs/PHASE5_IMPLEMENTATION.md` Unit J.
+      Closes `PRD.md` §13's open question and the one row in
+      `ARCHITECTURE.md` §17 whose justification column did not defend itself
+- [ ] Baseline comparison in Reporting: what a naive "retry everything three
+      times, nudge everything" policy would have recovered against the same
+      sealed ground truth, so "measured money recovered" is a result rather
+      than a number → `docs/PHASE5_IMPLEMENTATION.md` Unit K
+- [ ] Surface decision provenance the system already stores but never shows:
+      provider hop chain, net recovered and cost per rupee, uneconomic-closed
+      as its own tile, the classification confusion matrix, and a live
+      `VerifyInvariants` result. Backend half is the Gateway routes; the UI
+      half is **[FRONTEND]** F3 → `docs/PHASE5_IMPLEMENTATION.md` Unit L
+- [ ] **[FRONTEND]** Error handling, which does not exist anywhere in `web/`
+      today: no `.catch` on any call, no error boundary, no empty state, and
+      a 2 second `setInterval` with no try/catch that will throw an unhandled
+      rejection every two seconds behind a blank page if the backend 404s.
+      The difference between degrading visibly and dying silently on stage
+      → `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F2
+- [ ] Persist the full EV candidate ranking and the per-action guardrail
+      refusal reasons, both currently computed and discarded, so the audit
+      trail can answer "why not the alternatives"
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit M
+- [ ] Correct three stale claims in checked-in files that currently accuse
+      the codebase of defects it does not have
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit N
 
 ## Phase 6: Load testing & performance validation
 
@@ -706,3 +769,24 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 - [ ] Dashboard/judge-facing polish
 - [ ] Out-of-scope list (`ARCHITECTURE.md` §16) double-checked so nothing is
       claimed in the demo that wasn't actually built
+- [ ] **Live failure injection rehearsed**, scripted so it can be triggered
+      on stage without improvising. "Failure Recovery: how you identified
+      system failures at runtime and engineered graceful fallbacks" is an
+      explicit judging criterion (`PRD.md` §0) and this is the only beat that
+      answers it by *doing* rather than describing. Two candidates, both
+      already backed by passing tests, so the work is rehearsal and a script,
+      not new code:
+      (a) SIGKILL the Decision Engine mid-batch and show no record lost and no
+      audit gap, the property `test/e2e/crash_safety_test.go` already proves;
+      (b) raise `LLM_SAMPLE_RATE` to deliberately trip Groq's real rate limit
+      and show a genuine on-stage failover with real `rate_limited` hops in
+      the audit trail, which `configs/demo.env` already anticipates in its own
+      comments → `PRD.md` §12 beat 5
+- [ ] Pick the drill-down record in advance. LLM sampling is a deterministic
+      hash of `record_id` (`DECISIONS.md` 2026-08-28), so which records get a
+      live model call is knowable before the demo rather than luck. Beat 4
+      should land on a record that actually has an LLM rationale, and beat 5
+      on one that actually fell back → `PRD.md` §12 beats 4, 5
+- [ ] Confirm `VITE_API_BASE_URL` is set so the dashboard is serving live
+      data rather than the Phase 0 scaffold, and that every number on screen
+      came through the pipeline → `PRD.md` §12a
