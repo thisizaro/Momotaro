@@ -716,9 +716,12 @@ capabilities that are built but invisible. These items close that, and are
 ordered by value per hour. Detail for each is in
 `docs/PHASE5_IMPLEMENTATION.md` Units I to N.
 
-- [ ] Adopt Razorpay's **published** payment error codes as the classifier's
-      failure-code vocabulary, replacing the invented one, keeping existing
-      codes as aliases → `docs/PHASE5_IMPLEMENTATION.md` Unit I.
+- [x] Adopt Razorpay's **published** payment error codes as the classifier's
+      failure-code vocabulary, kept the invented one as aliases so nothing
+      broke. The one behavioural change: codes meaning "outcome unknown"
+      (including the existing `GATEWAY_TIMEOUT`/`TIMEOUT`) no longer
+      auto-retry, they escalate instead, to avoid retrying a payment that
+      may have already succeeded → `docs/PHASE5_IMPLEMENTATION.md` Unit I.
       Also fixes a Unit H blocker: `web/src/lib/format.ts`'s
       `FAILURE_CODE_LABELS` is keyed lowercase and renders blank against real
       uppercase codes, so this vocabulary has to be settled either way

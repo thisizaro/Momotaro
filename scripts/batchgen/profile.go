@@ -120,22 +120,45 @@ type codeEntry struct {
 	ObviousBucket commonv1.RootCauseBucket
 }
 
+// paymentAndMandateCodes mixes the original Phase 1 codes with a sample of
+// Razorpay's own published error codes (docs/PHASE5_IMPLEMENTATION.md Unit
+// I), so a generated demo batch looks like real Razorpay traffic rather
+// than the invented vocabulary. Not every code in
+// services/classifier/internal/rules/buckets.go's now-larger table needs a
+// mirror here, a representative sample per bucket is enough; the point is
+// realism, not exhaustive parity.
+//
+// GATEWAY_TIMEOUT's ObviousBucket moved to RISK_HOLD in the same pass as
+// the classifier's own table (Unit I): both must agree, since ObviousBucket
+// exists specifically to mirror what the real classifier would say for
+// this code, and misleadingCodeChance's divergence measurement is only
+// meaningful if the "obvious" answer really is what the classifier
+// produces.
 var paymentAndMandateCodes = []codeEntry{
 	{"BANK_TIMEOUT", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK},
 	{"RAIL_CONGESTION", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK},
 	{"ISSUER_UNAVAILABLE", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK},
-	{"GATEWAY_TIMEOUT", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK},
+	{"BANK_NOT_AVAILABLE", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK},
+	{"GATEWAY_TECHNICAL_ERROR", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK},
+	{"UPI_APP_TECHNICAL_ERROR", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK},
+	{"GATEWAY_TIMEOUT", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_RISK_HOLD},
 	{"INSUFFICIENT_FUNDS", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS},
 	{"LOW_BALANCE", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS},
+	{"TRANSACTION_LIMIT_EXCEEDED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS},
 	{"HARD_DECLINE", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE},
 	{"EXPIRED_INSTRUMENT", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE},
 	{"EXPIRED_CARD", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE},
 	{"BLOCKED_INSTRUMENT", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE},
 	{"DO_NOT_HONOUR", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE},
+	{"CARD_DECLINED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE},
+	{"INVALID_VPA", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE},
 	{"RISK_HOLD", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_RISK_HOLD},
 	{"FRAUD_REVIEW", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_RISK_HOLD},
+	{"PAYMENT_RISK_CHECK_FAILED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_RISK_HOLD},
 	{"AUTH_REQUIRED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED},
 	{"REAUTH_REQUIRED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED},
+	{"AUTHENTICATION_FAILED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED},
+	{"INCORRECT_OTP", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED},
 }
 
 // mandateOnlyCodes only make sense once a mandate exists to revoke or
@@ -144,11 +167,14 @@ var paymentAndMandateCodes = []codeEntry{
 var mandateOnlyCodes = []codeEntry{
 	{"MANDATE_REVOKED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED},
 	{"MANDATE_PAUSED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED},
+	{"MANDATE_CREATION_FAILED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED},
 }
 
 var checkoutCodes = []codeEntry{
 	{"CHECKOUT_ABANDONED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT},
 	{"ABANDONED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT},
+	{"PAYMENT_CANCELLED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT},
+	{"PAYMENT_SESSION_EXPIRED", commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT},
 }
 
 var invoiceCodes = []codeEntry{
