@@ -1166,3 +1166,48 @@ point, rather than writing the caveat down and moving on. Also worth
 knowing on its own terms: Docker Desktop + WSL2 has more than one
 networking mode, and `host.docker.internal` is not guaranteed to mean "the
 WSL2 distro my shell is in" under all of them.
+
+## 2026-08-29: a test fixture that never produces real NULL hid a scan bug until a live smoke test found it
+
+Building Phase 5 Unit A's `ReportDelayedOutcome`
+(`docs/PHASE5_IMPLEMENTATION.md`), `store.loadNudged`'s first version
+scanned `record_state.pending_action` into a plain `string`. That column
+is legitimately SQL `NULL` for any record past `NUDGED`
+(`nullIfUnspecified` stores `ACTION_TYPE_UNSPECIFIED` as `NULL`, not the
+literal string, store.go) — exactly the case `loadNudged` exists to
+handle gracefully, since a big part of its job is reporting "this record
+already moved on to state X" for a stale or duplicate delayed-outcome
+report. Scanning `NULL` into a non-nullable `string` panics.
+
+The integration test written alongside it
+(`TestResumeNudgeDiscardsWhenNotInNudgedState`) seeds a record in
+`RECOVERED` state specifically to exercise this path, and did not catch
+the bug: its fixture helper, `seedScheduled` (shared with
+`scheduler_test.go`, several tests deep), inserts `pendingAction.String()`
+directly regardless of value, so an `ACTION_TYPE_UNSPECIFIED` record ends
+up with the literal string `"ACTION_TYPE_UNSPECIFIED"` in the column, not
+real `NULL`. The fixture doesn't replicate what production code
+(`nullIfUnspecified`) actually does, so a bug that only manifests on real
+`NULL` sailed through the whole suite green.
+
+Found by dialing the actual running `decision-engine` binary with a
+throwaway gRPC client, after seeding a record directly in Postgres and
+calling `ReportDelayedOutcome` twice in a row — the first call correctly
+moved it to `RECOVERED`; the second call, checking whether a now-terminal
+record correctly discards a repeat report, crashed instead. Fixed:
+`pendingAction` scans into `*string`, nil-checked before converting to the
+enum. The test itself was also fixed, forcing real `NULL` via a direct
+`UPDATE ... SET pending_action=NULL` rather than trusting the shared
+fixture — confirmed to fail with the exact panic before the code fix, and
+pass after.
+
+The general lesson: **a shared test fixture that approximates production
+behaviour instead of reproducing it exactly can hide a real bug
+indefinitely**, especially the NULL-vs-empty-string kind, which is often
+invisible until the specific state that produces a real NULL is reached.
+Passing integration tests against real Postgres are not automatically
+proof against this — the gap here was in what the *fixture* wrote, not in
+whether the test used a real database. Live-testing the actual running
+binary, not just the test suite, is what caught it; it's worth doing at
+least once per unit that touches new SQL, not assuming coverage implies
+correctness.

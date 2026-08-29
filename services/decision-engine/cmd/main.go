@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,9 +28,11 @@ import (
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
+	decisionenginev1 "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/engine"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -287,6 +290,26 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), model, schedCfg)
 
+	// The only inbound gRPC call this service answers: ReportDelayedOutcome,
+	// for an outcome that resolves after the request that started it has
+	// already returned (docs/PHASE5_IMPLEMENTATION.md Unit A). Everything
+	// else about this service's work arrives on raw.events, below.
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
+	if err != nil {
+		return fmt.Errorf("listen on grpc port %d: %w", cfg.GRPCPort, err)
+	}
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		interceptors.UnaryServerRecovery(),
+		interceptors.UnaryServerRequireDeadline(),
+		interceptors.UnaryServerMetrics(m),
+	))
+	decisionenginev1.RegisterDecisionEngineServiceServer(grpcServer, server.New(scheduler, log))
+	grpcServeErr := make(chan error, 1)
+	go func() {
+		log.Info("grpc server listening", "port", cfg.GRPCPort)
+		grpcServeErr <- grpcServer.Serve(lis)
+	}()
+
 	consumer, err := kafkax.NewConsumer(cfg.KafkaBrokers, cfg.ConsumerGroup, []string{cfg.Topic})
 	if err != nil {
 		return fmt.Errorf("connect to kafka: %w", err)
@@ -328,6 +351,13 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			runErr = fmt.Errorf("scheduler: %w", err)
 		}
+	case err := <-grpcServeErr:
+		cancelRun()
+		<-consumeErr
+		<-schedulerErr
+		if err != nil {
+			runErr = fmt.Errorf("grpc server: %w", err)
+		}
 	case <-ctx.Done():
 		<-consumeErr
 		<-schedulerErr
@@ -336,6 +366,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	if shutErr := shutdown.Close(10*time.Second,
 		func(ctx context.Context) error { consumer.Close(); return nil },
 		func(ctx context.Context) error { return metricsServer.Shutdown(ctx) },
+		func(ctx context.Context) error { grpcServer.GracefulStop(); return nil },
 	); shutErr != nil {
 		return errors.Join(runErr, shutErr)
 	}

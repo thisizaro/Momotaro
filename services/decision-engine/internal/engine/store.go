@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -285,6 +286,144 @@ func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stat
 		}
 		return nil
 	})
+}
+
+// loadNudged reads recordID's current claim-shaped snapshot for
+// ReportDelayedOutcome (docs/PHASE5_IMPLEMENTATION.md Unit A). Unlike
+// claimDue, nothing is claimed or transitioned here: a NUDGED record is
+// already exactly where it should be, resting while it waits for an
+// external event (a customer acting on a nudge, hours later) rather than
+// a poll. found is false only when recordID has no RECORD_STATE row at
+// all; state is always the record's real current state when found, even
+// when it is not NUDGED, so a caller can tell "stale/duplicate report for
+// a record that already moved on" from "this record_id does not exist".
+func (s *store) loadNudged(ctx context.Context, recordID string) (rec claimedRecord, state commonv1.RecordState, found bool, err error) {
+	var (
+		currentState                 string
+		pendingAction                *string
+		attemptCount                 int
+		amountPaise                  int64
+		rootCauseBucket              *string
+		evScoreAtDecision, pRecovery *float64
+		batchID                      string
+	)
+	err = s.pool.QueryRow(ctx, `
+		SELECT rs.current_state, r.batch_id, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision
+		FROM record_state rs
+		JOIN record r ON r.id = rs.record_id
+		WHERE rs.record_id = $1`,
+		recordID,
+	).Scan(&currentState, &batchID, &pendingAction, &attemptCount, &amountPaise, &rootCauseBucket, &evScoreAtDecision, &pRecovery)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return claimedRecord{}, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, false, nil
+	}
+	if err != nil {
+		return claimedRecord{}, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, false, fmt.Errorf("load record_state for %s: %w", recordID, err)
+	}
+
+	state = commonv1.RecordState(commonv1.RecordState_value[currentState])
+	bucket := commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_UNSPECIFIED
+	if rootCauseBucket != nil {
+		bucket = commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[*rootCauseBucket])
+	}
+	var evScore, pRecoveryVal float64
+	if evScoreAtDecision != nil {
+		evScore = *evScoreAtDecision
+	}
+	if pRecovery != nil {
+		pRecoveryVal = *pRecovery
+	}
+	// NULL here (nullIfUnspecified's own inverse) is not a schema surprise:
+	// it is exactly what every state other than a waiting one legitimately
+	// has, which is precisely the case this function's "found but not
+	// NUDGED" callers need to handle without erroring.
+	action := commonv1.ActionType_ACTION_TYPE_UNSPECIFIED
+	if pendingAction != nil {
+		action = commonv1.ActionType(commonv1.ActionType_value[*pendingAction])
+	}
+	rec = claimedRecord{
+		RecordID:            recordID,
+		BatchID:             batchID,
+		FromState:           commonv1.RecordState_RECORD_STATE_NUDGED,
+		ClaimedState:        commonv1.RecordState_RECORD_STATE_NUDGED,
+		PendingAction:       action,
+		AttemptCount:        attemptCount,
+		AmountPaise:         amountPaise,
+		RootCauseBucket:     bucket,
+		EVScoreAtDecision:   evScore,
+		PRecoveryAtDecision: pRecoveryVal,
+	}
+	return rec, state, true, nil
+}
+
+// applyResumedOutcome persists a delayed outcome's effect on c.RecordID --
+// a single NUDGED -> Recovered step (success) or rescoringPath's two steps
+// (a failed attempt re-scored) -- but only if the record is still resting
+// in NUDGED at exactly attemptNumber by the time this transaction takes
+// the row lock.
+//
+// The FOR UPDATE here earns its keep in a way claimDue's callers do not
+// need repeated for their own writes: claimDue's own claim transition
+// already serialises a record so only one execution is ever in flight for
+// it (docs/ARCHITECTURE.md section 7a), which is why recordOutcome and
+// recordRescore write without locking. ReportDelayedOutcome has no such
+// prior claim step -- a NUDGED record just sits there -- and this RPC is
+// at-least-once (decisionengine.proto), so two copies of the same report
+// can arrive genuinely concurrently. Without this lock both could read
+// NUDGED before either writes and double-apply the outcome. With it, the
+// second transaction's re-check sees the state the first one already
+// moved to and returns applied=false instead.
+func (s *store) applyResumedOutcome(ctx context.Context, c claimedRecord, attemptNumber int, steps []stateStep, pendingAction commonv1.ActionType, score economics.Score, dueAt *time.Time, costPaise int64, now time.Time) (bool, error) {
+	if len(steps) == 0 {
+		return false, fmt.Errorf("apply resumed outcome for %s: no transitions to record", c.RecordID)
+	}
+	final := steps[len(steps)-1].To
+	evScore, pRecovery := scoreColumns(score)
+
+	applied := false
+	err := pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
+		var currentState string
+		var currentAttempt int
+		if err := tx.QueryRow(ctx, `
+			SELECT current_state, attempt_count FROM record_state WHERE record_id = $1 FOR UPDATE`,
+			c.RecordID,
+		).Scan(&currentState, &currentAttempt); err != nil {
+			return fmt.Errorf("lock record_state for %s: %w", c.RecordID, err)
+		}
+		if currentState != commonv1.RecordState_RECORD_STATE_NUDGED.String() || currentAttempt != attemptNumber {
+			// Discarded: the record moved on between the caller's read and
+			// this lock, most often a duplicate delayed-outcome report
+			// arriving after the first copy already applied. Not an error.
+			return nil
+		}
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE record_state SET current_state=$1, attempt_count=$2, pending_action=$3, due_at=$4, ev_score_at_decision=$5, p_recovery_at_decision=$6, last_action_at=$7, updated_at=$7
+			WHERE record_id=$8`,
+			final.String(), attemptNumber, nullIfUnspecified(pendingAction), dueAt, evScore, pRecovery, now, c.RecordID,
+		); err != nil {
+			return fmt.Errorf("update record_state for %s: %w", c.RecordID, err)
+		}
+		for i, step := range steps {
+			cost := int64(0)
+			if i == 0 {
+				cost = costPaise
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, actor, attempt_number, cost_paise)
+				VALUES ($1, $2, $3, $4, $5, $6, 'system', $7, $8)`,
+				c.RecordID, c.BatchID, now, step.From.String(), step.To.String(), step.Reason, attemptNumber, cost,
+			); err != nil {
+				return fmt.Errorf("insert resumed-outcome audit_entry %s -> %s: %w", step.From, step.To, err)
+			}
+		}
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return applied, nil
 }
 
 // nullIfUnspecified stores ACTION_TYPE_UNSPECIFIED as SQL NULL: an
