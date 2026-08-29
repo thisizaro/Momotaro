@@ -30,7 +30,7 @@ scope from the checklist alone.
 | F | Reporting Service | not started | nothing strictly, more useful once B/C produce real data |
 | G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
 | H | Dashboard: wire to real Gateway | not started | G |
-| I | Razorpay's real error codes as the failure vocabulary | not started | nothing |
+| I | Razorpay's real error codes as the failure vocabulary | merged | nothing |
 | J | Compliance guardrails (TRAI contact hours, RBI mandate lead time) | not started | nothing |
 | K | Baseline comparison in Reporting | not started | F |
 | L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
@@ -538,7 +538,8 @@ headline metric against the wrong cost model, and that accusation is false.
 
 ## Unit I: Razorpay's published error codes as the failure vocabulary
 
-**Status**: not started. **Depends on**: nothing. **Rough size**: 2 hours.
+**Status**: merged. **Depends on**: nothing. **Rough size**: 2 hours, as
+estimated.
 
 **What it is**: `services/classifier/internal/rules/buckets.go`'s
 `failureCodeToBucket` table is invented. `BANK_TIMEOUT`, `RAIL_CONGESTION`,
@@ -597,7 +598,26 @@ vocabulary has to be settled during Unit H regardless. Do it once, properly.
 **Definition of done additions**: the existing table test iterates the map, so
 extend it to assert every new code resolves and that the four indeterminate
 codes specifically do *not* resolve to a bucket whose policy is an automatic
-retry.
+retry. Met: `TestIndeterminateCodesNeverAutoRetry` covers all six codes that
+must not auto-retry (the four new ones plus the two reclassified existing
+ones, `GATEWAY_TIMEOUT`/`TIMEOUT`), `TestIndeterminateRationaleDoesNotClaimRiskReview`
+checks the override wording, `TestNewRazorpayCodesResolve` and
+`TestLowercaseRazorpayCodeResolvesViaNormalization` cover a representative
+sample of the new table entries. Adversarially verified: temporarily
+reverted `GATEWAY_TIMEOUT` to `TRANSIENT_BANK` and confirmed
+`TestIndeterminateCodesNeverAutoRetry` failed with the exact expected
+message before reverting the break.
+
+**One scope decision made while implementing**: the design bullet above
+about carrying Razorpay's `source` field into the rationale text at runtime
+was scaled back to source-tagged comments in the table itself
+(`// [SOURCED] Razorpay, source: gateway/bank...`). Surfacing `source`
+dynamically per code would need restructuring the map from
+`map[string]RootCauseBucket` to a richer per-code struct threaded through
+`bucketForCode`/`composeRationale`, a larger change for a "reads as
+domain-aware" nicety rather than a correctness requirement. The comments
+still make the domain awareness visible to anyone reading the code or
+reviewing the table, which was the actual goal.
 
 ## Unit J: compliance guardrails, cited
 

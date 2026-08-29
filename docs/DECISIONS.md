@@ -1242,3 +1242,35 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `p_recovery_at_decision` (needed before Unit L's provenance UI can render
   the EV snapshot per attempt, the data already exists on
   `INTERVENTION_ATTEMPT`, it just isn't surfaced through Audit yet).
+- 2026-08-29: **The classifier's failure-code table now cites Razorpay's own
+  published error list, and two existing codes changed behaviour** (Phase 5
+  Unit I). `services/classifier/internal/rules/buckets.go`'s table was
+  invented (`BANK_TIMEOUT`, `RAIL_CONGESTION`, etc, plausible but not what
+  Razorpay actually returns). Every old key stays as a working alias; the
+  new Razorpay codes are added with a `[SOURCED]` comment naming the
+  platform's own `source` field where useful context (e.g. `bank_not_available`
+  being gateway-caused, not the customer's fault).
+  **The real change is that `GATEWAY_TIMEOUT` and `TIMEOUT` no longer
+  auto-retry.** Both already existed in the table, mapped to
+  `TRANSIENT_BANK`. A timeout means the outcome is genuinely unknown, not
+  that the payment failed, and auto-retrying an unresolved payment risks a
+  duplicate charge on one that may have already gone through. The same
+  reasoning applies to four newly-added codes with the same shape
+  (`payment_timed_out`, `payment_pending`, `verification_failed`,
+  `invalid_response_from_gateway`). All six now resolve to `RISK_HOLD`,
+  the only bucket in the table whose policy is a guaranteed escalation, with
+  a rationale that explicitly explains the duplicate-charge risk rather than
+  borrowing `RISK_HOLD`'s generic "held for risk review" wording, which would
+  misdescribe a technical ambiguity as a fraud hold.
+  A real `ROOT_CAUSE_BUCKET_INDETERMINATE` plus a reconciliation step (ask
+  the rail what actually happened) is the honest full fix and stays parked
+  in `docs/BACKLOG.md`; this unit closes the dangerous half (never
+  auto-retry an unresolved outcome) without it. `scripts/batchgen/profile.go`'s
+  code pools were updated to match, including moving `GATEWAY_TIMEOUT`'s
+  `ObviousBucket` to `RISK_HOLD` so the "obvious bucket" a naive lookup would
+  produce stays consistent with what the real classifier now does.
+  Scope cut, deliberate: the design also considered surfacing Razorpay's
+  `source` field dynamically in the composed rationale text; done instead as
+  a comment on each table entry, since threading it through at runtime
+  would restructure the map for a "reads as domain-aware" nicety rather than
+  a correctness need.

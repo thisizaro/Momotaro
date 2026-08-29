@@ -42,7 +42,15 @@ func actionLabel(a commonv1.ActionType) string {
 // never boilerplate alone. recognized is false on the unknown-code path
 // (section 4.3), which changes the wording but must still name the code
 // verbatim so a human reading the audit trail can add it to the table.
-func composeRationale(bucket commonv1.RootCauseBucket, action commonv1.ActionType, rawCode string, recognized bool) string {
+// indeterminate is true for a code whose true outcome is unknown rather
+// than failed (docs/PHASE5_IMPLEMENTATION.md Unit I): it overrides the
+// bucket's own canned reasoning, since RISK_HOLD's generic "held for risk
+// review" wording would be a false explanation for a purely technical
+// ambiguity.
+func composeRationale(bucket commonv1.RootCauseBucket, action commonv1.ActionType, rawCode string, recognized bool, indeterminate bool) string {
+	if indeterminate {
+		return fmt.Sprintf("failure code %q means the payment's true outcome could not be confirmed, not that it failed; retrying risks a duplicate charge on a payment that may have already succeeded, so this is held for a human to reconcile rather than auto-retried. Recommending %s.", rawCode, actionLabel(action))
+	}
 	reason := bucketReasoning[bucket]
 	if !recognized {
 		if rawCode == "" {

@@ -47,7 +47,7 @@ func (p *Provider) Classify(ctx context.Context, req *classifierv1.ClassifyReque
 	}
 
 	rule := actionFor(bucket)
-	rationale := composeRationale(bucket, rule.Action, rawCode, recognized)
+	rationale := composeRationale(bucket, rule.Action, rawCode, recognized, isIndeterminate(normalized))
 
 	return &classifierv1.ClassifyResponse{
 		Bucket:            bucket,

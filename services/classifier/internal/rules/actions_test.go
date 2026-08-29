@@ -20,7 +20,7 @@ func TestActionForEveryBucket(t *testing.T) {
 		if rule.Confidence < 0 || rule.Confidence > 1 {
 			t.Errorf("bucket %s (%d): confidence %v outside [0,1]", name, v, rule.Confidence)
 		}
-		if composeRationale(bucket, rule.Action, "TEST_CODE", true) == "" {
+		if composeRationale(bucket, rule.Action, "TEST_CODE", true, false) == "" {
 			t.Errorf("bucket %s (%d): empty rationale", name, v)
 		}
 	}
