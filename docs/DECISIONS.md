@@ -972,6 +972,26 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   real developer machine or in CI (native Linux Engine, no extra sandbox
   layer); a future agent or the user should confirm the actual scrape
   succeeds there rather than trusting this note alone.
+  **Resolution (2026-08-29, same day, once the user confirmed on their own
+  machine)**: it was not a sandbox artifact. `host.docker.internal` failed
+  identically from the user's own browser hitting Prometheus's Targets
+  page. Root cause: this machine's Docker is Docker Desktop on WSL2 in NAT
+  networking mode, where `host.docker.internal` resolves to Docker
+  Desktop's own internal VM, not the WSL2 distro `make run-<service>`
+  actually binds ports on. `docs/INCIDENTS.md` 2026-08-29 has the full
+  diagnosis. Fix: `prometheus.yml` is now a template
+  (`prometheus.yml.tmpl`) with `HOST_IP_PLACEHOLDER` in place of the
+  literal host, rendered by `make up-observability` into a gitignored
+  `prometheus.generated.yml`. `HOST_IP` defaults to `host.docker.internal`
+  (unchanged behaviour, and correct on native Linux Engine or Docker
+  Desktop's mirrored networking mode) and is overridable
+  (`make up-observability HOST_IP=$(hostname -I | awk '{print $1}')`) for
+  setups like this one where that alias does not route to the right
+  place. Confirmed working end to end: all six real services (`reporting`
+  excepted, still an unimplemented stub) show `health: "up"` in
+  Prometheus's own Targets page, and Grafana's dashboards show real,
+  moving request-rate numbers from live traffic sent through the actual
+  pipeline.
 - 2026-08-29: **Two of Phase 4's three named alerts (`docs/PLAN.md`) had no
   metric to alert on**, so Unit D built them rather than silently declaring
   the alerts done against nothing. `docs/ARCHITECTURE.md` section 13 has

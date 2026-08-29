@@ -118,11 +118,24 @@ up:
 	docker compose up -d
 	@echo "kafka ui: http://localhost:8080"
 
+# HOST_IP is what Prometheus (in its own container) dials to reach the
+# fixed run-<service> ports on this host. host.docker.internal is the
+# portable default (Docker Desktop mirrored networking, native Linux
+# Engine 20.10+ via extra_hosts: host-gateway in docker-compose.observability.yml).
+# Override it when that alias does not actually route to where
+# run-<service> binds -- e.g. Docker Desktop + WSL2 in NAT networking mode,
+# where host.docker.internal reaches Docker Desktop's own internal VM
+# instead of this distro (docs/INCIDENTS.md 2026-08-29). Find your real one
+# with `hostname -I | awk '{print $$1}'`, then:
+#   make up-observability HOST_IP=172.25.75.22
+HOST_IP ?= host.docker.internal
+
 ## up-observability: up, plus Prometheus/Alertmanager/Grafana scraping the fixed run-<service> ports
 up-observability:
+	sed 's/HOST_IP_PLACEHOLDER/$(HOST_IP)/g' deploy/observability/prometheus.yml.tmpl > deploy/observability/prometheus.generated.yml
 	docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
 	@echo "kafka ui:     http://localhost:8080"
-	@echo "prometheus:   http://localhost:9900"
+	@echo "prometheus:   http://localhost:9900 (check Status > Targets: HOST_IP=$(HOST_IP))"
 	@echo "alertmanager: http://localhost:9901"
 	@echo "grafana:      http://localhost:9902 (admin/momotaro, or anonymous viewer)"
 

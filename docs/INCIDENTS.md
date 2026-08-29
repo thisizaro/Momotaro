@@ -1122,3 +1122,47 @@ The general lesson: **a bind mount's target path must not fall inside
 another bind mount's own tree**, especially when the outer one is
 read-only; nest configuration files under one mount root instead of
 composing several mounts that overlap.
+
+## 2026-08-29: host.docker.internal does not reach this machine's WSL2 distro at all
+
+Unit C's own write-up already flagged that the `host.docker.internal`
+scrape path could not be exercised inside the agent session's tool
+environment, and reasoned that this was probably a sandboxing artifact
+rather than a real problem, since it is Docker's own documented mechanism.
+It was wrong to stop there. Asked the user to check Prometheus's Targets
+page from their own browser: every target showed `down` for them too, with
+the identical `connect: connection refused` error, which ruled out "just
+the agent's sandboxed shell" as the explanation.
+
+Diagnosed by testing three things directly rather than guessing further:
+`docker exec` from a throwaway container to `host.docker.internal` (DNS
+resolved to `192.168.65.254`, TCP refused), the WSL2 distro's own `eth0`
+address from `ip addr show` (`172.25.75.22` in this case, reachable and
+serving real `/metrics` output when curled directly from a container on
+the same compose network), and `--network host` (also refused, meaning
+host networking is not usable here either). Root cause: this machine runs
+Docker Desktop with the WSL2 backend in NAT networking mode, where
+`host.docker.internal` resolves to Docker Desktop's own internal VM, not
+to the WSL2 distro `make run-<service>` actually binds ports in. The two
+are peers, not the same host, from a container's point of view.
+
+Fix: `deploy/observability/prometheus.yml` became a template
+(`prometheus.yml.tmpl`) with `HOST_IP_PLACEHOLDER` standing in for the
+scrape target host, rendered into a gitignored `prometheus.generated.yml`
+by `make up-observability` via `sed`. `HOST_IP` defaults to
+`host.docker.internal` (correct and unchanged for native Linux Engine and
+Docker Desktop's mirrored networking mode) and is overridable per machine
+(`HOST_IP=$(hostname -I | awk '{print $1}')`) for setups like this one.
+Confirmed after the fix: all six real services show `health: "up"` in
+Prometheus, and Grafana's dashboards show live, moving numbers from real
+traffic.
+
+The general lesson: **"this is the standard documented pattern, so it
+should work" is not verification**, especially for something that could
+only be partially tested from inside the tool's own environment. The
+honest move once a real gap is found (not just an unverifiable one) is to
+ask the person who can actually check from a genuinely independent vantage
+point, rather than writing the caveat down and moving on. Also worth
+knowing on its own terms: Docker Desktop + WSL2 has more than one
+networking mode, and `host.docker.internal` is not guaranteed to mean "the
+WSL2 distro my shell is in" under all of them.

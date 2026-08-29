@@ -154,8 +154,10 @@ about metrics, so there is no reason for every integration run to also pull
 and start Prometheus.
 
 **Files**:
-- `deploy/observability/prometheus.yml` (new): scrape config, one job per
-  service, targeting `host.docker.internal:<fixed metrics port>`. App
+- `deploy/observability/prometheus.yml.tmpl` (new; later renamed from
+  `prometheus.yml` once the update below landed): scrape config, one job
+  per service, targeting `HOST_IP_PLACEHOLDER:<fixed metrics port>`,
+  rendered by `make up-observability` (see the same-day update below). App
   services are still not containers on the docker-compose network (that
   file's own header comment, unchanged), so this is the only way in.
 - `docker-compose.observability.yml` (new): the `prometheus` container,
@@ -181,16 +183,20 @@ live (`curl` 200 from the host on each fixed port). Ran `make
 up-observability` and confirmed Prometheus starts cleanly and its own
 target list (`/api/v1/targets`) shows exactly the seven expected jobs at
 the right addresses.
-**Gap, stated plainly**: the actual `host.docker.internal` scrape hop
-itself could not be confirmed inside this session's sandboxed dev
-environment — its Bash tool's network namespace has no route back from
-Docker's containers to ports those same commands bind (tested
-`host-gateway`, plain `host.docker.internal`, and the raw docker0 bridge
-address, all connection-refused, despite `ss -ltn` showing every service
-listening on `0.0.0.0`). This is the standard Docker-documented mechanism
-and should work on a real machine or in CI (native Linux Engine, no extra
-sandbox layer); confirm the scrape actually succeeds there before trusting
-this note alone. See docs/DECISIONS.md 2026-08-29 for the full account.
+**Update, same day**: the `host.docker.internal` hop genuinely did not
+work on this machine (Docker Desktop + WSL2 in NAT networking mode routes
+that alias to Docker Desktop's own internal VM, not to the WSL2 distro
+`make run-<service>` binds ports in), confirmed by the user from their own
+browser, not just inside the agent's own tool environment. Fixed by
+making `prometheus.yml` a template (`prometheus.yml.tmpl`) rendered by
+`make up-observability` into a gitignored `prometheus.generated.yml`,
+with an overridable `HOST_IP` (default unchanged: `host.docker.internal`,
+correct on native Linux Engine and Docker Desktop's mirrored networking
+mode). Confirmed after the fix: all six real services show `health: "up"`
+in Prometheus's Targets page, and Grafana shows live, moving numbers from
+real traffic sent through the actual pipeline. Full diagnosis in
+docs/INCIDENTS.md 2026-08-29, decision recorded in docs/DECISIONS.md
+2026-08-29.
 
 ## Unit D: Alertmanager rules
 

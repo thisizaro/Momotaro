@@ -33,6 +33,10 @@ build/
 tmp/
 *.log
 
+# Rendered from prometheus.yml.tmpl by `make up-observability`, machine-
+# specific (docs/DECISIONS.md HOST_IP override).
+deploy/observability/prometheus.generated.yml
+
 # NOTE: proto/gen/ is deliberately NOT ignored.
 # Generated Go code is committed so every agent builds without a
 # matching protoc/buf toolchain. See docs/ARCHITECTURE.md section 9.
