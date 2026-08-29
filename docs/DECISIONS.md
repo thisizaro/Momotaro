@@ -1242,3 +1242,29 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `p_recovery_at_decision` (needed before Unit L's provenance UI can render
   the EV snapshot per attempt, the data already exists on
   `INTERVENTION_ATTEMPT`, it just isn't surfaced through Audit yet).
+- 2026-08-29: **Two compliance guardrails are enforced, not just cited**
+  (Phase 5 Unit J). `docs/PRD.md` §11a named TRAI TCCCPR's contact-hour
+  window and the RBI e-mandate framework's pre-debit lead time; this makes
+  both real. `contactHourWindow` (schedule.go) defers a nudge's `due_at` to
+  the next 10:00 IST open if it would otherwise land outside 10:00-21:00
+  IST; `mandateLeadTimeFloor` refuses to schedule a `RECORD_TYPE_MANDATE`
+  retry sooner than `RETRY_MANDATE_LEAD_TIME` (default 24h) from now.
+  **The floor composes with the existing salary-window logic rather than
+  replacing it**: `retryDueAt` computes the bucket-specific timing first
+  (unchanged), then applies the mandate floor only if the record type is
+  `MANDATE`, pulling an earlier date up to the floor but never pulling a
+  later one down. A `MANDATE` record whose `INSUFFICIENT_FUNDS` salary
+  window already lands three weeks out is untouched; one whose
+  `TRANSIENT_BANK` timing would otherwise retry in 30 minutes is floored to
+  24 hours.
+  **Threading record type through required a schema-adjacent change**:
+  `claimedRecord` (store.go) had no `RecordType` field, since nothing
+  before this needed one. Added it, backed by `r.type` already present in
+  `record`, populated by both `claimDue` and `loadNudged` (the latter
+  matters because `ResumeNudge`'s failure path also calls `retryDueAt`).
+  **IST is `time.FixedZone`, not a tzdata lookup**: fixed UTC+5:30, no DST,
+  and a distroless runtime image may not carry tzdata at all.
+  **Scope cut, tracked in `docs/BACKLOG.md`**: the audit `reason` string
+  does not yet cite the specific rule when a deferral or floor actually
+  fires (it still describes the scoring decision). Folded into Unit M's
+  planned rework of the same plumbing rather than threaded twice.

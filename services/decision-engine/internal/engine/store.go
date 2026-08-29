@@ -100,6 +100,10 @@ type claimedRecord struct {
 	AttemptCount    int // before this attempt; the attempt about to run is AttemptCount+1
 	AmountPaise     int64
 	RootCauseBucket commonv1.RootCauseBucket // needed to re-score a failed attempt without re-classifying
+	// Type is the record's RECORD_TYPE, needed by retryDueAt's mandate
+	// lead-time floor (docs/PHASE5_IMPLEMENTATION.md Unit J): only a
+	// RECORD_TYPE_MANDATE retry carries the RBI pre-debit lead time.
+	Type commonv1.RecordType
 	// EVScoreAtDecision and PRecoveryAtDecision are the scorer's decision
 	// snapshot from when this record was last scheduled or re-scored, to
 	// forward on the Execute call (docs/PHASE2_IMPLEMENTATION.md Unit G).
@@ -122,7 +126,7 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 	var claimed []claimedRecord
 	err := pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision
+			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision, r.type
 			FROM record_state rs
 			JOIN record r ON r.id = rs.record_id
 			WHERE rs.due_at IS NOT NULL AND rs.due_at <= $1
@@ -145,11 +149,12 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 			amountPaise                                    int64
 			rootCauseBucket                                *string
 			evScoreAtDecision, pRecoveryAtDecision         *float64
+			recordType                                     string
 		}
 		var scanned []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise, &r.rootCauseBucket, &r.evScoreAtDecision, &r.pRecoveryAtDecision); err != nil {
+			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise, &r.rootCauseBucket, &r.evScoreAtDecision, &r.pRecoveryAtDecision, &r.recordType); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan due record: %w", err)
 			}
@@ -201,6 +206,7 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 				AttemptCount:        r.attemptCount,
 				AmountPaise:         r.amountPaise,
 				RootCauseBucket:     bucket,
+				Type:                commonv1.RecordType(commonv1.RecordType_value[r.recordType]),
 				EVScoreAtDecision:   evScore,
 				PRecoveryAtDecision: pRecovery,
 			})
@@ -306,14 +312,15 @@ func (s *store) loadNudged(ctx context.Context, recordID string) (rec claimedRec
 		rootCauseBucket              *string
 		evScoreAtDecision, pRecovery *float64
 		batchID                      string
+		recordType                   string
 	)
 	err = s.pool.QueryRow(ctx, `
-		SELECT rs.current_state, r.batch_id, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision
+		SELECT rs.current_state, r.batch_id, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision, r.type
 		FROM record_state rs
 		JOIN record r ON r.id = rs.record_id
 		WHERE rs.record_id = $1`,
 		recordID,
-	).Scan(&currentState, &batchID, &pendingAction, &attemptCount, &amountPaise, &rootCauseBucket, &evScoreAtDecision, &pRecovery)
+	).Scan(&currentState, &batchID, &pendingAction, &attemptCount, &amountPaise, &rootCauseBucket, &evScoreAtDecision, &pRecovery, &recordType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return claimedRecord{}, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, false, nil
 	}
@@ -350,6 +357,7 @@ func (s *store) loadNudged(ctx context.Context, recordID string) (rec claimedRec
 		AttemptCount:        attemptCount,
 		AmountPaise:         amountPaise,
 		RootCauseBucket:     bucket,
+		Type:                commonv1.RecordType(commonv1.RecordType_value[recordType]),
 		EVScoreAtDecision:   evScore,
 		PRecoveryAtDecision: pRecoveryVal,
 	}
