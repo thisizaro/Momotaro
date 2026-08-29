@@ -26,7 +26,10 @@ services:
     # Prometheus's normal default.
     ports: ["9900:9090"]
     volumes:
-      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Rendered by `make up-observability` from prometheus.yml.tmpl, not
+      # checked in (docs/DECISIONS.md): the scrape targets need the actual
+      # HOST_IP for this machine, not a value frozen at commit time.
+      - ./deploy/observability/prometheus.generated.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
     depends_on: [alertmanager]
 
