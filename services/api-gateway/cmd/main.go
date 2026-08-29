@@ -20,6 +20,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/config"
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
+	"github.com/thisizaro/Momotaro/internal/platform/metrics"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	"github.com/thisizaro/Momotaro/services/api-gateway/internal/httpapi"
@@ -94,6 +95,23 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 
 	handler := httpapi.New(ingestionv1.NewIngestionServiceClient(ingestionConn), cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
 
+	// api-gateway has no inbound gRPC server to instrument (it is an HTTP
+	// edge with only outbound gRPC clients), so this exposes Go/process
+	// metrics only; there is no requests_total/request_duration_seconds
+	// data here the way there is for a gRPC-serving service.
+	m := metrics.New()
+	metricsServer := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.MetricsPort),
+		Handler:           m.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Info("metrics server listening", "port", cfg.MetricsPort)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("metrics server", "err", err)
+		}
+	}()
+
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
 		Handler:           handler.Routes(),
@@ -119,7 +137,12 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	case <-ctx.Done():
 	}
 
-	return shutdown.Close(10*time.Second, func(ctx context.Context) error {
-		return httpServer.Shutdown(ctx)
-	})
+	return shutdown.Close(10*time.Second,
+		func(ctx context.Context) error {
+			return httpServer.Shutdown(ctx)
+		},
+		func(ctx context.Context) error {
+			return metricsServer.Shutdown(ctx)
+		},
+	)
 }
