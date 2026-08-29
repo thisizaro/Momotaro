@@ -206,3 +206,5 @@ reviews (2026-08-29).
   measuring the priors against a world generated from a different set of
   priors. Unit K's baseline comparison gets the defensible part of this value
   without the methodological hole.
+
+<!-- ci canary, will revert -->
