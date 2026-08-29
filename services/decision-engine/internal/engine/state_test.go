@@ -254,7 +254,7 @@ func TestDueAtFor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dueAtFor(tt.state, nudgeDelay, now)
+			got := dueAtFor(tt.state, nudgeDelay, now, 1)
 			if (got == nil) != (tt.want == nil) {
 				t.Fatalf("dueAtFor(%v) = %v, want %v", tt.state, got, tt.want)
 			}
@@ -262,5 +262,28 @@ func TestDueAtFor(t *testing.T) {
 				t.Errorf("dueAtFor(%v) = %v, want %v", tt.state, *got, *tt.want)
 			}
 		})
+	}
+}
+
+// dueAtFor must actually apply the TRAI contact-hour rule to a nudge's
+// due_at, not just compute the flat delay: a real end-to-end check that
+// the two functions are actually wired together, not only each correct on
+// its own.
+func TestDueAtForDefersOutsideContactHours(t *testing.T) {
+	// 20:45 UTC = 02:15 IST: now + nudgeDelay lands well outside the window.
+	now := time.Date(2026, 8, 24, 20, 45, 0, 0, time.UTC)
+	const nudgeDelay = time.Hour
+
+	got := dueAtFor(commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, nudgeDelay, now, 1)
+	if got == nil {
+		t.Fatal("dueAtFor returned nil for NUDGE_SCHEDULED")
+	}
+	naive := now.Add(nudgeDelay) // 21:45 UTC = 03:15 IST, 25th, still outside the window
+	if got.Equal(naive) {
+		t.Fatalf("dueAtFor(%v) = %v, equals the un-deferred naive delay: the contact-hour window was not applied", now, *got)
+	}
+	wantHourIST := 10
+	if gotHour := got.In(istZone).Hour(); gotHour != wantHourIST {
+		t.Errorf("dueAtFor(%v) = %v, IST hour %d, want %d (deferred to the window open)", now, *got, gotHour, wantHourIST)
 	}
 }

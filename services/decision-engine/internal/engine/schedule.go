@@ -13,9 +13,32 @@ import (
 // computed delay is divided by timeScale so the salary-window wait actually
 // fires inside a compressed demo run (config.Common.Scale's formula).
 //
+// recordType and mandateLeadTime exist for one rule (docs/PRD.md section
+// 11a, docs/PHASE5_IMPLEMENTATION.md Unit J): a RECORD_TYPE_MANDATE retry
+// can never be scheduled sooner than mandateLeadTime from now (the RBI
+// e-mandate framework's pre-debit notification requirement), applied as a
+// floor over whatever the bucket-specific timing above already computed,
+// after it, never before it: the salary-window calculation may still push
+// the date later, only the floor may pull an earlier date up to itself.
+//
 // Pure function: no I/O, no struct methods. Takes now directly rather
 // than an injected Clock, matching dueAtFor's existing signature style.
-func retryDueAt(bucket commonv1.RootCauseBucket, now time.Time, retryDelay time.Duration, timeScale float64) *time.Time {
+func retryDueAt(bucket commonv1.RootCauseBucket, recordType commonv1.RecordType, now time.Time, retryDelay time.Duration, mandateLeadTime time.Duration, timeScale float64) *time.Time {
+	due := baseRetryDueAt(bucket, now, retryDelay, timeScale)
+	if due == nil {
+		return nil
+	}
+	if recordType == commonv1.RecordType_RECORD_TYPE_MANDATE {
+		floored := mandateLeadTimeFloor(*due, now, mandateLeadTime, timeScale)
+		due = &floored
+	}
+	return due
+}
+
+// baseRetryDueAt is retryDueAt's bucket-timing switch, factored out so the
+// MANDATE lead-time floor above applies uniformly to every branch's result
+// in one place, rather than being threaded into each case.
+func baseRetryDueAt(bucket commonv1.RootCauseBucket, now time.Time, retryDelay time.Duration, timeScale float64) *time.Time {
 	switch bucket {
 	case commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS:
 		return salaryWindowDueAt(now, timeScale)
@@ -42,6 +65,61 @@ func retryDueAt(bucket commonv1.RootCauseBucket, now time.Time, retryDelay time.
 		due := now.Add(scaleDuration(retryDelay, timeScale))
 		return &due
 	}
+}
+
+// mandateLeadTimeFloor enforces the RBI Digital Payments E-mandate
+// Framework's pre-transaction notification requirement: an auto-debit
+// retry on a MANDATE record can never be scheduled sooner than leadTime
+// from now. A floor, not an offset: due passes through unchanged whenever
+// it already lands at or after the floor (e.g. a salary-window date weeks
+// out), and is only ever pulled later, never earlier. The floor's own wait
+// is scaled by timeScale like every other timing knob, so it cannot stall
+// a compressed demo run for a real 24 hours.
+func mandateLeadTimeFloor(due time.Time, now time.Time, leadTime time.Duration, timeScale float64) time.Time {
+	floor := now.Add(scaleDuration(leadTime, timeScale))
+	if due.Before(floor) {
+		return floor
+	}
+	return due
+}
+
+// istZone is India Standard Time, a fixed UTC+5:30 offset with no daylight
+// saving, so time.FixedZone is correct and simpler than a tzdata lookup (a
+// distroless runtime image may not carry tzdata at all).
+var istZone = time.FixedZone("IST", 5*3600+30*60)
+
+// contactWindowOpenHour and contactWindowCloseHour are TRAI TCCCPR 2018's
+// commercial-communication contact-hour window in IST, half-open
+// [10, 21): a due time landing at hour 21 or later, or before hour 10, is
+// outside the window (docs/PRD.md section 11a).
+const (
+	contactWindowOpenHour  = 10
+	contactWindowCloseHour = 21
+)
+
+// contactHourWindow enforces the TRAI contact-hour rule for a
+// customer-contacting action's due time: unchanged if it already falls
+// inside 10:00 to 21:00 IST, deferred to the next window open otherwise,
+// never dropped. Callers only ever pass a due time computed for a nudge
+// (dueAtFor returns nil for every state that is not NUDGE_SCHEDULED before
+// this is reached), so there is no need to also check the action type
+// here. The extra wait until the window opens, not the whole due time, is
+// scaled by timeScale, matching every other timing knob, so this rule
+// cannot stall a compressed demo run for real wall-clock hours.
+func contactHourWindow(due time.Time, timeScale float64) time.Time {
+	ist := due.In(istZone)
+	hour := ist.Hour()
+	if hour >= contactWindowOpenHour && hour < contactWindowCloseHour {
+		return due
+	}
+
+	nextOpen := time.Date(ist.Year(), ist.Month(), ist.Day(), contactWindowOpenHour, 0, 0, 0, istZone)
+	if hour >= contactWindowCloseHour {
+		nextOpen = nextOpen.AddDate(0, 0, 1)
+	}
+
+	wait := nextOpen.Sub(ist)
+	return due.Add(scaleDuration(wait, timeScale))
 }
 
 // salaryWindowDueAt returns when the next salary-credit window opens.
