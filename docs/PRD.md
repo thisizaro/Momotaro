@@ -400,7 +400,13 @@ describes.
 1. Load a batch of ~50-100 synthetic at-risk records, each seeded with a
    hidden ground-truth recoverability profile in the world simulator (see
    `docs/ARCHITECTURE.md`, "World simulator"), so outcomes are measured
-   against a known answer, not just observed.
+   against a known answer, not just observed. **This must be a batch seeded
+   with `scripts/batchgen` and selected via `GET /v1/batches`, not one made
+   with the dashboard's own "generate" button.** The button's `count` form
+   (`docs/API_GATEWAY.md`) submits through Ingestion, which never writes
+   `GROUND_TRUTH`, so a batch made that way has no accuracy score and no
+   baseline comparison, i.e. neither of beat 3's headline numbers. Confirm
+   which batch is selected before going on stage.
 2. Run the batch runner live, watch the dashboard fill in **live** (a real
    WebSocket push from the API Gateway, not polling, see
    `docs/ARCHITECTURE.md` section 6a) as the world simulator resolves each

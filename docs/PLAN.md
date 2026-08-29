@@ -690,14 +690,24 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 > resolve it differently. Full ownership table and the frontend track
 > breakdown are in `docs/PHASE5_IMPLEMENTATION.md`.
 
-- [ ] **Freeze `docs/API_GATEWAY.md`. Do this before anything else in this
-      phase.** Blocks the Gateway routes and the entire frontend track. Six
-      known gaps: `GET /v1/batches` is called by the dashboard and specced
-      nowhere; money field names differ between doc and proto; the enum wire
-      spelling is undecided; the frontend knows 3 of 7 root-cause buckets;
-      WebSocket auth uses two incompatible mechanisms on the two sides; and
-      the `POST /v1/batches` request body disagrees
-      → `docs/PHASE5_IMPLEMENTATION.md` Unit O
+- [x] **Freeze `docs/API_GATEWAY.md`.** All six gaps resolved: added
+      `GET /v1/batches`; standardised every money field on the `_paise`
+      suffix; picked the full proto enum string as the wire spelling for
+      every enum, stated once in a new "Closed vocabularies" section;
+      listed all 7 root-cause buckets (and every other enum's full member
+      list) so nothing is missing; picked the WebSocket subprotocol over a
+      query param for the live-feed auth workaround; and gave
+      `POST /v1/batches` a `count` form for the demo generate button,
+      explicitly documented as never carrying `GROUND_TRUTH` (only
+      `scripts/batchgen` may write that table). Also folded in the
+      `baseline_comparison` shape Unit K will need and the
+      `GET /v1/batches/{batch_id}/invariants` route Unit L will need, so
+      neither has to touch this doc again. Two small proto additions are
+      flagged as still needed before Units G/K/L can fully implement
+      against it (`ListBatches`, `SubmitBatchRequest.count`,
+      `AuditEntry.ev_score_at_decision`/`p_recovery_at_decision`), left for
+      whoever picks up that proto PR rather than done here
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit O, `docs/DECISIONS.md`
 
 The Track 03 text and the general evaluation criteria are now recorded
 verbatim in `PRD.md` §0. Scored against them, the project has exactly one

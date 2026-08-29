@@ -93,7 +93,7 @@ type submitBatchRequest struct {
 type submitBatchResponse struct {
 	BatchID       string            `json:"batch_id"`
 	AcceptedCount int32             `json:"accepted_count"`
-	Rejected      map[string]string `json:"rejected,omitempty"`
+	Rejected      map[string]string `json:"rejected"`
 }
 
 type errorResponse struct {

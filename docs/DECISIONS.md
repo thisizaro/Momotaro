@@ -1210,3 +1210,35 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `cost_paise`, so Unit F can be built and merged against the stub in parallel
   with Unit C. The apparent single chain C → D → F → G → H is not real, and
   treating it as real is the difference between finishing and not.
+- 2026-08-29: **`docs/API_GATEWAY.md` is frozen (Phase 5 Unit O).** Three
+  judgment calls made while resolving the six pre-freeze gaps, worth stating
+  separately since they set precedent for every route built after this.
+  **Enum wire spelling is the full proto constant string**
+  (`"RECORD_STATE_RETRY_SCHEDULED"`), not a shortened frontend-style name.
+  Rejected the alternative because a second spelling is a second thing that
+  can drift from `common.proto`, with no test to catch it; the literal name
+  greps straight back to the source enum. **WebSocket auth stays a
+  subprotocol, not a query parameter.** The frontend already sends the key
+  this way; the real choice was whether to change it, and a query parameter
+  puts the API key in server access logs and browser history by default,
+  a subprotocol does not. The Gateway side is the one that needs to change,
+  from checking `X-API-Key` to checking the negotiated subprotocol.
+  **`POST /v1/batches` grows a `count` form, and it never carries
+  `GROUND_TRUTH`.** The demo generate button needs a one-field request, and
+  `scripts/batchgen`'s own header comment is explicit that only it may write
+  `GROUND_TRUTH`, directly to Postgres, specifically so the answer key is
+  never reachable through a public API. Extending that boundary to the
+  Gateway route would mean either the Gateway touching Postgres directly
+  (`ARCHITECTURE.md` section 3a forbids this, protocol translation only) or
+  Ingestion learning to write `GROUND_TRUTH` (breaking the "only this tool"
+  invariant for a second tool). Neither is worth it for a demo button, so a
+  `count`-submitted batch reports like real production traffic: no
+  `accuracy`, no `baseline_comparison`, same as a real webhook batch. A demo
+  run that needs the accuracy story is seeded with `scripts/batchgen` ahead
+  of time and selected via the new `GET /v1/batches` instead.
+  Two additive proto changes were identified but deliberately left for the
+  PR that implements them rather than made here: `ListBatches` (backs the
+  new list route) and `AuditEntry.ev_score_at_decision`/
+  `p_recovery_at_decision` (needed before Unit L's provenance UI can render
+  the EV snapshot per attempt, the data already exists on
+  `INTERVENTION_ATTEMPT`, it just isn't surfaced through Audit yet).
