@@ -30,6 +30,198 @@ scope from the checklist alone.
 | F | Reporting Service | not started | nothing strictly, more useful once B/C produce real data |
 | G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
 | H | Dashboard: wire to real Gateway | not started | G |
+| I | Razorpay's real error codes as the failure vocabulary | not started | nothing |
+| J | Compliance guardrails (TRAI contact hours, RBI mandate lead time) | not started | nothing |
+| K | Baseline comparison in Reporting | not started | F |
+| L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
+| M | Persist EV candidate ranking + guardrail refusal reasons | not started | nothing |
+| N | Correct three stale claims in checked-in files | not started | nothing |
+| **O** | **Freeze the API Gateway contract** | **not started** | **nothing. Blocks G, H and the whole frontend track. Do it first.** |
+
+**Units I to N were added 2026-08-29**, after the actual judging rubric was
+read and recorded in `PRD.md` §0. They are not scope creep: I, J, M and N
+touch code no other unit is writing and can run fully in parallel, K rides
+inside F, and L rides inside G/H. See "What the rubric changed" below.
+
+## Ordering, and the one dependency that is not real
+
+The naive read of the table is a single chain C → D → F → G → H, which does
+not fit the time available. It is not actually a chain.
+
+**Reporting (F) does not depend on the World Simulator (C).** Reporting reads
+Postgres. The Executor's existing scripted stub already produces recovered,
+escalated and nudged records with real `cost_paise`, so every aggregate F
+computes has data to compute over today. C makes those outcomes *realistic*
+and unparks the ~70% of records that currently sit in `NUDGED` forever
+waiting for a delayed outcome nobody delivers, which matters enormously for
+whether the demo numbers look sane, but F can be built, tested and merged
+against the stub in parallel with C.
+
+That gives four independent tracks rather than one chain:
+
+```
+FIRST     O (freeze docs/API_GATEWAY.md)   <- gate, ~1h, blocks G and all frontend
+
+then, fully parallel:
+  track 1   C (World Simulator) -> D (Executor wiring)
+  track 2   F (Reporting, unary RPCs first) -> K (baseline)
+  track 3   E (Hinglish nudge composition)
+  track 4   I, J, M, N   (independent, no shared files with the above)
+  track 5   FRONTEND: F1 -> F2 -> F3 -> F4, entirely inside web/**
+
+converging
+  G (Gateway routes) after F, then track 5's F3 has live data to render
+```
+
+Track 5 needs no backend unit to finish before it starts, because mock mode
+means the UI can be built and verified against the frozen contract before any
+route exists. It only needs the routes to be *live* at demo time.
+
+**Build F's unary RPCs before `StreamBatchUpdates`.** `GetBatchReport` and
+`ListBatchRecords` are what close the rubric's one real gap. The streaming
+RPC, plus Kafka consumption in Reporting, plus the Gateway's
+gRPC-stream-to-WebSocket bridge, is the single most expensive item left in
+the phase, and the dashboard's own 2 second refetch already drives every
+aggregate on the page (the socket feeds only the scrolling log). Reasoning
+and the honesty framing in `PRD.md` §12a. Same for G: the four routes split
+cleanly into three cheap ones and one expensive one.
+
+**`GET /v1/records/{id}/audit` is the cheapest genuinely-live thing in the
+project.** It needs only the Audit service, which is fully implemented,
+registered and tested. It needs no Reporting service at all. If everything
+else slips, this one route makes demo beat 4 real.
+
+## File ownership, for running agents in parallel
+
+Phase 5 is the first phase where a **dedicated frontend agent** makes sense,
+because `web/` is the one part of this system whose entire interface to
+everything else is a written HTTP contract. That makes it genuinely parallel
+work, on one condition stated below.
+
+| Track | Owns | Must not touch |
+|---|---|---|
+| **Frontend** | `web/**` | everything else |
+| Backend, per unit | its own `services/<name>/**` or `demo/<name>/**` | `web/**`, other services' trees |
+| Shared, coordinated | `proto/`, `migrations/`, `docs/API_GATEWAY.md` | see below |
+
+Both tracks may append to `docs/INCIDENTS.md` and tick boxes in
+`docs/PLAN.md`; both use git's `merge=union` driver so concurrent edits merge
+cleanly rather than conflicting.
+
+**The condition: `docs/API_GATEWAY.md` must be frozen before either track
+starts.** This is Unit O, and it is a genuine gate rather than paperwork. The
+frontend agent builds against that document and nothing else (`web/AGENTS.md`
+says so and has since Phase 0). The Gateway agent implements that document.
+If it is ambiguous when they start, they will each resolve the ambiguity
+differently, in isolation, correctly by their own lights, and the mismatch
+surfaces at integration time when there is no time left to fix it. The
+contract is currently ambiguous in at least six places (Unit O lists them),
+so this is not hypothetical.
+
+After the freeze, the two tracks genuinely do not interact. The frontend
+agent can rebuild every screen if it wants to, and as long as it renders the
+frozen contract, the Gateway agent never needs to know.
+
+## Unit O: freeze the API Gateway contract
+
+**Status**: not started. **Depends on**: nothing. **Blocks**: G, H, and the
+whole frontend track. **Rough size**: 1 hour. **Do this first.**
+
+**What it is**: `docs/API_GATEWAY.md` is the interface between the frontend
+track and the backend track, and it is not currently precise enough to build
+against from two directions. Six concrete gaps, all found by auditing the doc
+against the frontend's actual calls and the Reporting proto:
+
+1. **`GET /v1/batches` (list batches) is called by the dashboard and is in
+   neither the doc nor the Gateway.** `web/src/lib/api.ts` calls it on mount
+   and sets the active batch from `list[0].batch_id`, so against a live
+   Gateway there is no batch id, and report, records and updates all stay
+   empty forever. This is the single hardest live-mode blocker. Spec it and
+   implement it, or change the discovery flow to use the id returned by
+   submit. Speccing it is better: a judge will want to look at more than one
+   batch.
+2. **Money field names drift between doc and proto.** The doc says
+   `at_risk_amount` / `recovered_amount`; the proto says `at_risk_paise` /
+   `recovered_paise`. Standardise on the `_paise` suffix everywhere, matching
+   `docs/ENGINEERING.md` §8's integer-paise rule. A field named `amount` that
+   holds paise is exactly how a float creeps in later.
+3. **Enum wire spelling is undecided.** Does a state arrive as
+   `RECORD_STATE_RETRY_SCHEDULED` (protojson's default) or `RetryScheduled`
+   (what the frontend's lookup maps currently assume)? Nobody has chosen.
+   Whichever is picked, the frontend's `Record<>` maps must be total over it,
+   because they are exhaustive lookups that render `undefined` rather than
+   erroring. Same question for `RecordType`, `Outcome` and `RootCauseBucket`.
+4. **The frontend knows three root-cause buckets; `common.proto` has seven.**
+   Four buckets currently produce blank labels and undefined colours. The
+   contract should list the closed vocabulary explicitly so the frontend can
+   be complete over it rather than discovering members at runtime.
+5. **WebSocket auth mechanism is unspecified and the two sides disagree.**
+   The frontend sends the key as a subprotocol
+   (`new WebSocket(wsUrl, [API_KEY])`); the Gateway's middleware reads the
+   `X-API-Key` header, which browsers cannot set on a WebSocket handshake.
+   Pick one (subprotocol or a query parameter) and write it down. This
+   currently fails on first connect.
+6. **`POST /v1/batches` request body disagrees.** The frontend posts
+   `{count: 80}`; the Gateway requires `{source, records: [...]}` and returns
+   400 on the current payload. Decide whether the Gateway grows a
+   generate-N-synthetic-records mode (convenient for a demo button, and
+   `scripts/batchgen` already has the generation logic) or the frontend
+   builds real record arrays. The first is better for the demo.
+
+**Also fold in** the response fields Units K and L will need, so they are
+specced once rather than appended twice: `net_recovered_paise`,
+`intervention_spend_paise`, `cost_per_rupee_recovered`,
+`closed_uneconomic_count`/`_paise`, `processing_failure_count`, the
+`ClassificationAccuracy` block including the confusion map, the baseline
+comparison block, `AuditEntry.hops[]`, `trail_complete`, and the
+`VerifyInvariants` summary.
+
+**Definition of done**: every endpoint the frontend calls appears in the doc
+with an exact request and response shape; every field name matches what the
+Gateway will actually emit; the enum wire spelling is stated once and
+referenced everywhere; and `web/AGENTS.md` still truthfully says the doc is
+the only thing a frontend agent needs to read.
+
+## The frontend track, in order
+
+All of this lives in `web/**` and is the dedicated frontend agent's work.
+None of it blocks or is blocked by backend units after Unit O, because the
+contract is frozen and mock mode means the UI can be built and verified
+before the routes exist.
+
+**F1. Rebuild against the frozen contract (was Unit H).** `web/` is a Phase 0
+scaffold, deliberately: it was built early against the written contract so UI
+work would not wait on the backend. It is not the final UI and should not be
+treated as precious. Update `types.ts` and `api.ts` to the frozen contract,
+make every lookup map in `format.ts` total over the real vocabularies, fix
+the submit body and the WebSocket auth, and update `mockEngine.ts` to emit
+the same shapes so mock mode keeps working.
+
+**F2. Add error handling, which currently does not exist anywhere.** There is
+no `.catch` on any call, no error boundary, no empty state and no "batch not
+found". `loadBatchData()` runs inside a 2 second `setInterval` with no
+try/catch, so a live backend returning a 404 produces an unhandled rejection
+every two seconds behind a permanently blank page. This is the difference
+between a demo that degrades visibly and one that dies silently on stage.
+
+**F3. Build the panels for capabilities the backend already has (Unit L's UI
+half).** Provider hop chips in the drawer, net recovered and cost per rupee
+tiles, uneconomic-closed as its own tile distinct from escalated, the
+classification confusion matrix, a live `VerifyInvariants` "0 violations
+across N records" tile, a `trail_complete` badge, and the Unit K baseline
+comparison. Each is small; collectively they are what makes the system's
+actual sophistication visible. See Unit L for what each one is and why it
+matters.
+
+**F4. Demo polish.** Whatever the rehearsal (Phase 8) shows is confusing,
+plus making sure the drill-down record chosen in advance looks good.
+
+**Note for whoever writes the frontend agent's prompt**: point it at
+`web/AGENTS.md` and `docs/API_GATEWAY.md` and stop there. It does not need
+`docs/ARCHITECTURE.md`, and telling it about Kafka, gRPC or the state machine
+would be actively unhelpful, since none of that is reachable from where it
+works. That constraint has been the arrangement since Phase 0 and it is what
+makes this track cleanly separable.
 
 ## Audit findings (2026-08-29, before any unit was picked up)
 
@@ -235,3 +427,325 @@ consumer-groups.sh --describe`, lag 0 across all 12 partitions), and
 reached a fully realistic final-state distribution with no manual
 intervention: 28 nudges parked awaiting delayed outcomes, 6 recovered via
 retry, 3 correctly escalated (`RISK_HOLD`), 3 retries still in flight.
+
+---
+
+# What the rubric changed (2026-08-29)
+
+The Track 03 text and the general evaluation criteria were located and
+recorded verbatim in `PRD.md` §0. Three things follow that were not obvious
+before, and Units I to N exist because of them.
+
+**1. There is exactly one hole, and it is Unit F.** Scored clause by clause,
+this system already does "detects revenue at risk", "determines the right
+intervention", "bounded recovery workflow", "stopping rules" and "an audit
+trail". The clause it cannot currently demonstrate is **"measured money
+recovered across a batch"**, because `services/reporting/` is a 41 line stub.
+Every `PRD.md` §9 headline metric is unimplemented. That reframes Unit F from
+"one of eight units" to "the deliverable", and everything else to supporting
+evidence.
+
+**2. Adding AI surface is a risk, not a hedge.** "AI Judgment: whether AI
+tools, LLMs, or agents were applied appropriately **instead of forcing
+unnecessary tech stacks**" is a scored criterion. So proposals to add a
+natural-language merchant copilot, an LLM planner competing with the EV
+scorer, or a cross-batch learning loop are not neutral additions with upside
+only. They add model surface without adding judgment, and the scorer is a
+better answer to "how does this decide" than a planner would be. Deliberately
+not built. This also raises the stakes on Unit E: with `ComposeNudge`
+unbuilt, the *only* LLM use in the system is classification, which
+`DECISIONS.md` (2026-08-22) already concedes the rules engine does nearly as
+well. Generation is the honest justification for having a model at all.
+
+**3. The artefact is defended at a panel, not only demoed.** Shortlisted
+builders go straight to a technical interview. That makes `DECISIONS.md` and
+`INCIDENTS.md` first-class deliverables rather than internal hygiene, and it
+makes Unit N (stale claims in checked-in files) worth an hour: right now
+`configs/intervention_costs.yaml` accuses this codebase of computing its
+headline metric against the wrong cost model, and that accusation is false.
+
+## Unit I: Razorpay's published error codes as the failure vocabulary
+
+**Status**: not started. **Depends on**: nothing. **Rough size**: 2 hours.
+
+**What it is**: `services/classifier/internal/rules/buckets.go`'s
+`failureCodeToBucket` table is invented. `BANK_TIMEOUT`, `RAIL_CONGESTION`,
+`ISSUER_UNAVAILABLE` and `EXPIRED_INSTRUMENT` are plausible and are not
+Razorpay's. Razorpay publishes the real vocabulary at
+`https://razorpay.com/docs/errors/payments/list/`, with an error reason and a
+`source` (customer, business, gateway, razorpay) for each.
+
+**Why it is worth doing before the demo data is generated**: the judges work
+on this taxonomy. A classifier whose input vocabulary is the platform's own
+published error list, cited, is a materially different claim from one that
+invented a plausible list. It also lets the table carry a `[SOURCED]`
+provenance tag, matching the discipline already used in
+`configs/intervention_costs.yaml` and `configs/recovery_priors.yaml`.
+
+**It also unblocks Unit H.** `web/src/lib/format.ts`'s `FAILURE_CODE_LABELS`
+is keyed lowercase (`bank_timeout`) while real codes arrive uppercase, so
+every failure-code cell in the drawer renders blank against live data. The
+vocabulary has to be settled during Unit H regardless. Do it once, properly.
+
+**Design**:
+- Keep every existing key as an alias. `normalizeFailureCode` already
+  uppercases and collapses separators, so Razorpay's `insufficient_funds`
+  already resolves to the existing `INSUFFICIENT_FUNDS` key for free. Several
+  codes map with no work.
+- Add the real codes, at minimum: `bank_not_available`,
+  `bank_technical_error`, `issuer_technical_error`, `gateway_technical_error`,
+  `payment_declined_due_to_high_traffic`, `psp_not_available`,
+  `upi_app_technical_error` (all → `TRANSIENT_BANK`);
+  `insufficient_funds`, `transaction_limit_exceeded`,
+  `transaction_daily_limit_exceeded`, `credit_limit_exceeded` (→
+  `INSUFFICIENT_FUNDS`); `card_expired`, `card_declined`,
+  `debit_instrument_blocked`, `card_number_invalid`, `bank_account_invalid`,
+  `invalid_vpa` (→ `HARD_DECLINE`); `authentication_failed`, `incorrect_otp`,
+  `otp_expired`, `otp_attempts_exceeded`, `mandate_creation_failed`,
+  `mandate_creation_declined`, `reqauth_mandate_not_acknowledged` (→
+  `USER_ACTION_NEEDED`); `payment_risk_check_failed` (→ `RISK_HOLD`);
+  `payment_cancelled`, `payment_session_expired` (→ `ABANDONMENT`).
+- **Do not map the indeterminate codes to `TRANSIENT_BANK`.** This is the one
+  behavioural change in the unit, not a rename. `payment_timed_out`,
+  `payment_pending`, `verification_failed` and
+  `invalid_response_from_gateway` all mean *we do not know whether the bank
+  succeeded*, which is not the same as "it failed, retry soon". Retrying a
+  payment that actually succeeded is a duplicate charge. The current table
+  maps `GATEWAY_TIMEOUT`/`TIMEOUT` to `TRANSIENT_BANK`, i.e. straight into
+  that trap. Until a reconciliation path exists (parked, `BACKLOG.md`), route
+  these to `USER_ACTION_NEEDED` or escalation rather than an automatic retry,
+  and say why in the rationale.
+- Update `scripts/batchgen/profile.go`'s code pools to draw from the real
+  codes, so the demo batch looks like real Razorpay traffic.
+- Carry Razorpay's `source` field into the rationale where it is known
+  (`source: gateway` on `bank_not_available` means systemic, not the
+  customer's fault, so retrying is right and contacting them is not). One
+  line, and it reads as genuine domain awareness.
+
+**Definition of done additions**: the existing table test iterates the map, so
+extend it to assert every new code resolves and that the four indeterminate
+codes specifically do *not* resolve to a bucket whose policy is an automatic
+retry.
+
+## Unit J: compliance guardrails, cited
+
+**Status**: not started. **Depends on**: nothing. **Rough size**: 2 to 3 hours.
+
+**What it is**: the track asks for "compliant escalation" and this system used
+the word without naming a rule. `PRD.md` §11a now specifies two real ones and
+their limits. This unit enforces them.
+
+**Why it is cheap**: the shape already exists twice over. The guardrail layer
+already computes a permitted action set inside the same transaction as the
+state change it gates, and `services/decision-engine/internal/engine/
+schedule.go`'s `retryDueAt` already does exactly this kind of calendar
+arithmetic for the `INSUFFICIENT_FUNDS` salary window. Both new rules are the
+same pattern.
+
+**Design**:
+- **Contact-hour window (TRAI TCCCPR).** A new pure function alongside
+  `retryDueAt`, same signature style (takes `now`, returns a time, no I/O, no
+  Clock): given a proposed `due_at` for a *customer-contacting* action
+  (`NUDGE_METHOD_UPDATE`, `NUDGE_REMINDER`), return it unchanged if it falls
+  inside 10:00 to 21:00 IST, otherwise the next window open. `RETRY` is not a
+  customer contact and is unaffected. Scaled by `DEMO_TIME_SCALE` like every
+  other timing knob, so a demo does not stall for nine hours.
+- **Mandate pre-debit lead time (RBI).** A floor, not an offset: a `RETRY` on
+  a `RECORD_TYPE_MANDATE` record cannot be scheduled sooner than
+  `RETRY_MANDATE_LEAD_TIME` (default 24h) from now. The salary-window
+  calculation may push it later; nothing may pull it earlier. Note the
+  interaction: for `INSUFFICIENT_FUNDS` mandates both rules apply and the
+  later of the two wins.
+- Both produce an audit `reason` naming the rule, so the trail shows
+  *deferred to 10:00 IST per TRAI contact-hour window* rather than an
+  unexplained delay.
+- Config validated at startup like every other guardrail
+  (`GuardrailConfig.Validate`), because `INCIDENTS.md` 2026-08-24 is the
+  entry about a zero-valued safety config silently escalating every record.
+
+**Watch out for**: the timezone. IST is fixed at UTC+5:30 with no DST, so
+`time.FixedZone` is correct and simpler than a tzdata lookup, and a distroless
+runtime image may not carry tzdata anyway. Write the test against fixed
+instants, not `time.Now()`.
+
+**Definition of done additions**: a nudge due at 03:00 IST is deferred to
+10:00 and not dropped; a nudge due at 14:00 is untouched; a mandate retry
+requested 5 minutes out is floored to 24 hours; a mandate retry whose salary
+window already lands 20 days out is *not* pulled back to 24 hours; and the
+audit reason names the rule in each case.
+
+## Unit K: baseline comparison in Reporting
+
+**Status**: not started. **Depends on**: F. **Rough size**: 3 to 4 hours.
+
+**What it is**: "measured money recovered" is a number. "Measured money
+recovered, versus what a conventional policy would have recovered on the same
+records" is a result. This is the difference between demonstrating the agent
+ran and demonstrating it was worth running.
+
+**Design, and the honest version of it**: compute the counterfactual
+**analytically**, not by running the batch twice. `GROUND_TRUTH` already
+carries `recovery_probability`, `wrong_action_probability` and
+`true_bucket` per record. Reporting is already one of only two services
+permitted to read that table, and its accuracy scorer already joins against
+it. So in the same scorer, evaluate a fixed naive policy over the same
+records: **retry every record up to three times, nudge every record once,
+no economics, no guardrails beyond a hard attempt cap.** Report gross
+recovered, intervention spend and net recovered for both.
+
+**The expected result is the interesting one**, and it is worth predicting in
+advance so the number is not read as a bug: the blind policy will likely
+recover *similar gross* while spending several times more, because it pays to
+chase `HARD_DECLINE` and `RISK_HOLD` records whose priors are zero for a
+reason. That is precisely the argument for EV selection, and it turns
+`ClosedUneconomic` from "the agent gave up" into "the agent saved this much",
+which is what `PRD.md` §12 beat 3a promises and currently has no number
+behind.
+
+**The honesty requirement, non-negotiable**: both figures are evaluated in a
+world we authored. The claim is "this policy beats a blind one **under our
+modelled world**", not "we recover N% more real money". Say so in the report
+payload's own field documentation and on the dashboard tile, not only in this
+doc. This project has tagged every assumption in `configs/*.yaml` with
+`[SOURCED]`/`[ASSUMPTION]`/`[UNVERIFIED]`; the same standard applies here, and
+a panel will respect the caveat far more than it would respect an unqualified
+number.
+
+**Useful external anchors, since they let the baseline be checked against
+something we did not choose**: Razorpay publishes that automated retry systems
+recover "15-20% of failed transactions, adding 3-5 percentage points to
+overall payment success rate", and that for subscriptions smart retry tools
+recover "up to 57% of initially failed payment attempts". If our modelled
+baseline lands wildly outside that range, the model is wrong and that is worth
+knowing before a judge finds it. Also worth having ready as a closing line:
+"a 5-percentage-point improvement translates to ₹5 lakhs in recovered revenue
+for every ₹1 crore in monthly GMV", which converts a rate delta into rupees at
+merchant scale, with their citation.
+
+## Unit L: surface what is already stored but invisible
+
+**Status**: not started. **Depends on**: G (routes), H (UI). **Rough size**:
+half a day for all of it.
+
+**What it is**: an audit found several capabilities that are fully built,
+persisted, and have no route or no UI. Each is a small component in a design
+language `web/src/components/` already establishes. Collectively they are the
+difference between having built something and showing it.
+
+- **Provider hop chain.** `AuditEntry.hops[]` records every rung actually
+  attempted with results from a closed set (`ok`, `error`, `timeout`,
+  `rate_limited`, `schema_invalid`, `circuit_open`, `deadline_exhausted`).
+  The drawer has no field for it and currently conveys fallback with a single
+  string. `common.proto`'s own comment makes the point: `source` alone "reads
+  the same whether the primary answered first try or timed out and a failover
+  covered for it". This is the graceful-fallback evidence the rubric asks for
+  and it is invisible today. Render it as a chip row in the drawer's
+  Classification block.
+- **Net recovered and cost per rupee.** Both are in `BatchReport` already,
+  with `net_recovered_paise` flagged in the proto as "THE headline number".
+  `MetricsGrid` shows gross only. Two tiles.
+- **Uneconomic closed, as its own tile.** The proto deliberately separates
+  `closed_uneconomic_count`/`_paise` from `escalated_count`, because "a human
+  should decide" and "we decided this was not worth it" are different
+  outcomes. The UI collapses them.
+- **The confusion matrix.** `ClassificationAccuracy.confusion` already
+  specifies a predicted-to-true map that shows *where* it was wrong. The UI
+  shows one scalar percentage.
+- **A live invariants tile.** `Audit.VerifyInvariants` is implemented and
+  returns `stopping_rule_violations`, `incomplete_audit_trails`,
+  `impossible_transitions` and `records_checked`. There is no Gateway route
+  and no UI. A green "0 violations across 80 records checked" tile is roughly
+  an hour and it is the difference between *claiming* `PRD.md` §9's
+  correctness invariants and *measuring* them in front of the judge, by the
+  service whose job that is.
+- **`trail_complete`** has no badge in the drawer.
+
+**Also in scope, because Unit H trips over them**: the frontend's lookup maps
+are exhaustive `Record<>` types over the wrong vocabulary and will render
+blanks rather than errors against live data. Three buckets where the proto has
+seven; `RecordType` missing `CHECKOUT` and `INVOICE`; `Outcome` spelled
+`failed` where the proto says `OUTCOME_FAILURE`; and no decision anywhere
+about whether states arrive as `RetryScheduled` or
+`RECORD_STATE_RETRY_SCHEDULED`. Settle the wire spelling once, in
+`docs/API_GATEWAY.md`, and make the frontend total over it.
+
+**And fix the two live-mode breakages found in the same audit**: the
+WebSocket sends the API key as a subprotocol (`new WebSocket(wsUrl,
+[API_KEY])`) while the Gateway checks the `X-API-Key` header, so auth fails on
+first connect; and `submitBatch` posts `{count: 80}` while the Gateway
+requires `{source, records: [...]}`, so the button returns 400 against a real
+backend. Neither shows up in mock mode.
+
+## Unit M: persist the EV ranking and the guardrail refusal reasons
+
+**Status**: not started. **Depends on**: nothing. **Rough size**: 3 hours.
+
+**What it is**: "Every money action explainable" is the house standard
+(`PRD.md` §0). Today the trail explains the *winner* and nothing else. The
+data needed to explain the losers is computed and thrown away, twice:
+
+- `economics.Model.Best` (`services/decision-engine/internal/economics/
+  score.go`) loops candidates, keeps the argmax, and returns one `Score`.
+  Sub-zero-EV candidates are `continue`d before they are ever compared, so
+  they leave no trace at all.
+- The guardrail layer separately computes `guardrailVerdict.blocked
+  map[ActionType]string`, a per-action *refusal reason*, which is also
+  dropped after being used to filter the permitted set.
+
+Together those two are a complete answer to "why this action and not the
+others", and both are discarded microseconds after being computed.
+
+**Design**: add `ScoreAll` alongside `Best` (or have `Best` return the full
+slice), keep `Model.Score` untouched since it is already pure and exported,
+thread the ranking plus the blocked map through `scoreAndRoute` into
+`store.scheduleNew`, and persist as one additive JSON column. One file plus
+one migration. Do **not** change how the winner is chosen; this unit records
+the comparison, it does not alter it, and a test should assert the selected
+action is byte-identical before and after.
+
+**Why it is worth 3 hours**: a table showing `retry +₹340 / whatsapp +₹120 /
+sms −₹15 / none 0 → chose retry`, or `retry blocked: attempt cap reached (3
+of 3)`, is a far stronger explainability artefact than any amount of model
+rationale prose, because it shows the deterministic part doing the deciding.
+That is the answer to "so does the LLM decide how to spend money?", made
+visual.
+
+## Unit N: correct three stale claims in checked-in files
+
+**Status**: not started. **Depends on**: nothing. **Rough size**: 1 hour.
+
+Each of these is a checked-in file asserting something about this codebase
+that is no longer true. All three were verified against the source on
+2026-08-29. They matter more than their size because they sit in the files a
+panel is most likely to read closely, and each is a self-accusation.
+
+1. **`configs/intervention_costs.yaml`'s `executor_reconciliation` block says
+   `agrees_today: false`**, claiming `whatsappCostPaise` is 60 (should be 14)
+   and `retryCostPaise` is 200 (should be 25).
+   `services/executor/internal/ports/cost.go` actually reads 14 and 25, and
+   `cost_reconciliation_test.go` has guarded them since 2026-08-24. As it
+   stands, the most judge-legible config file in the repo states that the
+   headline "net recovered" metric is computed against a different cost model
+   than the one that authorised the spend. It is not. Update the block to
+   `agrees_today: true` with the date, and keep the defect list that is still
+   genuinely open (the `CHANNEL_EMAIL` default branch, `StubRecovery`
+   charging retry cost on both branches, `SimulateOutcomeResponse` carrying no
+   cost field).
+2. **`configs/recovery_priors.yaml` says the ESCALATE priors are "currently
+   mostly unreachable"** because §7's state machine has no
+   `Scoring -> Escalated` edge. That edge exists, at
+   `services/audit/internal/server/statemachine.go:32`, added 2026-08-27 (see
+   `INCIDENTS.md`). Correct the note.
+3. **`configs/README.md` does not exist**, and both YAML files reference it
+   seven times ("Why these are two files is argued in `configs/README.md`",
+   "See configs/README.md, 'The MDR gap'"). Either write it or remove the
+   references. Writing it is better: the two things it is cited for (why costs
+   and priors are separate files, and the MDR gap in the net-recovered
+   formula) are both genuinely worth a paragraph, and the MDR gap in
+   particular is a known understatement in the headline metric that is better
+   documented than discovered.
+
+Also stale and worth the same pass: **`ARCHITECTURE.md` §10's ERD for
+`GROUND_TRUTH`** shows a `readable_by` column that was never created and omits
+`wrong_action_probability` and `response_delay_seconds`, both of which the
+World Simulator actually needs and Unit C will be reading.

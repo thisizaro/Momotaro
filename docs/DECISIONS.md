@@ -1064,3 +1064,149 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   double-applied 11-12 times out of 25 on every run; with it, exactly 1,
   clean across repeated runs. Full account in
   `docs/PHASE5_IMPLEMENTATION.md` Unit A.
+- 2026-08-29: **The judging rubric is now recorded verbatim in `docs/PRD.md`
+  §0.** It had never been written down anywhere in this repo; the only
+  fragment quoted anywhere was "Failure recovery: what broke, and what you
+  did about it" in `docs/INCIDENTS.md`. Everything else was being triaged
+  against our own memory of the track. Recorded because the last two days
+  are pure triage and triage against a paraphrase is how the wrong thing
+  gets built. Two consequences fall straight out of the text and are worth
+  stating separately from the quote itself.
+  **First, there is exactly one gap.** Clause by clause the system already
+  satisfies "detects revenue at risk", "determines the right intervention",
+  "bounded recovery workflow", "stopping rules" and "an audit trail". The one
+  clause it cannot demonstrate is **"measured money recovered across a
+  batch"**, because `services/reporting/` is a 41-line stub and every
+  `PRD.md` §9 headline metric is therefore unimplemented. Phase 5 Unit F is
+  not one of eight units, it is the deliverable; the rest is supporting
+  evidence.
+  **Second, "AI Judgment: whether AI tools, LLMs, or agents were applied
+  appropriately instead of forcing unnecessary tech stacks" is a scored
+  criterion**, which makes additional AI surface a risk rather than a hedge.
+  Three external reviews on 2026-08-29 proposed a natural-language merchant
+  copilot, an LLM planner selecting interventions, and a cross-batch learning
+  loop. All three declined, reasons per item in `docs/BACKLOG.md`. The short
+  version: the deterministic scorer choosing among a guardrail-permitted menu
+  is a *better* answer to "does the LLM decide how to spend money" than a
+  planner would be, so a planner would trade a strength for a weakness.
+  Also noted: selection goes straight to a technical panel, so
+  `DECISIONS.md` and `INCIDENTS.md` are first-class deliverables rather than
+  internal hygiene, and depth that can be defended beats surface area that
+  cannot.
+- 2026-08-29: **"Compliant escalation" is now two cited rules rather than an
+  assertion** (`docs/PRD.md` §11a, Phase 5 Unit J). The track text asks for
+  compliant escalation and this project had been using the word without
+  naming a regulation, while `PRD.md` §13 carried the gap as an open
+  question and `ARCHITECTURE.md` §17's retry-cap row was the only row in that
+  table whose justification column did not defend itself. Three documents
+  pointing at the same hole. Closed with **TRAI TCCCPR 2018** (promotional
+  commercial messages only 10:00 to 21:00 IST; transactional and service
+  messages exempt) and the **RBI Digital Payments E-mandate Framework**
+  (pre-transaction notification at least 24 hours before an auto-debit).
+  Two judgement calls inside that. **We take the conservative reading of the
+  TRAI category question**: a message about a payment the customer themselves
+  initiated is defensibly a Service message and therefore exempt from the
+  window, but all customer-contacting interventions respect 10:00 to 21:00
+  IST anyway, because a recovery agent that can quietly message people at 3am
+  is the exact failure mode a "bounded" workflow exists to prevent, and the
+  cost of being wrong exceeds the cost of a deferred nudge. And **the RBI
+  lead time is a floor, not an offset**: a mandate retry cannot be scheduled
+  sooner than 24 hours out, the salary-window calculation may push it later,
+  nothing may pull it earlier. Both are guardrails, so per §5a's fixed
+  ordering they can only ever remove an option, never add one.
+  Limits stated in §11a rather than left implied: no DND list checking (no
+  telecom integration to check against), this system does not itself send the
+  pre-debit notification (in the real flow that is the issuer's obligation,
+  not the merchant's agent's), and NPCI per-mandate presentation limits
+  remain the simplified stand-in §17 describes. Two real rules honoured
+  precisely beats a vague claim of compliance.
+- 2026-08-29: **The classifier's failure-code vocabulary moves to Razorpay's
+  published error list** (Phase 5 Unit I). `buckets.go`'s table was invented:
+  `BANK_TIMEOUT`, `RAIL_CONGESTION`, `ISSUER_UNAVAILABLE`,
+  `EXPIRED_INSTRUMENT`. Plausible, and not the taxonomy the judges work on
+  daily. Existing keys stay as aliases, and `normalizeFailureCode` already
+  uppercases and collapses separators, so several real codes
+  (`insufficient_funds` being the obvious one) resolve to existing keys with
+  no work at all.
+  **One behavioural change rides along and is the actual reason this is not
+  cosmetic.** The current table maps `GATEWAY_TIMEOUT`/`TIMEOUT` to
+  `TRANSIENT_BANK`, whose policy is "retry soon". Razorpay's real list
+  distinguishes codes where the outcome is genuinely *indeterminate*
+  (`payment_timed_out`, `payment_pending`, `verification_failed`,
+  `invalid_response_from_gateway`) and "we do not know whether the bank
+  succeeded" is not the same fact as "it failed". Retrying the first is how a
+  recovery agent creates a duplicate charge. Those codes will not resolve to
+  a bucket whose policy is an automatic retry. The full treatment (a real
+  `INDETERMINATE` bucket plus a reconciliation step) is parked in
+  `docs/BACKLOG.md`; the principle is already implemented and tested in the
+  Executor, which refuses to re-run an unresolved claim (see 2026-08-23).
+  Also settles a Unit H blocker either way: `web/src/lib/format.ts`'s
+  `FAILURE_CODE_LABELS` is keyed lowercase and renders blank against real
+  uppercase codes, so this vocabulary had to be decided before the dashboard
+  could go live regardless.
+- 2026-08-29: **"Measured money recovered" gets a baseline to be measured
+  against** (Phase 5 Unit K). A recovery number on its own does not show the
+  agent created value, since some of those records would have recovered under
+  any policy. Reporting will compute, over the same sealed `GROUND_TRUTH`,
+  what a naive "retry everything three times, nudge everything once, no
+  economics" policy would have recovered, and report gross, spend and net for
+  both.
+  **Computed analytically, not by running the batch twice.** A live A/B needs
+  a policy switch in the Decision Engine, a reproducible re-roll of the same
+  world, and double the demo runtime, for a number the closed form already
+  gives. **The honesty requirement is not optional and belongs in the payload
+  and on the tile, not only in a design doc**: both figures are evaluated in a
+  world we authored, so the claim is "this policy beats a blind one under our
+  modelled world", never "we recover N% more real money". Same standard as the
+  `[SOURCED]`/`[ASSUMPTION]`/`[UNVERIFIED]` tagging in `configs/*.yaml`.
+  The expected result is worth predicting in advance so it is not misread as
+  a bug: the blind policy should recover *similar gross at several times the
+  spend*, because it pays to chase `HARD_DECLINE` and `RISK_HOLD` records
+  whose priors are zero for a reason. That is the argument for EV selection
+  stated as a measurement, and it is what finally puts a number behind
+  `PRD.md` §12 beat 3a ("the money that decision saved"), which has been a
+  promise with no figure behind it since it was written.
+  External anchors to sanity-check the model against something we did not
+  choose: Razorpay publishes that automated retry recovers "15-20% of failed
+  transactions, adding 3-5 percentage points to overall payment success rate"
+  and that subscription smart-retry recovers "up to 57%". A modelled baseline
+  landing far outside that range means the model is wrong, and it is better to
+  find that out before a judge does.
+- 2026-08-29: **The dashboard's mock backend is a development mode, not a
+  demo mode** (`docs/PRD.md` §12a). Recorded because the distinction is easy
+  to blur and expensive to get caught blurring. `demo/world-simulator` and
+  `demo/notification-simulator` stand in for third parties we cannot have in
+  a hackathon (a bank, an SMS gateway); they live under `demo/` so the
+  boundary is visible in the directory tree, they hold a sealed ground truth
+  the decision path provably cannot read, and they are what make outcomes
+  *measurable* rather than merely observed. That is a strength and gets said
+  out loud. `web/src/lib/mockEngine.ts` is different in kind: 744 lines of
+  browser-side JavaScript standing in for **our own backend**, convincing
+  enough to be mistaken for one, which makes it a liability on stage rather
+  than an asset. It stays a supported mode (`web/AGENTS.md`) because
+  developing the dashboard without the stack running is genuinely useful. The
+  demo runs against a real Gateway with `VITE_API_BASE_URL` set, and any
+  panel that cannot be served live is **removed from the demo rather than
+  shown on mock data**.
+- 2026-08-29: **`StreamBatchUpdates` and the WebSocket relay are scheduled
+  last in Phase 5, not dropped.** `ARCHITECTURE.md` §6a's push design stands
+  and the earlier decision not to settle for polling is not reversed. What
+  changed is ordering, on a fact nobody had noticed: the dashboard already
+  refetches on a 2 second interval and **every aggregate on the page is
+  driven by that refetch, not by the socket** (`App.tsx`'s `setInterval(
+  loadBatchData, 2000)`). The socket feeds only the scrolling event log. So
+  the fallback is invisible on stage, while the push path is the most
+  expensive item left in the phase: a server-streaming RPC, Kafka consumption
+  inside Reporting, and a gRPC-stream-to-WebSocket bridge in the Gateway,
+  plus a latent auth bug (the frontend sends the key as a WebSocket
+  subprotocol, the Gateway checks the `X-API-Key` header). Against that, the
+  unary `GetBatchReport`/`ListBatchRecords` path is what closes the rubric's
+  one actual gap. Build the cheap correct thing first, add the push if the
+  time is there, and if it is not, `docs/BACKLOG.md` carries it rather than
+  the demo quietly claiming it.
+  Related and worth knowing for sequencing: **Reporting does not depend on the
+  World Simulator.** Reporting reads Postgres, and the Executor's existing
+  scripted stub already writes recovered/escalated/nudged rows with real
+  `cost_paise`, so Unit F can be built and merged against the stub in parallel
+  with Unit C. The apparent single chain C → D → F → G → H is not real, and
+  treating it as real is the difference between finishing and not.

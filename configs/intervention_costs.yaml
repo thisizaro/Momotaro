@@ -513,14 +513,20 @@ informational_not_in_formula:
 # is computed against a different cost model than the one that authorized the
 # spend.
 #
-# VERDICT: they DISAGREE on two of three constants. SMS agrees. WhatsApp is
-# overstated 4.3x and, more importantly, its DIRECTION is wrong: route.go
-# treats WhatsApp as the premium channel when on published Indian rates it is
-# the cheaper one. Retry is overstated 8x against the only unconditional cost
-# that could be identified.
+# VERDICT (updated 2026-08-29): they AGREE on all three constants. This block
+# originally recorded a disagreement on two of them, and that disagreement was
+# closed on 2026-08-24: cost.go was edited to the values below and
+# cost_reconciliation_test.go now reads this file off disk and fails the build
+# if the two ever drift apart again. The per-constant history is kept rather
+# than deleted, because "these numbers were wrong and here is what was wrong
+# about them" is the useful part; only `agrees_today` and the
+# `current_value_paise` fields were corrected. Verified against cost.go on
+# 2026-08-29: retry 25, sms 25, whatsapp 14.
 # ---------------------------------------------------------------------------
 executor_reconciliation:
-  agrees_today: false
+  agrees_today: true
+  agreement_verified_on: "2026-08-29"
+  enforced_by: services/executor/internal/ports/cost_reconciliation_test.go
   constants_that_must_track_this_file:
     - constant: smsCostPaise
       file: services/executor/internal/ports/cost.go
@@ -528,27 +534,31 @@ executor_reconciliation:
       required_value_paise: 25
       change_needed: false
       note: >-
-        Agrees. 25 is well supported: MSG91's published card plus DLT plus GST
-        lands at 24.2, and docs/PRD.md section 2b's own "roughly 0.20 rupees"
-        is the aggregator rate before DLT and GST.
+        Agrees, and always did. 25 is well supported: MSG91's published card
+        plus DLT plus GST lands at 24.2, and docs/PRD.md section 2b's own
+        "roughly 0.20 rupees" is the aggregator rate before DLT and GST.
     - constant: whatsappCostPaise
       file: services/executor/internal/ports/cost.go
-      current_value_paise: 60
+      current_value_paise: 14
       required_value_paise: 14
-      change_needed: true
+      change_needed: false
+      fixed_on: "2026-08-24"
       note: >-
-        Overstated 4.3x. Meta's India Utility rate is 11.50 paise ex-GST,
-        13.57 incl GST, since per message pricing began 1 Jul 2025. 60 paise
-        appears to predate that change or to fold in a BSP platform
-        subscription, which is a sunk fixed cost and does not belong in a
-        marginal per message price. The comment on the constant, "better read
-        rates, higher per-message cost", is now false for India.
+        RESOLVED. Was 60, overstated 4.3x. Meta's India Utility rate is 11.50
+        paise ex-GST, 13.57 incl GST, since per message pricing began
+        1 Jul 2025. 60 paise appears to have predated that change or folded in
+        a BSP platform subscription, which is a sunk fixed cost and does not
+        belong in a marginal per message price. The constant's old comment,
+        "better read rates, higher per-message cost", was false for India and
+        was removed with the value.
     - constant: retryCostPaise
       file: services/executor/internal/ports/cost.go
-      current_value_paise: 200
+      current_value_paise: 25
       required_value_paise: 25
-      change_needed: true
+      change_needed: false
+      fixed_on: "2026-08-24"
       note: >-
+        RESOLVED. Was 200, overstated 8x.
         Overstated against the only unconditional cost identified. Razorpay
         charges per successful transaction, so a failed retry carries no
         gateway fee; what remains is the NPCI NACH switching fee, reported at
