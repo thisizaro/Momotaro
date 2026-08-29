@@ -972,3 +972,43 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   real developer machine or in CI (native Linux Engine, no extra sandbox
   layer); a future agent or the user should confirm the actual scrape
   succeeds there rather than trusting this note alone.
+- 2026-08-29: **Two of Phase 4's three named alerts (`docs/PLAN.md`) had no
+  metric to alert on**, so Unit D built them rather than silently declaring
+  the alerts done against nothing. `docs/ARCHITECTURE.md` section 13 has
+  committed to `llm_fallback_total` and `stopping_rule_violation_total`/
+  `incomplete_audit_trail_total` since before Phase 4 existed; Unit A's
+  gRPC interceptor never touched business-specific metrics like these.
+  Added `llm_fallback_total` (classifier, incremented only when a real LLM
+  rung was attempted and lost to rules, see `docs/INCIDENTS.md` 2026-08-29
+  for why a naive version was wrong) and three gauges in the audit
+  service's existing `Watcher` (`stopping_rule_violation_total`,
+  `incomplete_audit_trail_total`, and `audit_impossible_transitions_total`,
+  the third one beyond `ARCHITECTURE.md`'s named list -- the verifier
+  already computes it, and shipping the other two without it would leave a
+  detected violation with nowhere to be seen).
+  **Gauges, not Counters, despite the `_total` naming convention.** All
+  three names came from `ARCHITECTURE.md` before implementation, using
+  Prometheus's own `_total` suffix convention that normally means a
+  monotonic Counter. The actual semantics are a snapshot of the most
+  recent scan, which can legitimately fall (a batch deleted, a bug fixed
+  and re-verified), so a Gauge is the honest type. Kept the names exactly
+  as already documented in three other files rather than renaming them to
+  something more gauge-conventional (e.g. `..._current`): a name already
+  used in `ARCHITECTURE.md`, `PLAN.md`, and `PHASE2_IMPLEMENTATION.md` is a
+  more expensive thing to change than the naming-convention mismatch is
+  worth, and `> 0` alerting works identically regardless of metric type.
+  **The much longer remainder of `ARCHITECTURE.md` section 13's metric
+  list is explicitly NOT built here** (LLM call latency, circuit-breaker
+  state, DLQ depth, worker-pool saturation, scheduler timing, intervention
+  spend). That is real, separate instrumentation work scattered across
+  several services, not something that rides along with Unit D for free;
+  it should get its own unit(s) in `docs/PHASE4_IMPLEMENTATION.md` when
+  someone picks it up, rather than being assumed done because "metrics"
+  sounds finished.
+  **Alertmanager's one receiver is a deliberate no-op.** No real
+  notification channel (Slack webhook, PagerDuty key, email) exists
+  anywhere in this system's config today. Rather than inventing a fake
+  destination, firing alerts are visible in Alertmanager's own UI and
+  Prometheus's `ALERTS` metric, which is enough to prove the rules fire
+  for a demo; wiring a real receiver is a small, separate addition for
+  whenever an actual destination exists.

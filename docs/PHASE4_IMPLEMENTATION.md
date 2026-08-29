@@ -22,7 +22,7 @@ all, rather than built speculatively.
 | A | Prometheus metrics: shared gRPC interceptor + per-service `/metrics` | merged | nothing |
 | B | Kafka consumer-lag exporter (decision-engine) | merged | nothing |
 | C | docker-compose Prometheus wiring + scrape config | merged | A, B |
-| D | Alertmanager rules | not started | C |
+| D | Alertmanager rules | merged | C |
 | E | Grafana dashboards | not started | C |
 | F | OpenTelemetry tracing across gRPC + Kafka hops | on hold | pending a go/no-go decision |
 
@@ -194,10 +194,105 @@ this note alone. See docs/DECISIONS.md 2026-08-29 for the full account.
 
 ## Unit D: Alertmanager rules
 
-**Status**: not started. **Depends on**: C.
+**Status**: merged. **Depends on**: C.
 
 Consumer lag, LLM fallback rate, stopping-rule violation, per
-`docs/PLAN.md` Phase 4's own bullet list.
+`docs/PLAN.md` Phase 4's own bullet list, plus two more the audit service's
+existing invariant verifier already computes but never exposed
+(incomplete audit trail, impossible transition).
+
+**What it surfaced**: two of the three named alerts had no metric to alert
+on yet. `docs/ARCHITECTURE.md` section 13 already commits to
+`llm_fallback_total` and `stopping_rule_violation_total`/
+`incomplete_audit_trail_total` by name; Unit A only built the generic
+gRPC-level metrics, not these business-specific ones. Building the alerts
+honestly meant building the two missing metrics first, not writing rules
+that reference names nothing exports. The much longer remaining list in
+that same ARCHITECTURE.md section (`llm_call_duration_seconds`,
+`retry_budget_exhausted_total`, `llm_circuit_state`, `dlq_messages_total`,
+`worker_pool_saturation`, `scheduler_claim_latency_seconds`,
+`scheduler_overdue_records`, `intervention_spend_paise_total`,
+`records_closed_uneconomic_total`) is **not** built here: that is real,
+separate work, tracked as its own follow-up rather than silently declared
+done. See the note at the end of this unit.
+
+**Files**:
+- `services/classifier/internal/server/server.go`: `New` gains a
+  `prometheus.Counter` parameter (`llm_fallback_total`), incremented in
+  `Classify` when `resp.GetSource() == SOURCE_RULES_FALLBACK` **and**
+  `llmWasAttempted(resp.GetHops())` -- deliberately not on every
+  rules-sourced response. `force_rules_only` (the sampling gate,
+  docs/PHASE3_IMPLEMENTATION.md Unit H) strips every non-rules rung before
+  the chain runs at all, so a naive "source == rules fallback" check would
+  count *every* unsampled record as an "LLM fallback" and make the alert
+  fire constantly under completely normal `LLM_SAMPLE_RATE < 1.0`
+  operation. `llmWasAttempted` checks the hop list for any non-"rules"
+  provider, which is only present when a real rung was actually tried.
+  Caught by writing the negative test first, adversarially: an earlier
+  version of this counter (see the PR's own history) counted the
+  sampled-out case too, and the fix is exactly this hop check.
+- `services/classifier/internal/server/server_test.go`: `failingProvider`
+  fake, a two-rung chain (`groq` always-fails, then `rules`) replacing the
+  old rules-only test chain so a genuine "LLM attempted and failed" case is
+  actually exercised, plus a `newRulesOnlyTestServer` proving the negative
+  case (no LLM rung in the chain at all) does not increment the counter.
+- `services/classifier/cmd/main.go`: registers the counter into `m.Registry()`.
+- `services/audit/internal/server/watch.go`: `InvariantGauges` (three
+  `prometheus.Gauge`s: `stopping_rule_violation_total`,
+  `incomplete_audit_trail_total`, and `audit_impossible_transitions_total`,
+  the last one beyond ARCHITECTURE.md's named list, added because the
+  verifier already computes it and shipping the other two without it would
+  leave a detected violation with nowhere to be seen). Gauges, not
+  Counters, despite the "_total" names ARCHITECTURE.md already committed
+  to: each tick reports what THIS scan found, which can fall as well as
+  rise. `Watcher.checkOnce` sets all three on every successful scan,
+  including a clean one (so the value can fall back to zero), and leaves
+  them untouched on a checker error rather than resetting them to zero,
+  so a transient DB hiccup can never hide a real, still-existing violation.
+- `services/audit/internal/server/watch_test.go`: two new tests -- gauges
+  reflect the scan result, and a checker error leaves them exactly where
+  the last successful scan left them.
+- `services/audit/cmd/main.go`: `NewWatcher` gains the gauges, built from
+  `m.Registry()`.
+- `deploy/observability/alerts.yml` (new): the five rules above, loaded by
+  Prometheus via `rule_files`.
+- `deploy/observability/alertmanager.yml` (new): minimal routing config,
+  one no-op receiver. No real notification channel exists anywhere in this
+  system yet (no webhook, no key in `.env.example`), so a firing alert is
+  visible in Alertmanager's own UI and Prometheus's `ALERTS` metric, which
+  is the honest thing to ship rather than inventing a fake destination.
+- `docker-compose.observability.yml`: new `alertmanager` container;
+  `prometheus` gains the `alerts.yml` mount and a `depends_on`.
+- `deploy/observability/prometheus.yml`: `rule_files` and `alerting.
+  alertmanagers` blocks.
+
+**Verification**: `go build/vet/test ./...` and `gofmt -l .` all clean.
+Adversarially broke `llmWasAttempted` (made it unconditionally true) and
+confirmed the negative test failed with the exact wrong value, then
+reverted; did the same for both audit gauge tests (skipped the `Set` calls,
+then hardcoded them to 0), confirming each failed as expected, then
+reverted. `docker run ... promtool check config` caught a real mistake
+before it ever reached a container: `alerting.alertmanager_configs` is not
+a real Prometheus config key (the correct one is `alertmanagers`) -- `docker
+compose up` alone had only produced an opaque parse error inside the
+container's own logs; `promtool` pointed at the exact line. After the fix,
+ran the full stack (`make up-observability`) and confirmed directly:
+Prometheus's `/api/v1/rules` shows all five rules at `health: "ok"` after
+one evaluation cycle, `/api/v1/alertmanagers` shows the alertmanager
+container actually discovered, and `docker exec` from inside the
+Prometheus container to `alertmanager:9093/-/healthy` returns `OK` --
+container-to-container networking on the compose network works fine in
+this sandbox even though the host.docker.internal hop (Unit C) could not
+be confirmed there.
+
+**Follow-up, not done here**: the rest of `docs/ARCHITECTURE.md` section
+13's named metric list (LLM call latency, circuit-breaker state, DLQ
+depth, worker-pool saturation, scheduler timing, intervention spend) is
+real, separate work. Not tracked as its own lettered unit yet because it
+is business-metric instrumentation scattered across several services
+rather than one coherent deliverable; whoever picks it up next should
+give it its own unit(s) here rather than assuming it rides along with
+anything already merged.
 
 ## Unit E: Grafana dashboards
 

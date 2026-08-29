@@ -121,7 +121,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 
 	// The continuous invariant verifier: the other half of this service's
 	// job (services/audit/AGENTS.md), running independently of any caller.
-	watcher := server.NewWatcher(auditServer, clock.New(), cfg.InvariantCheckInterval, log)
+	watcher := server.NewWatcher(auditServer, clock.New(), cfg.InvariantCheckInterval, log, server.NewInvariantGauges(m.Registry()))
 	go watcher.Run(ctx)
 	log.Info("invariant watcher started", "interval", cfg.InvariantCheckInterval)
 

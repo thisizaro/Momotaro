@@ -1,0 +1,85 @@
+# Alertmanager rules (docs/PHASE4_IMPLEMENTATION.md Unit D,
+# docs/ARCHITECTURE.md section 13, docs/PLAN.md Phase 4). Loaded by
+# Prometheus via prometheus.yml's rule_files, evaluated there, then routed
+# to Alertmanager (alertmanager.yml) once firing.
+groups:
+  - name: momotaro
+    rules:
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_lag > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "decision-engine is falling behind on {{ $labels.topic }} partition {{ $labels.partition }}"
+          description: >-
+            Consumer lag has stayed above 1000 messages for 5 minutes.
+            1000 is a placeholder, not a measured number: docs/PLAN.md
+            Phase 6 calibrates the worker pool and partition count against
+            real throughput, and this threshold should move with it.
+
+      # llm_fallback_total only counts a call where an LLM rung was
+      # actually attempted and failed (services/classifier/internal/server
+      # /server.go's llmWasAttempted), never force_rules_only sampling, so
+      # this reflects real degradation, not the configured LLM_SAMPLE_RATE
+      # (docs/PHASE3_IMPLEMENTATION.md Unit H). requests_total{code="OK"}
+      # for the Classify method is the denominator: every successful
+      # classification, from Unit A's generic gRPC interceptor metric.
+      - alert: LLMFallbackRateHigh
+        expr: >-
+          (sum(rate(llm_fallback_total[10m]))
+            / clamp_min(sum(rate(requests_total{method="/classifier.v1.ClassifierService/Classify", code="OK"}[10m])), 1))
+          > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "over half of attempted LLM classifications are failing over to rules"
+          description: >-
+            Sustained for 10 minutes. clamp_min avoids a divide-by-zero
+            when there is no classification traffic at all; at very low
+            volume this understates the true ratio, which is an accepted
+            simplification for a demo-scale deployment.
+
+      # docs/PRD.md section 9/10 makes "zero stopping-rule violations" a
+      # headline claim; this metric existing above zero at all means that
+      # claim is false right now, hence severity critical and for: 0m.
+      - alert: StoppingRuleViolationDetected
+        expr: stopping_rule_violation_total > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "a record exceeded its retry or contact cap"
+          description: >-
+            The audit service's continuous invariant verifier
+            (services/audit/internal/server/watch.go) found at least one
+            record past a guardrail limit. Should be structurally
+            impossible; treat as a page, not a warning.
+
+      - alert: IncompleteAuditTrailDetected
+        expr: incomplete_audit_trail_total > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "a record's state has no matching (or an inconsistent) audit_entry"
+          description: >-
+            docs/ARCHITECTURE.md section 10a's rule -- state and audit
+            entry are always written together, transactionally -- has been
+            broken somewhere.
+
+      # Beyond docs/ARCHITECTURE.md section 13's named metric list: the
+      # verifier already computes this (services/audit/internal/server
+      # /verify.go), and shipping the gauge without an alert on it would be
+      # a detected violation nobody is paged for.
+      - alert: ImpossibleAuditTransitionDetected
+        expr: audit_impossible_transitions_total > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "a record's audit trail contains a transition the state machine does not allow"
+          description: >-
+            services/audit/internal/server/statemachine.go says this edge
+            should not exist.

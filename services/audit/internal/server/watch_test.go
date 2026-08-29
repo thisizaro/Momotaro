@@ -7,9 +7,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 )
+
+// testInvariantGauges builds a fresh, unregistered-anywhere-else set: no
+// test here needs a real /metrics endpoint, only the gauges themselves.
+func testInvariantGauges(t *testing.T) InvariantGauges {
+	t.Helper()
+	return NewInvariantGauges(prometheus.NewRegistry())
+}
 
 type fakeChecker struct {
 	calls int32
@@ -46,7 +55,7 @@ func armReady(w *Watcher) func() {
 func TestWatcherChecksOnEveryInterval(t *testing.T) {
 	fake := &fakeChecker{resp: &auditv1.VerifyInvariantsResponse{RecordsChecked: 3}}
 	fc := clock.NewFake(time.Unix(0, 0))
-	w := NewWatcher(fake, fc, time.Minute, discardLogger())
+	w := NewWatcher(fake, fc, time.Minute, discardLogger(), testInvariantGauges(t))
 	waitForNextTick := armReady(w)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -77,7 +86,7 @@ func TestWatcherChecksOnEveryInterval(t *testing.T) {
 func TestWatcherStopsImmediatelyOnCancelledContext(t *testing.T) {
 	fake := &fakeChecker{resp: &auditv1.VerifyInvariantsResponse{}}
 	fc := clock.NewFake(time.Unix(0, 0))
-	w := NewWatcher(fake, fc, time.Hour, discardLogger())
+	w := NewWatcher(fake, fc, time.Hour, discardLogger(), testInvariantGauges(t))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -101,7 +110,7 @@ func TestWatcherStopsImmediatelyOnCancelledContext(t *testing.T) {
 func TestWatcherLogsButDoesNotStopOnCheckerError(t *testing.T) {
 	fake := &fakeChecker{err: context.DeadlineExceeded}
 	fc := clock.NewFake(time.Unix(0, 0))
-	w := NewWatcher(fake, fc, time.Minute, discardLogger())
+	w := NewWatcher(fake, fc, time.Minute, discardLogger(), testInvariantGauges(t))
 	waitForNextTick := armReady(w)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -116,5 +125,69 @@ func TestWatcherLogsButDoesNotStopOnCheckerError(t *testing.T) {
 
 	if got := atomic.LoadInt32(&fake.calls); got != 2 {
 		t.Errorf("checker called %d times, want 2 (errors must not stop the loop)", got)
+	}
+}
+
+// The gauges are the entire point of Unit D: a scan that finds violations
+// must make them visible to Prometheus, not just to a log line an operator
+// has to be watching at the right moment.
+func TestWatcherSetsInvariantGaugesFromCheckResult(t *testing.T) {
+	fake := &fakeChecker{resp: &auditv1.VerifyInvariantsResponse{
+		StoppingRuleViolations: 2,
+		IncompleteAuditTrails:  3,
+		ImpossibleTransitions:  5,
+		RecordsChecked:         100,
+	}}
+	fc := clock.NewFake(time.Unix(0, 0))
+	gauges := testInvariantGauges(t)
+	w := NewWatcher(fake, fc, time.Minute, discardLogger(), gauges)
+	waitForNextTick := armReady(w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	waitForNextTick()
+	fc.Advance(time.Minute)
+	waitForNextTick()
+
+	if got := testutil.ToFloat64(gauges.StoppingRuleViolations); got != 2 {
+		t.Errorf("stopping_rule_violation_total = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(gauges.IncompleteAuditTrails); got != 3 {
+		t.Errorf("incomplete_audit_trail_total = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(gauges.ImpossibleTransitions); got != 5 {
+		t.Errorf("audit_impossible_transitions_total = %v, want 5", got)
+	}
+}
+
+// A checker error must leave the gauges exactly where the last successful
+// scan left them, not reset to zero: a transient DB error should never be
+// able to make a real, still-existing violation disappear from view.
+func TestWatcherLeavesGaugesUnchangedOnCheckerError(t *testing.T) {
+	fake := &fakeChecker{resp: &auditv1.VerifyInvariantsResponse{StoppingRuleViolations: 7}}
+	fc := clock.NewFake(time.Unix(0, 0))
+	gauges := testInvariantGauges(t)
+	w := NewWatcher(fake, fc, time.Minute, discardLogger(), gauges)
+	waitForNextTick := armReady(w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	waitForNextTick()
+	fc.Advance(time.Minute)
+	waitForNextTick()
+	if got := testutil.ToFloat64(gauges.StoppingRuleViolations); got != 7 {
+		t.Fatalf("stopping_rule_violation_total after the first scan = %v, want 7", got)
+	}
+
+	fake.resp, fake.err = nil, context.DeadlineExceeded
+	fc.Advance(time.Minute)
+	waitForNextTick()
+
+	if got := testutil.ToFloat64(gauges.StoppingRuleViolations); got != 7 {
+		t.Errorf("stopping_rule_violation_total after a checker error = %v, want unchanged at 7", got)
 	}
 }
