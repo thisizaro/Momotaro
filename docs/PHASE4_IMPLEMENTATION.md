@@ -20,7 +20,7 @@ all, rather than built speculatively.
 | Unit | What | Status | Depends on |
 |---|---|---|---|
 | A | Prometheus metrics: shared gRPC interceptor + per-service `/metrics` | merged | nothing |
-| B | Kafka consumer-lag exporter (decision-engine) | not started | nothing |
+| B | Kafka consumer-lag exporter (decision-engine) | merged | nothing |
 | C | docker-compose Prometheus wiring + scrape config | not started | A, B |
 | D | Alertmanager rules | not started | C |
 | E | Grafana dashboards | not started | C |
@@ -82,15 +82,56 @@ GRPC_PORT=19090 METRICS_PORT=19091 ./classifier`) and confirmed
 
 ## Unit B: Kafka consumer-lag exporter
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: nothing (Unit A's `Metrics.Registry()` gives it somewhere to
 register into, but the exporter itself needs no code from A).
 
-Lives in `internal/platform/kafkax` next to the existing `Producer`/`Consumer`
-types: a `LagExporter` that periodically compares `decision-engine`'s
-consumer-group committed offsets against each partition's high-water mark
-and sets a gauge. Only decision-engine runs it; it is the only Kafka
-consumer with a group worth watching.
+**What it is**: `internal/platform/kafkax/lag.go`'s `LagExporter`, next to
+the existing `Producer`/`Consumer` types. Uses `franz-go`'s `kadm.Client.Lag`
+(already a dependency via `EnsureTopic`'s admin client) to compare
+`decision-engine`'s consumer-group committed offsets against each
+partition's high-water mark on a timer, publishing a `kafka_consumer_lag`
+gauge labelled by topic and partition. Only decision-engine runs it: it is
+the only Kafka consumer group in the system worth watching.
+
+**Files**:
+- `internal/platform/kafkax/lag.go` (new): `NewLagExporter` dials its own
+  admin client (kept separate from the consumer's own client so admin
+  metadata calls do not compete with the fetch loop over one connection),
+  registers the gauge into the `*prometheus.Registry` passed in. `Run`
+  polls on a ticker until its context is done. `poll` (the network call)
+  and `record` (the pure mapping from `kadm.DescribedGroupLags` to gauge
+  updates) are split apart deliberately, the same way `engine`'s
+  `state.go`/`engine.go` split pure decision logic from I/O, so the mapping
+  logic is unit-testable without a broker.
+- `internal/platform/kafkax/lag_test.go` (new, untagged): exercises `record`
+  directly against hand-built `kadm.DescribedGroupLags` values. Runs with no
+  I/O: `kgo.NewClient` connects lazily on first request, so building a real
+  `LagExporter` in this tier never dials anything.
+- `internal/platform/kafkax/lag_integration_test.go` (new, `integration`
+  tagged): publishes 3 messages, commits exactly 1 via a real consumer
+  group, polls, and asserts the gauge reports lag 2 against the real
+  docker-compose Kafka.
+- `services/decision-engine/cmd/main.go`: constructs the exporter after
+  `metrics.New()`, runs it as a goroutine bound to the same `runCtx` the
+  consumer and scheduler goroutines already share, closes it via the
+  existing `shutdown.Close(...)` call. New `KAFKA_LAG_POLL_INTERVAL` config
+  field (default 30s), deliberately **not** scaled by `DEMO_TIME_SCALE`: it
+  is an operator-facing refresh cadence for a real wall clock, like a
+  Prometheus scrape interval, not a wait the demo needs compressed.
+
+**Verification**: `go build ./...`, `go vet ./...`, `gofmt -l .` clean;
+`go test ./...` and `go test -tags integration ./internal/platform/kafkax/...`
+both green. Adversarially broke `record` three ways (disabled the
+per-partition error skip, disabled the group-level error check, hardcoded
+the recorded value to 0 instead of the real lag) and confirmed the exact
+test each was meant to catch failed with the expected wrong value each
+time, then reverted and re-confirmed green. Also built and ran the
+`decision-engine` binary standalone against the live docker-compose stack
+(`KAFKA_LAG_POLL_INTERVAL=1s`, fake unreachable classifier/executor
+addresses since gRPC dialing is lazy) and confirmed
+`curl localhost:METRICS_PORT/metrics` shows `kafka_consumer_lag` for all 12
+`raw.events` partitions, and that `SIGTERM` shuts everything down cleanly.
 
 ## Unit C: docker-compose Prometheus wiring
 

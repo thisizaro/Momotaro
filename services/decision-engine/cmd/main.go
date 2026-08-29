@@ -86,6 +86,13 @@ type serviceConfig struct {
 	// every existing test and every default run escalates nothing on
 	// confidence (the rules engine's own confidence values are all > 0).
 	ClassifyConfidenceThreshold float64
+
+	// KafkaLagPollInterval is KAFKA_LAG_POLL_INTERVAL
+	// (docs/PHASE4_IMPLEMENTATION.md Unit B): how often the consumer-lag
+	// gauge refreshes. Deliberately NOT scaled by DEMO_TIME_SCALE: it is an
+	// operator-facing refresh cadence for a real wall clock (like a
+	// Prometheus scrape interval), not a wait the demo needs to compress.
+	KafkaLagPollInterval time.Duration
 }
 
 // guardrailsFrom builds the engine's guardrail limits from the loaded config.
@@ -126,6 +133,8 @@ func loadConfig() (serviceConfig, error) {
 		LLMSampleRate: l.Float("LLM_SAMPLE_RATE", 0.0),
 
 		ClassifyConfidenceThreshold: l.Float("CLASSIFY_CONFIDENCE_THRESHOLD", 0.0),
+
+		KafkaLagPollInterval: l.Duration("KAFKA_LAG_POLL_INTERVAL", 30*time.Second),
 	}
 	if err := l.Err(); err != nil {
 		return cfg, err
@@ -222,6 +231,15 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		}
 	}()
 
+	// decision-engine is the only Kafka consumer group in the system,
+	// hence the only one worth a lag exporter (docs/PHASE4_IMPLEMENTATION.md
+	// Unit B).
+	lagExporter, err := kafkax.NewLagExporter(cfg.KafkaBrokers, cfg.ConsumerGroup, m.Registry(), log)
+	if err != nil {
+		return fmt.Errorf("new kafka lag exporter: %w", err)
+	}
+	defer lagExporter.Close()
+
 	// Scale applies DEMO_TIME_SCALE (docs/ARCHITECTURE.md section 17): every
 	// wall-clock wait in the system compresses through this one knob, and
 	// these Phase 1 fixed delays are wall-clock waits like any other.
@@ -291,6 +309,8 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	go func() {
 		schedulerErr <- scheduler.Run(runCtx)
 	}()
+
+	go lagExporter.Run(runCtx, cfg.KafkaLagPollInterval)
 
 	log.Info("running", "topic", cfg.Topic, "group", cfg.ConsumerGroup, "worker_pool_size", cfg.WorkerPoolSize, "poll_interval", cfg.PollInterval)
 

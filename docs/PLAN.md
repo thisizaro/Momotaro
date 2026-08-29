@@ -595,9 +595,9 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 > held pending a go/no-go decision rather than built speculatively, since
 > Kafka does not propagate trace context on its own.
 
-- [ ] Prometheus metrics in every service via a shared gRPC interceptor
-      (done, Unit A) plus Kafka consumer lag exporter (Unit B, not started)
-      → `ARCHITECTURE.md` §13, `docs/PHASE4_IMPLEMENTATION.md` Units A, B
+- [x] Prometheus metrics in every service via a shared gRPC interceptor
+      plus Kafka consumer lag exporter → `ARCHITECTURE.md` §13,
+      `docs/PHASE4_IMPLEMENTATION.md` Units A, B
 - [ ] OpenTelemetry tracing across gRPC + Kafka hops, `record_id` as trace id
       → `ARCHITECTURE.md` §13
 - [ ] Structured logging correlated by `record_id`/`trace_id`
