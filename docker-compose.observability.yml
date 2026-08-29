@@ -1,0 +1,28 @@
+# Optional local-dev observability stack (docs/PHASE4_IMPLEMENTATION.md
+# Unit C). Kept out of docker-compose.yml deliberately: that file backs
+# `make up`, which `make test-integration` also depends on, and integration
+# tests assert nothing about metrics, so there is no reason for every CI
+# integration run to also pull and start Prometheus.
+#
+#   make up-observability   start the base stack plus Prometheus
+#   make down                stop everything, base stack included
+#
+# App services are not containers on this network (docker-compose.yml's own
+# header comment: they run from your IDE, or as images built per service),
+# so Prometheus reaches them via host.docker.internal at the fixed ports
+# `make run-<service>` binds them to (docs/DECISIONS.md).
+name: momotaro
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    extra_hosts:
+      # Portable across Docker Desktop (already resolves this) and native
+      # Linux Docker Engine 20.10+ (needs this mapping spelled out).
+      - "host.docker.internal:host-gateway"
+    # Host port 9900, not 9090: 9090 is ingestion's GRPC_PORT on this same
+    # host (docs/DECISIONS.md), and the container's own internal port stays
+    # Prometheus's normal default.
+    ports: ["9900:9090"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro

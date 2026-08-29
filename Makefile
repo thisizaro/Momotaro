@@ -73,18 +73,64 @@ fmt:
 ## check: what CI runs. Run this before pushing.
 check: fmt vet proto-lint build test
 
+# Fixed local-dev ports, one pair per service, so all seven can run
+# simultaneously against the same docker-compose infra without colliding on
+# GRPC_PORT/METRICS_PORT (docs/DECISIONS.md). ingestion keeps
+# .env.example's own GRPC_PORT=9090/METRICS_PORT=9091 (the "just one
+# service" defaults); the rest start at 9190 rather than immediately after,
+# to stay clear of Kafka's own host port 9092 (docker-compose.yml). Cross-
+# service addresses are overridden here too, not in .env, since they only
+# make sense together with these fixed ports.
+
+## run-ingestion: run ingestion on its fixed local port
+run-ingestion:
+	GRPC_PORT=9090 METRICS_PORT=9091 go run ./services/ingestion/cmd
+
+## run-classifier: run classifier on its fixed local port
+run-classifier:
+	GRPC_PORT=9190 METRICS_PORT=9191 go run ./services/classifier/cmd
+
+## run-executor: run executor on its fixed local port
+run-executor:
+	GRPC_PORT=9192 METRICS_PORT=9193 go run ./services/executor/cmd
+
+## run-audit: run audit on its fixed local port
+run-audit:
+	GRPC_PORT=9194 METRICS_PORT=9195 go run ./services/audit/cmd
+
+## run-decision-engine: run decision-engine on its fixed local port
+run-decision-engine:
+	GRPC_PORT=9196 METRICS_PORT=9197 \
+	CLASSIFIER_ADDR=localhost:9190 EXECUTOR_ADDR=localhost:9192 \
+	go run ./services/decision-engine/cmd
+
+## run-api-gateway: run api-gateway on its fixed local port
+run-api-gateway:
+	GRPC_PORT=9198 METRICS_PORT=9199 INGESTION_ADDR=localhost:9090 \
+	go run ./services/api-gateway/cmd
+
+## run-reporting: run reporting on its fixed local port
+run-reporting:
+	GRPC_PORT=9200 METRICS_PORT=9201 go run ./services/reporting/cmd
+
 ## up: start local infra (postgres, redis, kafka, kafka ui)
 up:
 	docker compose up -d
 	@echo "kafka ui: http://localhost:8080"
 
-## down: stop local infra
+## up-observability: up, plus Prometheus scraping the fixed run-<service> ports
+up-observability:
+	docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+	@echo "kafka ui:   http://localhost:8080"
+	@echo "prometheus: http://localhost:9900"
+
+## down: stop local infra (base stack and observability, if either is up)
 down:
-	docker compose down
+	docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 
 ## down-clean: stop local infra AND delete its data
 down-clean:
-	docker compose down -v
+	docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 
 ## migrate-up: apply all migrations
 migrate-up:
@@ -106,4 +152,6 @@ docker-build:
 	done
 
 .PHONY: help tools proto proto-lint proto-breaking build test test-integration \
-        vet fmt check up down down-clean migrate-up migrate-status docker-build
+        vet fmt check up up-observability down down-clean migrate-up migrate-status \
+        docker-build run-ingestion run-classifier run-executor run-audit \
+        run-decision-engine run-api-gateway run-reporting

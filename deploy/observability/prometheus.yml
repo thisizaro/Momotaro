@@ -1,0 +1,31 @@
+# Local-dev scrape config (docs/PHASE4_IMPLEMENTATION.md Unit C). App
+# services are not containers on the docker-compose network (see that
+# file's own header comment), so Prometheus reaches them via
+# host.docker.internal at the fixed ports `make run-<service>` binds them
+# to (docs/DECISIONS.md). Phase 7's k8s deployment gets its own scrape
+# config via service discovery, not this file.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: ingestion
+    static_configs:
+      - targets: ["host.docker.internal:9091"]
+  - job_name: classifier
+    static_configs:
+      - targets: ["host.docker.internal:9191"]
+  - job_name: executor
+    static_configs:
+      - targets: ["host.docker.internal:9193"]
+  - job_name: audit
+    static_configs:
+      - targets: ["host.docker.internal:9195"]
+  - job_name: decision-engine
+    static_configs:
+      - targets: ["host.docker.internal:9197"]
+  - job_name: api-gateway
+    static_configs:
+      - targets: ["host.docker.internal:9199"]
+  - job_name: reporting
+    static_configs:
+      - targets: ["host.docker.internal:9201"]

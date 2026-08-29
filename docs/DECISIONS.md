@@ -937,3 +937,38 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Phase 5's accuracy scorer treats a bucket disagreement between rungs as a
   known property rather than a bug, and so nobody quietly "fixes" the prompt
   to match the table.
+- 2026-08-29: **Fixed local-dev ports per service, and a separate optional
+  compose file for Prometheus** (`docs/PHASE4_IMPLEMENTATION.md` Unit C).
+  `.env.example`'s `GRPC_PORT`/`METRICS_PORT` are documented as "defaults for
+  running one at a time", which is fine for a single service but leaves
+  Prometheus with nothing fixed to scrape once more than one runs together.
+  `make run-<service>` targets now assign each service a distinct, permanent
+  pair (ingestion keeps 9090/9091; the rest start at 9190 rather than
+  immediately after, to stay clear of Kafka's own host port 9092), so all
+  seven can run simultaneously without colliding, and Prometheus's scrape
+  config (`deploy/observability/prometheus.yml`) can name real targets.
+  App services are still not containers on the docker-compose network
+  (that file's own header comment, unchanged), so Prometheus reaches them
+  via `host.docker.internal` with `extra_hosts: host-gateway`, the
+  documented portable mechanism for Docker Engine 20.10+ and Docker
+  Desktop alike. The Prometheus container itself lives in a **new,
+  separate** `docker-compose.observability.yml` rather than the base
+  `docker-compose.yml`: `make test-integration` depends on `make up`
+  bringing the base stack up, and no integration test asserts anything
+  about metrics, so there is no reason for every CI integration run to
+  also pull and start Prometheus. `make up-observability` layers both
+  files together for a developer who wants it.
+  **Verification gap, stated plainly**: every piece was confirmed except
+  the actual `host.docker.internal` hop itself, which could not be
+  exercised inside this session's own sandboxed dev environment (its Bash
+  tool's network namespace has no route back from Docker's containers to
+  the ports those same commands bind, confirmed by testing `host-gateway`,
+  plain `host.docker.internal`, and the raw docker0 bridge address, all
+  refused, even though `ss -ltn` shows every service correctly listening on
+  `0.0.0.0`). What WAS confirmed directly: `docker compose config` accepts
+  both files together, `make up-observability` starts Prometheus cleanly,
+  and its own target list shows exactly the seven expected jobs. This is
+  the standard, Docker-documented pattern and should work as designed on a
+  real developer machine or in CI (native Linux Engine, no extra sandbox
+  layer); a future agent or the user should confirm the actual scrape
+  succeeds there rather than trusting this note alone.
