@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
+	"github.com/thisizaro/Momotaro/internal/platform/metrics"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
@@ -203,6 +205,23 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	defer dlqProducer.Close()
 
+	// decision-engine has no inbound gRPC server to instrument (it is a
+	// Kafka consumer with only outbound gRPC clients), so this exposes
+	// Go/process metrics only. The consumer-lag gauge (docs/PLAN.md Phase 4)
+	// registers into the same m.Registry() once it lands.
+	m := metrics.New()
+	metricsServer := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.MetricsPort),
+		Handler:           m.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Info("metrics server listening", "port", cfg.MetricsPort)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("metrics server", "err", err)
+		}
+	}()
+
 	// Scale applies DEMO_TIME_SCALE (docs/ARCHITECTURE.md section 17): every
 	// wall-clock wait in the system compresses through this one knob, and
 	// these Phase 1 fixed delays are wall-clock waits like any other.
@@ -294,7 +313,10 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		<-schedulerErr
 	}
 
-	if shutErr := shutdown.Close(10*time.Second, func(ctx context.Context) error { consumer.Close(); return nil }); shutErr != nil {
+	if shutErr := shutdown.Close(10*time.Second,
+		func(ctx context.Context) error { consumer.Close(); return nil },
+		func(ctx context.Context) error { return metricsServer.Shutdown(ctx) },
+	); shutErr != nil {
 		return errors.Join(runErr, shutErr)
 	}
 	return runErr

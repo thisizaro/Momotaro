@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
+	"github.com/thisizaro/Momotaro/internal/platform/metrics"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
@@ -87,6 +89,19 @@ func run(ctx context.Context, cfg config.Common, topic, rollingBatchSource strin
 	}
 	defer producer.Close()
 
+	m := metrics.New()
+	metricsServer := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.MetricsPort),
+		Handler:           m.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Info("metrics server listening", "port", cfg.MetricsPort)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("metrics server", "err", err)
+		}
+	}()
+
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 	if err != nil {
 		return fmt.Errorf("listen on grpc port %d: %w", cfg.GRPCPort, err)
@@ -95,6 +110,7 @@ func run(ctx context.Context, cfg config.Common, topic, rollingBatchSource strin
 	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		interceptors.UnaryServerRecovery(),
 		interceptors.UnaryServerRequireDeadline(),
+		interceptors.UnaryServerMetrics(m),
 	))
 	ingestionv1.RegisterIngestionServiceServer(grpcServer, server.New(pool, producer, clock.New(), topic, rollingBatchSource))
 
@@ -113,8 +129,13 @@ func run(ctx context.Context, cfg config.Common, topic, rollingBatchSource strin
 	case <-ctx.Done():
 	}
 
-	return shutdown.Close(10*time.Second, func(ctx context.Context) error {
-		grpcServer.GracefulStop()
-		return nil
-	})
+	return shutdown.Close(10*time.Second,
+		func(ctx context.Context) error {
+			grpcServer.GracefulStop()
+			return nil
+		},
+		func(ctx context.Context) error {
+			return metricsServer.Shutdown(ctx)
+		},
+	)
 }

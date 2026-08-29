@@ -1,0 +1,128 @@
+# Phase 4 Implementation Plan: Observability
+
+This is the working breakdown of `docs/PLAN.md` Phase 4. `PLAN.md` stays the
+one-line checklist; this file explains what each item actually is and an
+order it can be built in.
+
+Same contract as `docs/PHASE2_IMPLEMENTATION.md`/`docs/PHASE3_IMPLEMENTATION.md`.
+Every unit below is independently completable and names its dependencies.
+
+**Phase goal in one sentence**: make it possible to see what the running
+system is doing, without changing what it does.
+
+**Where this sits**: Phases 0 through 3 are complete and merged. Units below
+are ordered easiest/most self-contained first; tracing (Unit F) is
+deliberately last because Kafka does not propagate trace context on its own,
+so every hop through a topic needs manual header injection/extraction. That
+unit is being held pending a decision on whether it is needed for the demo at
+all, rather than built speculatively.
+
+| Unit | What | Status | Depends on |
+|---|---|---|---|
+| A | Prometheus metrics: shared gRPC interceptor + per-service `/metrics` | merged | nothing |
+| B | Kafka consumer-lag exporter (decision-engine) | not started | nothing |
+| C | docker-compose Prometheus wiring + scrape config | not started | A, B |
+| D | Alertmanager rules | not started | C |
+| E | Grafana dashboards | not started | C |
+| F | OpenTelemetry tracing across gRPC + Kafka hops | on hold | pending a go/no-go decision |
+
+---
+
+## Unit A: Prometheus metrics interceptor
+
+**Status**: merged.
+**Depends on**: nothing.
+
+**What it is**: the two metrics `internal/platform/interceptors/doc.go` has
+named since Phase 0 (`request_duration_seconds`, `requests_total`), recorded
+by one gRPC unary server interceptor so no handler can be missed, plus a
+`/metrics` HTTP endpoint on `cfg.MetricsPort` (already a config field on
+every service, previously unused) for Prometheus to scrape.
+
+**Files**:
+- `internal/platform/metrics/metrics.go` (new): `Metrics` struct wrapping a
+  private `prometheus.Registry`, the two vectors, plus Go/process default
+  collectors so a service's memory/GC/fd behaviour is visible from the same
+  endpoint. `New()` builds one, `Handler()` serves it, `Registry()` is
+  exposed so Unit B can register the consumer-lag gauge into the same
+  registry without this package needing to know about it.
+- `internal/platform/interceptors/metrics.go` (new): `UnaryServerMetrics`,
+  added to every gRPC server's existing `ChainUnaryInterceptor` call next to
+  `UnaryServerRecovery`/`UnaryServerRequireDeadline`.
+- `internal/platform/interceptors/metrics_test.go` (new): unit tests
+  (untagged tier, no I/O) proving a success is recorded under its method with
+  code `OK`, a `*status.Status` error under its real code, and a plain
+  (non-status) error under `Unknown` rather than being dropped.
+- Every service's `cmd/main.go` (audit, classifier, executor, ingestion,
+  api-gateway, decision-engine): starts a second `http.Server` on
+  `cfg.MetricsPort` serving `m.Handler()`, shut down gracefully via the same
+  `shutdown.Close(...)` call each service already uses for its primary
+  listener. audit/classifier/executor/ingestion also add
+  `interceptors.UnaryServerMetrics(m)` to their gRPC interceptor chain.
+  api-gateway and decision-engine have no inbound gRPC server (an HTTP edge
+  and a Kafka consumer, respectively, both with only outbound gRPC clients),
+  so they expose Go/process metrics only for now.
+
+**Deliberately not done here**: `reporting`'s `cmd/main.go` is an
+unimplemented stub (`docs/PLAN.md` Phase 5) with nothing to wire yet.
+Client-side gRPC call metrics (decision-engine → classifier/executor,
+api-gateway → ingestion) are also out of scope: `doc.go`'s framing
+("added as an interceptor specifically so no handler can be missed") is
+about server-side coverage, and every one of those calls already lands on an
+instrumented server on the other end.
+
+**Verification**: `go build ./...`, `go vet ./...`, `gofmt -l .` all clean;
+`go test ./...` green. Adversarially broke the interceptor (hardcoded the
+label to `codes.OK` regardless of the handler's actual error) and confirmed
+both error-path tests failed with the exact expected values, then reverted.
+Also ran the built `classifier` binary standalone (`POSTGRES_DSN=...
+GRPC_PORT=19090 METRICS_PORT=19091 ./classifier`) and confirmed
+`curl localhost:19091/metrics` serves real Prometheus text output and that
+`SIGTERM` shuts both listeners down cleanly.
+
+## Unit B: Kafka consumer-lag exporter
+
+**Status**: not started.
+**Depends on**: nothing (Unit A's `Metrics.Registry()` gives it somewhere to
+register into, but the exporter itself needs no code from A).
+
+Lives in `internal/platform/kafkax` next to the existing `Producer`/`Consumer`
+types: a `LagExporter` that periodically compares `decision-engine`'s
+consumer-group committed offsets against each partition's high-water mark
+and sets a gauge. Only decision-engine runs it; it is the only Kafka
+consumer with a group worth watching.
+
+## Unit C: docker-compose Prometheus wiring
+
+**Status**: not started.
+**Depends on**: A and B, so there is something real to scrape.
+
+New `deploy/observability/` directory (repurposing the currently-empty
+`deploy/` placeholder) for `prometheus.yml`; three new containers
+(`prometheus`, `alertmanager`, `grafana`) added to `docker-compose.yml`,
+consistent with that file's own stated scope ("local development
+infrastructure only").
+
+## Unit D: Alertmanager rules
+
+**Status**: not started. **Depends on**: C.
+
+Consumer lag, LLM fallback rate, stopping-rule violation, per
+`docs/PLAN.md` Phase 4's own bullet list.
+
+## Unit E: Grafana dashboards
+
+**Status**: not started. **Depends on**: C.
+
+Per-service and business-metrics dashboards, provisioned (not clicked
+together by hand) so they survive a container restart.
+
+## Unit F: OpenTelemetry tracing
+
+**Status**: on hold pending a go/no-go decision, not built speculatively.
+
+Context propagation on every gRPC call, `record_id` forced as the trace id
+rather than a randomly generated one, so one payment's journey across seven
+services is a single trace. The hard part: Kafka does not propagate trace
+context automatically, so every hop through `raw.events`/`raw.events.dlq`
+needs manual header injection on publish and extraction on consume.

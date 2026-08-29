@@ -46,6 +46,8 @@
 // Recovery (UnaryServerRecovery), server-side deadline enforcement
 // (UnaryServerRequireDeadline) and the client-side deadline default
 // (UnaryClientDefaultDeadline) are implemented and wired into every
-// service's gRPC server/client (docs/PLAN.md Phase 0). Metrics, tracing,
+// service's gRPC server/client (docs/PLAN.md Phase 0). Metrics
+// (UnaryServerMetrics, backed by internal/platform/metrics) are implemented
+// and wired into every gRPC server (docs/PLAN.md Phase 4). Tracing,
 // request-scoped logging, and the round_robin dialing helper remain Phase 4.
 package interceptors
