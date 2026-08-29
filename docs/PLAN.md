@@ -725,11 +725,14 @@ ordered by value per hour. Detail for each is in
       Also fixes a Unit H blocker: `web/src/lib/format.ts`'s
       `FAILURE_CODE_LABELS` is keyed lowercase and renders blank against real
       uppercase codes, so this vocabulary has to be settled either way
-- [ ] Compliance guardrails with citations: TRAI TCCCPR contact-hour window
-      and RBI e-mandate 24 hour pre-debit lead time, enforced in the existing
-      guardrail layer → `PRD.md` §11a, `docs/PHASE5_IMPLEMENTATION.md` Unit J.
-      Closes `PRD.md` §13's open question and the one row in
-      `ARCHITECTURE.md` §17 whose justification column did not defend itself
+- [x] Compliance guardrails with citations: TRAI TCCCPR contact-hour window
+      and RBI e-mandate 24 hour pre-debit lead time, enforced as a floor on
+      MANDATE retry timing → `PRD.md` §11a, `docs/PHASE5_IMPLEMENTATION.md`
+      Unit J. Closes `PRD.md` §13's open question and the one row in
+      `ARCHITECTURE.md` §17 whose justification column did not defend
+      itself. Citing the specific rule in the audit reason string is
+      tracked separately in `docs/BACKLOG.md`, folded into Unit M's
+      plumbing rather than done twice
 - [ ] Baseline comparison in Reporting: what a naive "retry everything three
       times, nudge everything" policy would have recovered against the same
       sealed ground truth, so "measured money recovered" is a result rather
@@ -745,9 +748,11 @@ ordered by value per hour. Detail for each is in
       rejection every two seconds behind a blank page if the backend 404s.
       The difference between degrading visibly and dying silently on stage
       → `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F2
-- [ ] Persist the full EV candidate ranking and the per-action guardrail
-      refusal reasons, both currently computed and discarded, so the audit
-      trail can answer "why not the alternatives"
+- [x] Persist the full EV candidate ranking and the per-action guardrail
+      refusal reasons, both previously computed and discarded, so the audit
+      trail can answer "why not the alternatives". New `audit_entry.decision_trace`
+      column (migration 00006), attached only to the audit row where a
+      scoring decision actually happened
       → `docs/PHASE5_IMPLEMENTATION.md` Unit M
 - [x] Correct three stale claims in checked-in files that currently accuse
       the codebase of defects it does not have. Done in the same PR that
