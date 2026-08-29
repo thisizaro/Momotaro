@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,7 +52,7 @@ func (s *store) recordStateExists(ctx context.Context, recordID string) (bool, e
 // (docs/PHASE2_IMPLEMENTATION.md Unit G); it is the zero value when the
 // record never reached scoring (an explicit escalation), in which case
 // nothing is stored rather than a misleading zero.
-func (s *store) scheduleNew(ctx context.Context, log *slog.Logger, evt RawEvent, bucket commonv1.RootCauseBucket, steps []stateStep, pendingAction commonv1.ActionType, rationale string, source commonv1.Source, hops []*commonv1.ProviderHop, score economics.Score, dueAt *time.Time, now time.Time) error {
+func (s *store) scheduleNew(ctx context.Context, log *slog.Logger, evt RawEvent, bucket commonv1.RootCauseBucket, steps []stateStep, pendingAction commonv1.ActionType, rationale string, source commonv1.Source, hops []*commonv1.ProviderHop, score economics.Score, trace DecisionTrace, dueAt *time.Time, now time.Time) error {
 	if len(steps) == 0 {
 		return fmt.Errorf("schedule %s: no transitions to record", evt.RecordID)
 	}
@@ -64,6 +65,9 @@ func (s *store) scheduleNew(ctx context.Context, log *slog.Logger, evt RawEvent,
 	// classification is not, so log and store NULL rather than failing the
 	// whole transaction.
 	hopsCol := encodedHops(hops, log)
+	// Same fail-open shape for the decision trace (Unit M): diagnostic, not
+	// load-bearing, so an encoding failure logs and stores NULL.
+	traceCol := encodeDecisionTrace(trace, log)
 
 	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		if _, err := tx.Exec(ctx, `
@@ -75,12 +79,21 @@ func (s *store) scheduleNew(ctx context.Context, log *slog.Logger, evt RawEvent,
 		}
 		// Every step gets its own audit row, in the same transaction as the
 		// state change, so there is no window in which a record moved without
-		// a record of why (docs/ARCHITECTURE.md section 10a).
+		// a record of why (docs/ARCHITECTURE.md section 10a). decision_trace
+		// is attached only to the step that actually left Scoring: that is
+		// the one instant a comparison among alternatives happened, and
+		// attaching it to every step (or only the last, which for directPath's
+		// single-step escalation is New -> Escalated, never a scoring step at
+		// all) would be either redundant or wrong.
 		for _, step := range steps {
+			stepTrace := traceCol
+			if step.From != commonv1.RecordState_RECORD_STATE_SCORING {
+				stepTrace = nil
+			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, rationale, source, provider_hops, actor, attempt_number)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'system', 0)`,
-				evt.RecordID, evt.BatchID, now, step.From.String(), step.To.String(), step.Reason, rationale, source.String(), hopsCol,
+				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, rationale, source, provider_hops, decision_trace, actor, attempt_number)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'system', 0)`,
+				evt.RecordID, evt.BatchID, now, step.From.String(), step.To.String(), step.Reason, rationale, source.String(), hopsCol, stepTrace,
 			); err != nil {
 				return fmt.Errorf("insert audit_entry %s -> %s: %w", step.From, step.To, err)
 			}
@@ -250,12 +263,17 @@ func (s *store) recordOutcome(ctx context.Context, c claimedRecord, toState comm
 // -> ... trail. attemptNumber is the attempt that just failed: both the
 // updated attempt_count and the audit entries are attributed to it, since
 // this is the aftermath of that one attempt, not a new one.
-func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stateStep, pendingAction commonv1.ActionType, score economics.Score, dueAt *time.Time, attemptNumber int, costPaise int64, now time.Time) error {
+func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stateStep, pendingAction commonv1.ActionType, score economics.Score, trace DecisionTrace, dueAt *time.Time, attemptNumber int, costPaise int64, now time.Time) error {
 	if len(steps) == 0 {
 		return fmt.Errorf("rescore %s: no transitions to record", c.RecordID)
 	}
 	final := steps[len(steps)-1].To
 	evScore, pRecovery := scoreColumns(score)
+	// slog.Default() rather than a threaded logger: recordRescore has no
+	// logger parameter today (unlike scheduleNew, whose caller is a Kafka
+	// handler with a record-scoped one to hand in), and this path is
+	// diagnostic-only, same as encodedHops's own failure mode.
+	traceCol := encodeDecisionTrace(trace, slog.Default())
 
 	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		if _, err := tx.Exec(ctx, `
@@ -276,16 +294,21 @@ func (s *store) recordRescore(ctx context.Context, c claimedRecord, steps []stat
 		// The cost of the attempt that just ran belongs on the first step
 		// (ClaimedState -> Scoring, the actual aftermath of that attempt);
 		// the second step (Scoring -> next state) is a pure decision and
-		// costs nothing itself.
+		// costs nothing itself. decision_trace, like scheduleNew, attaches
+		// only to the step leaving Scoring (Unit M).
 		for i, step := range steps {
 			cost := int64(0)
 			if i == 0 {
 				cost = costPaise
 			}
+			stepTrace := traceCol
+			if step.From != commonv1.RecordState_RECORD_STATE_SCORING {
+				stepTrace = nil
+			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, actor, attempt_number, cost_paise)
-				VALUES ($1, $2, $3, $4, $5, $6, 'system', $7, $8)`,
-				c.RecordID, c.BatchID, now, step.From.String(), step.To.String(), step.Reason, attemptNumber, cost,
+				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, decision_trace, actor, attempt_number, cost_paise)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, 'system', $8, $9)`,
+				c.RecordID, c.BatchID, now, step.From.String(), step.To.String(), step.Reason, stepTrace, attemptNumber, cost,
 			); err != nil {
 				return fmt.Errorf("insert rescore audit_entry %s -> %s: %w", step.From, step.To, err)
 			}
@@ -381,12 +404,13 @@ func (s *store) loadNudged(ctx context.Context, recordID string) (rec claimedRec
 // NUDGED before either writes and double-apply the outcome. With it, the
 // second transaction's re-check sees the state the first one already
 // moved to and returns applied=false instead.
-func (s *store) applyResumedOutcome(ctx context.Context, c claimedRecord, attemptNumber int, steps []stateStep, pendingAction commonv1.ActionType, score economics.Score, dueAt *time.Time, costPaise int64, now time.Time) (bool, error) {
+func (s *store) applyResumedOutcome(ctx context.Context, c claimedRecord, attemptNumber int, steps []stateStep, pendingAction commonv1.ActionType, score economics.Score, trace DecisionTrace, dueAt *time.Time, costPaise int64, now time.Time) (bool, error) {
 	if len(steps) == 0 {
 		return false, fmt.Errorf("apply resumed outcome for %s: no transitions to record", c.RecordID)
 	}
 	final := steps[len(steps)-1].To
 	evScore, pRecovery := scoreColumns(score)
+	traceCol := encodeDecisionTrace(trace, slog.Default())
 
 	applied := false
 	err := pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
@@ -417,10 +441,14 @@ func (s *store) applyResumedOutcome(ctx context.Context, c claimedRecord, attemp
 			if i == 0 {
 				cost = costPaise
 			}
+			stepTrace := traceCol
+			if step.From != commonv1.RecordState_RECORD_STATE_SCORING {
+				stepTrace = nil
+			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, actor, attempt_number, cost_paise)
-				VALUES ($1, $2, $3, $4, $5, $6, 'system', $7, $8)`,
-				c.RecordID, c.BatchID, now, step.From.String(), step.To.String(), step.Reason, attemptNumber, cost,
+				INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, decision_trace, actor, attempt_number, cost_paise)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, 'system', $8, $9)`,
+				c.RecordID, c.BatchID, now, step.From.String(), step.To.String(), step.Reason, stepTrace, attemptNumber, cost,
 			); err != nil {
 				return fmt.Errorf("insert resumed-outcome audit_entry %s -> %s: %w", step.From, step.To, err)
 			}
@@ -610,4 +638,61 @@ func encodedHops(hops []*commonv1.ProviderHop, log *slog.Logger) *string {
 		return nil
 	}
 	return &encoded
+}
+
+// decisionTraceCandidate and decisionTraceJSON are decisionTrace's wire
+// shape: plain JSON in a JSONB column (migration 00006), not a bespoke
+// codec like hopcodec, since this has no delimiter-safety constraint hops
+// has (docs/PHASE5_IMPLEMENTATION.md Unit M). Field names are the
+// column's actual persisted shape, so `SELECT decision_trace ->
+// 'candidates'` from a psql session is self-describing without reading Go.
+type decisionTraceCandidate struct {
+	Action    string  `json:"action"`
+	EVPaise   float64 `json:"ev_paise"`
+	PRecovery float64 `json:"p_recovery"`
+	CostPaise int64   `json:"cost_paise"`
+}
+
+type decisionTraceJSON struct {
+	Candidates []decisionTraceCandidate `json:"candidates,omitempty"`
+	Blocked    map[string]string        `json:"blocked,omitempty"`
+}
+
+// encodeDecisionTrace renders a DecisionTrace to JSON for the
+// decision_trace column, or nil (SQL NULL) when there is nothing to show:
+// an empty trace (the guardrails permitted nothing and nothing was scored)
+// stores NULL rather than `{}`, so a reader can tell "no scoring happened
+// here" from "scoring happened and considered nothing", which cannot
+// actually occur but should not be confused with the former if it ever did.
+// Mirrors encodedHops's fail-open shape: an encoding failure logs and
+// stores NULL rather than losing the whole transaction over diagnostic
+// data.
+func encodeDecisionTrace(trace DecisionTrace, log *slog.Logger) *string {
+	if len(trace.Candidates) == 0 && len(trace.Blocked) == 0 {
+		return nil
+	}
+
+	wire := decisionTraceJSON{
+		Candidates: make([]decisionTraceCandidate, len(trace.Candidates)),
+		Blocked:    make(map[string]string, len(trace.Blocked)),
+	}
+	for i, c := range trace.Candidates {
+		wire.Candidates[i] = decisionTraceCandidate{
+			Action:    c.Action.String(),
+			EVPaise:   c.EVPaise,
+			PRecovery: c.PRecovery,
+			CostPaise: c.CostPaise,
+		}
+	}
+	for action, reason := range trace.Blocked {
+		wire.Blocked[action.String()] = reason
+	}
+
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		log.Warn("could not encode decision trace, storing NULL", logger.KeyError, err)
+		return nil
+	}
+	s := string(encoded)
+	return &s
 }

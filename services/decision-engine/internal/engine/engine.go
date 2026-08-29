@@ -167,7 +167,7 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 		return err
 	}
 
-	steps, pendingAction, score := e.decide(classifyResp, history, evt.AmountPaise, now)
+	steps, pendingAction, score, trace := e.decide(classifyResp, history, evt.AmountPaise, now)
 	final := steps[len(steps)-1].To
 	var dueAt *time.Time
 	if final == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
@@ -176,7 +176,7 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 		dueAt = dueAtFor(final, e.cfg.NudgeDelay, now, e.cfg.TimeScale)
 	}
 
-	if err := e.store.scheduleNew(ctx, log, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), classifyResp.GetHops(), score, dueAt, now); err != nil {
+	if err := e.store.scheduleNew(ctx, log, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), classifyResp.GetHops(), score, trace, dueAt, now); err != nil {
 		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)
 	}
 
@@ -190,14 +190,17 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 // decide runs the fixed order from docs/ARCHITECTURE.md section 5a: the
 // Classifier has proposed, the guardrails now constrain, and deterministic
 // economics decides. It returns the transitions to record, the action that was
-// scheduled, and the winning score.
+// scheduled, the winning score, and the full decision trace (every candidate
+// considered and every action the guardrails blocked, docs/PHASE5_IMPLEMENTATION.md
+// Unit M); the trace is the zero value on either bypass path below, since
+// escalating on confidence or recommendation never reaches scoring at all.
 //
 // Note what the Classifier's recommended_action is NOT used for here. Once the
 // scorer exists, selection is by expected value over the whole permitted menu,
 // and the Classifier's real contribution is the BUCKET, which is what the
 // prior table is keyed on. That is the concrete answer to "does the model
 // decide how money is spent?": it does not, it only says what went wrong.
-func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHistory, amountPaise int64, now time.Time) ([]stateStep, commonv1.ActionType, economics.Score) {
+func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHistory, amountPaise int64, now time.Time) ([]stateStep, commonv1.ActionType, economics.Score, DecisionTrace) {
 	none := commonv1.ActionType_ACTION_TYPE_UNSPECIFIED
 
 	// Below the configured confidence threshold is a safety call, exactly
@@ -220,17 +223,17 @@ func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHist
 		if resp.GetRecommendedAction() == commonv1.ActionType_ACTION_TYPE_ESCALATE {
 			reason = "classifier recommended escalation"
 		}
-		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, reason), none, economics.Score{}
+		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, reason), none, economics.Score{}, DecisionTrace{}
 	}
 
 	// Escalation is the one recommendation that bypasses economics. A risk
 	// hold is a safety call, and pricing it would imply it were negotiable.
 	if resp.GetRecommendedAction() == commonv1.ActionType_ACTION_TYPE_ESCALATE {
-		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, "classifier recommended escalation"), none, economics.Score{}
+		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, "classifier recommended escalation"), none, economics.Score{}, DecisionTrace{}
 	}
 
-	state, pendingAction, reason, score := scoreAndRoute(e.economics, e.cfg.Guardrails, resp.GetBucket(), history, amountPaise, now)
-	return scoringPath(state, reason), pendingAction, score
+	state, pendingAction, reason, score, trace := scoreAndRoute(e.economics, e.cfg.Guardrails, resp.GetBucket(), history, amountPaise, now)
+	return scoringPath(state, reason), pendingAction, score, trace
 }
 
 // classifyWithRetry retries a failing Classify call up to

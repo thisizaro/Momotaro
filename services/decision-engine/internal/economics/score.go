@@ -61,6 +61,24 @@ func (m *Model) Score(action commonv1.ActionType, bucket commonv1.RootCauseBucke
 	}
 }
 
+// ScoreAll scores every permitted candidate and returns the full ranking, in
+// the same order as permitted, no filtering. This is what makes "why not the
+// alternatives" answerable from the audit trail (docs/PHASE5_IMPLEMENTATION.md
+// Unit M): Best alone discards every candidate the instant it is beaten,
+// including a sub-zero-EV one, which is exactly the data a guardrail-blocked
+// or economically-losing alternative needs to be shown at all.
+//
+// Best is built on top of this (not a second, separately-maintained loop),
+// specifically so the two can never independently drift on which candidate
+// actually wins.
+func (m *Model) ScoreAll(permitted []Candidate, bucket commonv1.RootCauseBucket, amountPaise int64) []Score {
+	scores := make([]Score, len(permitted))
+	for i, candidate := range permitted {
+		scores[i] = m.Score(candidate.Action, bucket, candidate.AttemptNo, amountPaise)
+	}
+	return scores
+}
+
 // Best picks the highest expected value among the permitted actions, and
 // reports ok=false when none of them is worth doing.
 //
@@ -78,11 +96,21 @@ func (m *Model) Score(action commonv1.ActionType, bucket commonv1.RootCauseBucke
 // Ties resolve to whichever action appears first in permitted, so the caller
 // controls tie-breaking by passing a stable order.
 func (m *Model) Best(permitted []Candidate, bucket commonv1.RootCauseBucket, amountPaise int64) (Score, bool) {
+	return BestOf(m.ScoreAll(permitted, bucket, amountPaise))
+}
+
+// BestOf picks the highest-EV score out of an already-computed slice (see
+// Best's own doc comment for the selection rule and tie-breaking). Exposed
+// separately so a caller that already has the full ranking from ScoreAll
+// (docs/PHASE5_IMPLEMENTATION.md Unit M: persisting it for the audit trail)
+// can find the winner without scoring every candidate a second time, while
+// guaranteeing byte-for-byte the same winner Best itself would report, since
+// Best is defined in terms of this function, not a separately maintained copy.
+func BestOf(scores []Score) (Score, bool) {
 	var best Score
 	found := false
 
-	for _, candidate := range permitted {
-		score := m.Score(candidate.Action, bucket, candidate.AttemptNo, amountPaise)
+	for _, score := range scores {
 		if score.EVPaise <= 0 {
 			continue
 		}
