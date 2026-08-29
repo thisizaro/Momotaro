@@ -223,6 +223,58 @@ func TestAnExactlyBreakEvenActionIsNotWorthDoing(t *testing.T) {
 	}
 }
 
+// ScoreAll must include every permitted candidate, in order, with no
+// filtering, unlike Best: this is what lets the audit trail answer "why not
+// the alternatives" (docs/PHASE5_IMPLEMENTATION.md Unit M).
+func TestScoreAllReturnsEveryCandidateInOrderUnfiltered(t *testing.T) {
+	m := loadCheckedIn(t)
+	const amountPaise = 100 // 1 rupee: every action loses money at this amount
+
+	menu := spendingMenu()
+	got := m.ScoreAll(menu, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, amountPaise)
+
+	if len(got) != len(menu) {
+		t.Fatalf("ScoreAll returned %d scores, want %d, one per candidate with none filtered out", len(got), len(menu))
+	}
+	for i, score := range got {
+		if score.Action != menu[i].Action {
+			t.Errorf("scores[%d].Action = %v, want %v (menu order preserved)", i, score.Action, menu[i].Action)
+		}
+		if score.EVPaise > 0 {
+			t.Errorf("scores[%d] (%v) has positive EV at 1 rupee, want every candidate losing money at this amount for this test to be meaningful", i, score.Action)
+		}
+	}
+}
+
+// Best's winner must be byte-identical to whichever ScoreAll entry has the
+// highest EV: Best is built on ScoreAll specifically so the two can never
+// independently disagree about who won.
+func TestBestAgreesWithScoreAllsOwnMaximum(t *testing.T) {
+	m := loadCheckedIn(t)
+	const amountPaise = 500000 // 5000 rupees: comfortably worth chasing
+
+	menu := spendingMenu()
+	all := m.ScoreAll(menu, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, amountPaise)
+	best, ok := m.Best(menu, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, amountPaise)
+	if !ok {
+		t.Fatal("Best found nothing worth doing at 5000 rupees")
+	}
+
+	var wantMax Score
+	found := false
+	for _, s := range all {
+		if s.EVPaise <= 0 {
+			continue
+		}
+		if !found || s.EVPaise > wantMax.EVPaise {
+			wantMax, found = s, true
+		}
+	}
+	if best != wantMax {
+		t.Errorf("Best = %+v, want byte-identical to ScoreAll's own maximum %+v", best, wantMax)
+	}
+}
+
 // all_attempts pins a combination to one value for every attempt number. The
 // checked-in config only ever pins to zero, and the beyond-listed fallback is
 // also zero today, so the real config cannot tell the two paths apart. This

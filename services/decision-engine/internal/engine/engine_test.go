@@ -9,6 +9,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -88,6 +89,71 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	}
 	if classifier.calls != 1 {
 		t.Errorf("classifier called %d times, want 1", classifier.calls)
+	}
+}
+
+// The decision_trace column (migration 00006, docs/PHASE5_IMPLEMENTATION.md
+// Unit M) must land on exactly the Scoring -> RetryScheduled row, real
+// Postgres round trip included, and carry the winning action plus every
+// other candidate considered; it must be NULL on the New -> Scoring row,
+// which precedes any scoring at all.
+func TestHandleMessageSchedulesRetryPersistsDecisionTrace(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	batchID, recordID := seedRecord(ctx, t, pool)
+
+	classifier := retryClassifier()
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+
+	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
+	if err := e.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	var newToScoringTrace *string
+	if err := pool.QueryRow(ctx, `SELECT decision_trace FROM audit_entry WHERE record_id=$1 AND from_state=$2`,
+		recordID, commonv1.RecordState_RECORD_STATE_NEW.String(),
+	).Scan(&newToScoringTrace); err != nil {
+		t.Fatalf("query New -> Scoring audit_entry: %v", err)
+	}
+	if newToScoringTrace != nil {
+		t.Errorf("New -> Scoring row's decision_trace = %q, want NULL: no scoring happened before this step", *newToScoringTrace)
+	}
+
+	var scoringTrace *string
+	if err := pool.QueryRow(ctx, `SELECT decision_trace FROM audit_entry WHERE record_id=$1 AND from_state=$2`,
+		recordID, commonv1.RecordState_RECORD_STATE_SCORING.String(),
+	).Scan(&scoringTrace); err != nil {
+		t.Fatalf("query Scoring -> RetryScheduled audit_entry: %v", err)
+	}
+	if scoringTrace == nil {
+		t.Fatal("Scoring -> RetryScheduled row's decision_trace is NULL, want the scored candidates")
+	}
+
+	var decoded struct {
+		Candidates []struct {
+			Action  string  `json:"action"`
+			EVPaise float64 `json:"ev_paise"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(*scoringTrace), &decoded); err != nil {
+		t.Fatalf("decision_trace is not valid JSON: %v\n%s", err, *scoringTrace)
+	}
+	if len(decoded.Candidates) != len(spendingActions) {
+		t.Errorf("decision_trace has %d candidates, want one per spending action (%d)", len(decoded.Candidates), len(spendingActions))
+	}
+	foundWinner := false
+	for _, c := range decoded.Candidates {
+		if c.Action == "ACTION_TYPE_RETRY" {
+			foundWinner = true
+			if c.EVPaise <= 0 {
+				t.Errorf("RETRY candidate has EVPaise = %v, want positive (it is the record's actual pending_action)", c.EVPaise)
+			}
+		}
+	}
+	if !foundWinner {
+		t.Errorf("decision_trace %s does not mention ACTION_TYPE_RETRY, the action that actually won", *scoringTrace)
 	}
 }
 

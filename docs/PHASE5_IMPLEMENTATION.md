@@ -34,7 +34,7 @@ scope from the checklist alone.
 | J | Compliance guardrails (TRAI contact hours, RBI mandate lead time) | not started | nothing |
 | K | Baseline comparison in Reporting | not started | F |
 | L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
-| M | Persist EV candidate ranking + guardrail refusal reasons | not started | nothing |
+| M | Persist EV candidate ranking + guardrail refusal reasons | merged | nothing |
 | N | Correct three stale claims in checked-in files | merged | nothing |
 | **O** | **Freeze the API Gateway contract** | **merged** | **nothing. Blocked G, H and the whole frontend track. Done first.** |
 
@@ -750,7 +750,10 @@ backend. Neither shows up in mock mode.
 
 ## Unit M: persist the EV ranking and the guardrail refusal reasons
 
-**Status**: not started. **Depends on**: nothing. **Rough size**: 3 hours.
+**Status**: merged. **Depends on**: nothing. **Rough size**: 3 hours, as
+estimated, plus the migration and threading through three persistence call
+sites (`scheduleNew`, `recordRescore`, `applyResumedOutcome`, the last one
+not originally named here since it is `ResumeNudge`'s own re-scoring path).
 
 **What it is**: "Every money action explainable" is the house standard
 (`PRD.md` §0). Today the trail explains the *winner* and nothing else. The
@@ -767,15 +770,48 @@ data needed to explain the losers is computed and thrown away, twice:
 Together those two are a complete answer to "why this action and not the
 others", and both are discarded microseconds after being computed.
 
-**Design**: add `ScoreAll` alongside `Best` (or have `Best` return the full
-slice), keep `Model.Score` untouched since it is already pure and exported,
-thread the ranking plus the blocked map through `scoreAndRoute` into
-`store.scheduleNew`, and persist as one additive JSON column. One file plus
-one migration. Do **not** change how the winner is chosen; this unit records
-the comparison, it does not alter it, and a test should assert the selected
-action is byte-identical before and after.
+**Design, as built**: `economics.Model.ScoreAll` scores every permitted
+candidate and returns the full ranking, unfiltered, in the same order as
+its input. `Best` is redefined in terms of it (`Best` calls a new
+`BestOf(scores)` that `ScoreAll`'s result also feeds), specifically so the
+two can never independently disagree about the winner, byte-identically
+proven by `TestBestAgreesWithScoreAllsOwnMaximum`. `scoreAndRoute`
+(state.go) now returns a fifth value, `DecisionTrace{Candidates, Blocked}`,
+built from the same `ScoreAll` call already needed to find the winner (not
+a second, wasted computation): `Candidates` is the full ranking, `Blocked`
+is the guardrail verdict's own `blocked` map, exposed rather than recomputed.
 
-**Why it is worth 3 hours**: a table showing `retry +₹340 / whatsapp +₹120 /
+Threaded through three persistence call sites, all three needing the same
+JSON encoding (`store.encodeDecisionTrace`, mirrors `encodedHops`'s
+fail-open shape: an encoding failure logs and stores NULL rather than
+losing the whole transaction): `scheduleNew` (the New path),
+`recordRescore` (a failed attempt's re-entry to Scoring), and
+`applyResumedOutcome` (the same re-entry, reached via the delayed-outcome
+`ResumeNudge` path instead). One additive column, migration 00006,
+`audit_entry.decision_trace JSONB`.
+
+**Attached to exactly one audit row per decision, not every row**:
+`scoringPath`/`rescoringPath` always produce two `stateStep`s, and only the
+second (`Scoring -> X`) followed an actual comparison; attaching the trace
+to both, or to `directPath`'s single escalation-bypass step (`New ->
+Escalated`, which never reaches scoring at all), would be either redundant
+or a false claim that a comparison happened. Each insert loop checks
+`step.From == RECORD_STATE_SCORING` and attaches the trace only there.
+
+**Did not change how the winner is chosen**: `Best`'s selection logic
+(strictly-positive EV, first-in-order tie-break) moved to `BestOf` verbatim,
+proven behavior-preserving by every pre-existing `economics` test passing
+unchanged, plus a dedicated equivalence test. A real Postgres integration
+test (`TestHandleMessageSchedulesRetryPersistsDecisionTrace`) confirms the
+column round-trips through the actual database: NULL on the `New ->
+Scoring` row, populated with every candidate (including the winner, with
+positive EV) on the `Scoring -> RetryScheduled` row. Adversarially verified
+twice: inverted the `step.From == SCORING` check and confirmed the
+integration test caught the trace landing on the wrong row; separately
+dropped the last candidate from `ScoreAll`'s loop and confirmed the
+coverage test caught the gap. Both reverted, confirmed green.
+
+**Why it was worth it**: a table showing `retry +₹340 / whatsapp +₹120 /
 sms −₹15 / none 0 → chose retry`, or `retry blocked: attempt cap reached (3
 of 3)`, is a far stronger explainability artefact than any amount of model
 rationale prose, because it shows the deterministic part doing the deciding.

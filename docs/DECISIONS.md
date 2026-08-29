@@ -1242,3 +1242,33 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `p_recovery_at_decision` (needed before Unit L's provenance UI can render
   the EV snapshot per attempt, the data already exists on
   `INTERVENTION_ATTEMPT`, it just isn't surfaced through Audit yet).
+- 2026-08-29: **The audit trail now records every candidate action considered
+  and every action the guardrails refused, not just the winner** (Phase 5
+  Unit M). `economics.Model.Best` used to discard every losing candidate
+  the instant it was beaten, `continue`d before ever being compared, and
+  `guardrailVerdict.blocked` was thrown away right after being used to
+  filter the permitted set. Both are now captured in a new
+  `DecisionTrace{Candidates, Blocked}` returned by `scoreAndRoute` and
+  persisted as `audit_entry.decision_trace` (migration 00006, JSONB).
+  **`Best` is now defined in terms of the new `ScoreAll`/`BestOf`, not a
+  second copy of the same loop**: `ScoreAll` scores every candidate
+  unfiltered, `BestOf` picks the winner from an already-scored slice, and
+  `Best` is just `BestOf(ScoreAll(...))`. This was the deliberate design
+  choice, not an afterthought: two independently-maintained selection loops
+  could drift on which candidate wins, and the one thing this unit must
+  never do is change that. Proven byte-identical with a dedicated
+  equivalence test and confirmed by every pre-existing `economics` test
+  passing unchanged.
+  **The trace attaches to exactly one audit row per decision**: the step
+  where `From == RECORD_STATE_SCORING`, since that is the one instant a
+  real comparison happened; `scoringPath`/`rescoringPath`'s other step
+  (entering Scoring) and `directPath`'s escalation-bypass step never ran an
+  economics comparison and get NULL. Verified against real Postgres
+  (`TestHandleMessageSchedulesRetryPersistsDecisionTrace`), and
+  adversarially: inverting the `From == SCORING` check was caught by that
+  same integration test; separately dropping a candidate from `ScoreAll`'s
+  loop was caught by a dedicated coverage test. Both reverted.
+  **Encoding failures are diagnostic, not load-bearing**: `encodeDecisionTrace`
+  mirrors the existing `encodedHops` pattern exactly, logging and storing
+  NULL on a JSON marshal failure rather than losing the transaction over
+  data that exists to explain a decision, not to make one.

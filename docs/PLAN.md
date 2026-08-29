@@ -742,9 +742,11 @@ ordered by value per hour. Detail for each is in
       rejection every two seconds behind a blank page if the backend 404s.
       The difference between degrading visibly and dying silently on stage
       → `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F2
-- [ ] Persist the full EV candidate ranking and the per-action guardrail
-      refusal reasons, both currently computed and discarded, so the audit
-      trail can answer "why not the alternatives"
+- [x] Persist the full EV candidate ranking and the per-action guardrail
+      refusal reasons, both previously computed and discarded, so the audit
+      trail can answer "why not the alternatives". New `audit_entry.decision_trace`
+      column (migration 00006), attached only to the audit row where a
+      scoring decision actually happened
       → `docs/PHASE5_IMPLEMENTATION.md` Unit M
 - [x] Correct three stale claims in checked-in files that currently accuse
       the codebase of defects it does not have. Done in the same PR that
