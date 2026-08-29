@@ -186,9 +186,15 @@ the only thing a frontend agent needs to read. All met, see `docs/API_GATEWAY.md
 
 **Resolutions, one per gap above**:
 
-1. Added `GET /v1/batches`, newest first, backed by a new `ListBatches` RPC
-   (not yet wired, flagged in the doc as a small proto/Gateway addition for
-   whoever picks up Unit G).
+1. Added `GET /v1/batches`, newest first, backed by a new `ListBatches` RPC.
+   Put it on **Ingestion, not Reporting**: Ingestion already owns the
+   `batch` table and already has a live Postgres connection, Reporting is
+   still a stub, gating this route behind the largest unbuilt unit in the
+   phase would be a mistake caught in review. While unbacked, the primary
+   generate-and-watch flow doesn't need it at all (`submitBatch` already
+   returns the new `batch_id` directly); it's only the "browse an
+   already-seeded batch" flow that has to wait, and the doc says to show
+   that explicitly (a disabled control, not a silent permanent loader).
 2. Every money field in the doc now ends in `_paise` and matches
    `reporting.proto`'s own names exactly (`at_risk_paise`,
    `recovered_paise`, `net_recovered_paise`, etc).
@@ -214,9 +220,32 @@ the only thing a frontend agent needs to read. All met, see `docs/API_GATEWAY.md
    stated explicitly: a `count`-submitted batch never gets a `GROUND_TRUTH`
    row (only `scripts/batchgen` may write that table), so its report has no
    `accuracy` or `baseline_comparison` block, same as real production
-   traffic. A demo run that needs the accuracy story should seed with
+   traffic. This is not a small addition, `scripts/batchgen`'s generation
+   logic is currently `package main` and not importable, so it needs
+   extracting into a shared package first. **And it is worth flagging louder
+   than a spec footnote**: the dashboard's own generate button already calls
+   this exact form (`web/src/lib/api.ts`'s `submitBatch(80)`), so pressing
+   the most obvious button on screen today would, once this route is
+   backed, produce a batch with neither of this phase's two headline
+   numbers. A demo run that needs the accuracy story should seed with
    `scripts/batchgen` ahead of time and select that batch via the new
-   `GET /v1/batches`, rather than pressing generate.
+   `GET /v1/batches`, rather than pressing generate, and Unit H/F1 should
+   consider relabelling the button so nobody presses it by reflex mid-demo.
+
+**A review pass on this unit's own PR caught two real defects, corrected
+before merge**: the doc had made three claims about JSON zero-value
+handling (`recovered_delta_paise` always present, `rationale` always
+present, `from_state` sometimes absent) that cannot all be true under one
+consistent marshaling rule, and never stated which rule applied; fixed by
+adding an explicit Wire convention (hand-written structs, no `omitempty`
+anywhere, matching the one live route that had drifted from this,
+`submitBatchResponse.Rejected`, now fixed in the same PR). Separately, the
+claim that `from_state` is ever absent was simply wrong:
+`audit_entry.from_state` is `NOT NULL`, and every record's first transition
+is `RECORD_STATE_NEW -> RECORD_STATE_SCORING`, never an unspecified state
+(`docs/INCIDENTS.md` 2026-08-23 already documents that nothing in the
+system writes that). A frontend agent building the "first entry has no
+`from_state`" branch the old draft implied would have shipped dead code.
 
 Two follow-on items were surfaced but deliberately left for the proto PR that
 actually implements them, since a contract-freeze pass isn't the place to

@@ -1211,3 +1211,48 @@ whether the test used a real database. Live-testing the actual running
 binary, not just the test suite, is what caught it; it's worth doing at
 least once per unit that touches new SQL, not assuming coverage implies
 correctness.
+
+## 2026-08-29: a frozen contract shipped with an unstated JSON convention and one factually wrong claim
+
+Caught by an external review of the Unit O PR (`docs/API_GATEWAY.md`,
+`docs/PHASE5_IMPLEMENTATION.md`), before merge, not by CI, since neither
+defect is the kind a test suite catches in a markdown file.
+
+**The JSON convention was never stated, and the doc's own promises could
+not all hold under any single choice.** The frozen contract claimed, in
+three different places, that `recovered_delta_paise: 0` always renders,
+that `rationale`/`message_text` are always present as empty strings, and
+that `from_state` is sometimes absent entirely. `protojson`'s default drops
+every zero value, which breaks the first two claims; its `EmitUnpopulated`
+option drops nothing, which breaks the third. The actual Gateway code uses
+neither, it hand-writes Go structs with explicit `json` tags
+(`services/api-gateway/internal/httpapi/handler.go`), which was never
+written down as the rule. One live route had already drifted from even
+that: `submitBatchResponse.Rejected` carried `json:"rejected,omitempty"`,
+so an empty map vanished from the wire while the doc's own example showed
+`"rejected": {}`. Fixed by adding an explicit wire convention (hand-written
+structs, no `omitempty`, ever) and removing the stray tag.
+
+**The `from_state`-can-be-absent claim was not an oversight to state more
+carefully, it was wrong.** `audit_entry.from_state` is `NOT NULL`
+(`migrations/00001_initial_schema.sql`), and every record's first
+transition is `RECORD_STATE_NEW -> RECORD_STATE_SCORING`
+(`services/decision-engine/internal/engine/state.go`), never an
+unspecified from-state; 2026-08-23's entry in this file already documents
+that nothing in the system writes one. A frontend agent building against
+the old claim would have written a real branch for a case that cannot
+occur.
+
+**General lesson, distinct from the earlier NULL-scan incident (2026-08-29,
+above) but the same shape**: a contract document can read as internally
+consistent, cite real files, and still be wrong in a way its author does
+not notice, because writing the doc and checking it against the schema are
+different acts. A second reviewer, or a deliberate self-check against the
+actual migration and code (not just the proto comments), catches this kind
+of thing; nothing about "it looks thorough" is evidence that it is correct.
+The same review also caught a real demo-flow risk worth its own note: the
+dashboard's generate button already calls the exact request form
+(`count`) that this contract defines as never carrying `GROUND_TRUTH`, so
+the most obvious action on screen would, once wired up, produce a batch
+with neither of this phase's headline numbers. Addressed in
+`docs/API_GATEWAY.md` and `docs/PRD.md` section 12 in the same fix.

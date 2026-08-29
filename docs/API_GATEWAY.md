@@ -48,6 +48,19 @@ Stated once, applies to every endpoint below.
 4. **Timestamps are RFC3339 strings** (`google.protobuf.Timestamp` marshaled
    the standard way), e.g. `"2026-08-29T14:03:11Z"`.
 5. IDs are UUID strings throughout.
+6. **Responses are hand-written Go structs with explicit `json` tags, not
+   `protojson`, and every documented field is always emitted, zero value
+   included.** No field in this document ever carries `omitempty`. This is
+   the rule an earlier draft of this document left unstated, and one live
+   route already violated it (`submitBatchResponse.Rejected` was tagged
+   `omitempty`, so an empty map vanished instead of showing `{}` as this
+   doc's own example promised); fixed to match. Stated once here because it
+   governs the "always present" claims made per-field below (`cost_paise:
+   0`, `recovered_delta_paise: 0`, `rationale: ""` must all render, not
+   silently disappear), and because `protojson`'s own default behaviour
+   (drop every zero value) and its `EmitUnpopulated` option (never drop
+   anything, including unset message fields as `null`) would each break a
+   different one of those promises if picked instead.
 
 ## Auth
 
@@ -102,8 +115,13 @@ must never be made to wait on our whole recovery pipeline.
 Submit a batch for the agent to process. Used by the demo, and in production
 for backfill/replay. Converges onto the same pipeline as the webhook above.
 **Partially implemented**: the `records` form below is live today; the
-`count` form closes gap 6 and needs a small Ingestion addition before it
-works (not yet backed).
+`count` form closes gap 6 and is **not yet backed**, and it is not a small
+addition. `scripts/batchgen/profile.go` and `main.go` are both `package
+main`, so `generateRecord`, `bucketProfiles` and the amount distribution are
+not importable by Ingestion or anything else as they stand. Whoever picks
+this up extracts the pure generation logic (`profile.go`, already has no
+I/O) into a real internal package first, imported by both `batchgen` and
+Ingestion, rather than duplicating it and letting the two drift.
 
 Request body, **either** an explicit record list:
 ```json
@@ -141,6 +159,17 @@ demo narrative needs the accuracy story (Unit K), seed that specific batch
 with `scripts/batchgen` ahead of time and select it via `GET /v1/batches`
 rather than pressing generate.
 
+**Warning, not a footnote: the dashboard's main call-to-action is this exact
+trap today.** `web/src/lib/api.ts`'s `submitBatch(80)` is the `count` form,
+which is what a judge gets from pressing the most obvious button on the
+screen, and it produces a batch with neither an accuracy score nor a
+baseline comparison, the two headline differentiators this whole phase
+exists to show. Whoever builds Unit H/F1 should either relabel that button
+to something like "generate sample data" and make the real demo batch a
+pre-seeded, selected one, or point it at a pre-seeded batch by default.
+`docs/PRD.md` section 12's demo script should say this explicitly rather
+than leaving it implied here.
+
 Response:
 ```json
 { "batch_id": "<uuid>", "accepted_count": 1, "rejected": {} }
@@ -152,10 +181,24 @@ reported, never silently dropped. Every subsequent call scopes to
 
 ### `GET /v1/batches`
 
-**New, closes gap 1. Not yet backed** (needs a new `ListBatches` RPC,
-naturally on Reporting since it already reads Postgres for every other
-aggregate; add it in Unit G's own proto PR, not here). Lists batches newest
-first, so the dashboard's "pick the most recent one on load" behaviour has
+**New, closes gap 1. Not yet backed** (needs a new `ListBatches` RPC). Put
+it on **Ingestion, not Reporting**: Ingestion already owns the `batch` table,
+already writes every row in it (`services/ingestion/internal/server/store.go`),
+and already has a live Postgres connection, whereas `services/reporting` is
+still a stub. Gating a list-of-batches route behind a service that does not
+exist yet would make this route wait on the largest unbuilt unit in the
+phase for no reason. Add the RPC in Unit G's own proto PR, not here.
+
+**While this route is unbacked, the primary demo flow does not need it.**
+`POST /v1/batches` already returns the new batch's `batch_id` directly, so
+generating and watching one batch never depends on listing batches at all.
+This route exists for the *other* flow, picking a specific, already-seeded
+batch (typically one made with `scripts/batchgen`, so it carries ground
+truth) out of several. Until it is backed, that flow has no route to call;
+say so on screen (e.g. a disabled "browse batches" control with a
+tooltip), don't leave it as a silent, permanent skeleton loader.
+
+Lists batches newest first, so a "pick the most recent one" default has
 something real to select.
 
 Query params: `limit` (optional, default 20).
@@ -294,11 +337,16 @@ Response:
   ]
 }
 ```
-`from_state` is omitted (not null, the key is absent) on a record's first
-entry, since there is no prior state. `hops` is empty on a transition that
-followed no classification. `rationale`, `message_text` are empty strings,
-never omitted, when not applicable, so the frontend can render them
-unconditionally.
+**`from_state` is never absent, including on a record's first entry.**
+`audit_entry.from_state` is `NOT NULL` (`migrations/00001_initial_schema.sql`),
+the state machine has no code path that writes an unspecified from-state
+(`docs/INCIDENTS.md` 2026-08-23 has a fixture bug that once fabricated one
+and the note "nothing in the system writes that"), and a record's first
+transition is always `RECORD_STATE_NEW -> RECORD_STATE_SCORING`. So a
+frontend "first entry has no `from_state`" branch is dead code, don't write
+one. `hops` is empty on a transition that followed no classification.
+`rationale`, `message_text` are empty strings, never omitted, when not
+applicable, so the frontend can render them unconditionally.
 
 **Not yet on this response, needed before Unit L's provenance UI is
 complete**: `ev_score_at_decision` and `p_recovery_at_decision` per entry.

@@ -708,7 +708,6 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       `AuditEntry.ev_score_at_decision`/`p_recovery_at_decision`), left for
       whoever picks up that proto PR rather than done here
       → `docs/PHASE5_IMPLEMENTATION.md` Unit O, `docs/DECISIONS.md`
-      → `docs/PHASE5_IMPLEMENTATION.md` Unit O
 
 The Track 03 text and the general evaluation criteria are now recorded
 verbatim in `PRD.md` §0. Scored against them, the project has exactly one
