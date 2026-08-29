@@ -1032,3 +1032,35 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Prometheus's `ALERTS` metric, which is enough to prove the rules fire
   for a demo; wiring a real receiver is a small, separate addition for
   whenever an actual destination exists.
+- 2026-08-29: **Phase 4 Unit F (OpenTelemetry tracing) is deferred, not
+  skipped.** It is the hardest unit in Phase 4 (Kafka needs manual trace
+  context propagation on every hop, plus a new trace backend), and
+  `GetRecordAudit` plus `ProviderHop` already cover most of what a demo
+  would use tracing to show. Phase 5 (demo realism) is the actual blocker
+  toward a working demo and comes first. Tracked in the new
+  `docs/BACKLOG.md`, along with a future "production-grade hardening"
+  pass to happen after Phase 5's important items are done (a hackathon
+  build takes shortcuts a real deployment would not: static demo
+  `API_KEY`, no TLS between services, no real Alertmanager receiver,
+  single-instance infra, secrets in `.env`). Not scoped item by item yet;
+  see `docs/BACKLOG.md` for the starting audit list.
+- 2026-08-29: **Phase 5 Unit A's `ReportDelayedOutcome` reuses
+  `scoreAndRoute` for a `FAILURE` outcome, the same re-entry to Scoring
+  `handleFailedAttempt` already uses for a synchronous execute failure**
+  (`docs/ARCHITECTURE.md` §7), rather than inventing separate logic for
+  the async case. A failed nudge outcome and a failed synchronous retry
+  both mean the same thing operationally (an attempt was spent and
+  failed, re-price with one fewer attempt of budget left), and the two
+  paths must not be able to disagree about it.
+  **The row lock (`SELECT ... FOR UPDATE`) in `applyResumedOutcome` is
+  new, though — `recordOutcome`/`recordRescore` (the scheduler's own
+  writes) do not need one.** The scheduler's poll-driven writes are
+  already serialised by `claimDue`'s own claim transition (only one
+  execution is ever in flight for a given record between polls); a
+  `NUDGED` record has no such prior claim step, and this RPC is
+  at-least-once, so two copies of the same report can arrive genuinely
+  concurrently with no serialisation from anywhere else. Proven, not just
+  argued: with the lock removed, a 25-goroutine concurrency test
+  double-applied 11-12 times out of 25 on every run; with it, exactly 1,
+  clean across repeated runs. Full account in
+  `docs/PHASE5_IMPLEMENTATION.md` Unit A.

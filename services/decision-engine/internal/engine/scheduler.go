@@ -171,6 +171,88 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 		"ev_paise", score.EVPaise, "p_recovery", score.PRecovery)
 }
 
+// ResumeNudge applies a delayed outcome report to a record parked in
+// NUDGED: the counterpart to process()'s synchronous outcome handling, for
+// an outcome that arrives later, out of band, via gRPC rather than the
+// poll loop (docs/ARCHITECTURE.md section 6, the World Simulator's
+// delayed-outcome callback; the RPC itself is services/decision-engine/
+// internal/server, docs/PHASE5_IMPLEMENTATION.md Unit A).
+//
+// applied is false, with no error, whenever the report should be
+// discarded rather than acted on: recordID does not exist, is not resting
+// in NUDGED, or attemptNumber does not match the attempt currently
+// awaiting resolution. All three are normal, not bugs -- this RPC is
+// at-least-once like everything else here (decisionengine.proto) -- and
+// the caller (services/decision-engine/internal/server) is expected to
+// treat a discard as a successful, uneventful response, not an error.
+func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNumber int, outcome commonv1.Outcome, failureCode string) (applied bool, resultingState commonv1.RecordState, err error) {
+	now := s.clock.Now()
+
+	c, state, found, err := s.store.loadNudged(ctx, recordID)
+	if err != nil {
+		return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, err
+	}
+	if !found {
+		return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, nil
+	}
+	if state != commonv1.RecordState_RECORD_STATE_NUDGED || c.AttemptCount != attemptNumber {
+		return false, state, nil
+	}
+
+	var (
+		steps         []stateStep
+		pendingAction commonv1.ActionType
+		score         economics.Score
+		dueAt         *time.Time
+	)
+
+	switch outcome {
+	case commonv1.Outcome_OUTCOME_SUCCESS:
+		toState, reason := decideAfterExecute(c.PendingAction, outcome)
+		steps = []stateStep{{From: commonv1.RecordState_RECORD_STATE_NUDGED, To: toState, Reason: reason}}
+	case commonv1.Outcome_OUTCOME_FAILURE:
+		// The same re-entry to Scoring a synchronous execute failure takes
+		// (handleFailedAttempt): a failed nudge outcome is re-priced with
+		// this attempt spent, not escalated outright, so the two paths
+		// cannot disagree about when a record has run out of road.
+		history, err := s.store.loadAttemptHistory(ctx, recordID)
+		if err != nil {
+			return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, fmt.Errorf("load attempt history for %s: %w", recordID, err)
+		}
+		toState, pending, reason, sc := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
+		pendingAction, score = pending, sc
+		if toState == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
+			dueAt = retryDueAt(c.RootCauseBucket, now, s.cfg.RetryDelay, s.cfg.TimeScale)
+		} else {
+			dueAt = dueAtFor(toState, s.cfg.NudgeDelay, now)
+		}
+		steps = rescoringPath(c.ClaimedState, toState, reason)
+	default:
+		// PENDING/UNSPECIFIED: a delayed outcome report must resolve to
+		// something concrete. Anything else is a malformed report to
+		// discard, not something to apply.
+		return false, state, nil
+	}
+
+	// costPaise is 0 here deliberately: the nudge's own cost was already
+	// recorded when it was sent (recordOutcome, at NUDGE_SCHEDULED ->
+	// Nudged time). Its outcome resolving later incurs no new spend.
+	//
+	// failureCode has no further effect on this decision today: bucket
+	// (not failure_code) drives scoreAndRoute's pricing, and re-deriving a
+	// bucket from a delayed failure code would be a re-classification this
+	// path deliberately does not do (see the comment on this method).
+	// Logged by the caller so it is not silently dropped.
+	applied, err = s.store.applyResumedOutcome(ctx, c, attemptNumber, steps, pendingAction, score, dueAt, 0, now)
+	if err != nil {
+		return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, err
+	}
+	if !applied {
+		return false, state, nil
+	}
+	return true, steps[len(steps)-1].To, nil
+}
+
 func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attemptNumber int32) (*executorv1.ExecuteResponse, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxExecuteAttempts; attempt++ {

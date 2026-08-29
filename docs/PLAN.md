@@ -619,35 +619,63 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 
 ## Phase 5: Demonstration realism
 
+> Working breakdown, dependency graph, and a pre-planning audit of what
+> was already built versus still a stub: **`docs/PHASE5_IMPLEMENTATION.md`**
+> (8 units, A to H). Read it before picking up any item here — it found a
+> real prerequisite gap this checklist doesn't mention (Decision Engine had
+> no gRPC server at all) and several items far more built than their
+> checklist wording implies (the Hinglish migration already shipped in
+> Phase 0; the dashboard is essentially already built and just needs
+> wiring).
+
+- [x] Decision Engine gRPC server (`ReportDelayedOutcome`), the
+      prerequisite World Simulator's delayed-outcome callback and any
+      nudge-composition caller both need, not itself a `PLAN.md` line item
+      before the Phase 5 audit found the gap
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit A
 - [ ] Synthetic batch generator: realistic failure codes/amounts, seeded
       hidden ground-truth recoverability profile per record, written
-      straight into `BATCH`/`RECORD`/`GROUND_TRUTH` → `ARCHITECTURE.md` §6, §10
+      straight into `BATCH`/`RECORD`/`GROUND_TRUTH` (table already exists,
+      Phase 0) → `ARCHITECTURE.md` §6, §10, `docs/PHASE5_IMPLEMENTATION.md` Unit B
 - [ ] World Simulator upgraded from Phase 1's stub to the full probabilistic
       outcome model reading ground truth, including the Redis-backed
       delayed-outcome queue and its `ReportDelayedOutcome` callback into
-      Decision Engine for nudge-type actions → `ARCHITECTURE.md` §6
+      Decision Engine for nudge-type actions → `ARCHITECTURE.md` §6,
+      `docs/PHASE5_IMPLEMENTATION.md` Unit C
 - [ ] Reporting Service: at-risk amount, gross + **net** recovered
       (after logged intervention spend), cost per rupee recovered,
       uneconomic-closed count/value shown separately from escalations,
       recovery rate by bucket/intervention, classification accuracy vs.
       ground truth, all scoped by `batch_id`, plus the `StreamBatchUpdates`
       server-streaming gRPC method
-      → `PRD.md` §8, §9, §2b, `ARCHITECTURE.md` §10, §6a
-- [ ] API Gateway: WebSocket relay (`WS /v1/batches/{batch_id}/live`) wired
-      to `StreamBatchUpdates` → `ARCHITECTURE.md` §6a, `docs/API_GATEWAY.md`
+      → `PRD.md` §8, §9, §2b, `ARCHITECTURE.md` §10, §6a,
+      `docs/PHASE5_IMPLEMENTATION.md` Unit F
+- [ ] API Gateway: report/records/audit GET routes plus a WebSocket relay
+      (`WS /v1/batches/{batch_id}/live`) wired to `StreamBatchUpdates`.
+      Also needs a `GET /v1/batches` list endpoint the dashboard already
+      calls but `docs/API_GATEWAY.md` never specs — add and document it
+      here, not a separate item → `ARCHITECTURE.md` §6a,
+      `docs/API_GATEWAY.md`, `docs/PHASE5_IMPLEMENTATION.md` Unit G
 - [ ] Dashboard: recovered amount/rate, record table, one record's audit
       drill-down, live feed via the WebSocket above, built only against
-      `docs/API_GATEWAY.md` → `PRD.md` §1, `web/AGENTS.md`
+      `docs/API_GATEWAY.md`. Already essentially built (Phase 0/pre-Phase-5
+      work): real components, a working mock backend, a WebSocket client
+      already written against the documented contract. This item is wiring
+      to a real Gateway and reconciling contract drift, not new dashboard
+      work → `PRD.md` §1, `web/AGENTS.md`, `docs/PHASE5_IMPLEMENTATION.md` Unit H
 - [ ] Hinglish nudge composition: `Classifier.ComposeNudge` reusing the
       existing provider chain and circuit breakers, static Hinglish
       template per bucket as fallback, output length-capped and validated
       (no model-invented amounts or dates), text stored on
       `INTERVENTION_ATTEMPT.message_text` and surfaced in the audit trail.
-      Needs a small additive migration for the two new columns
-      → `ARCHITECTURE.md` §5b, `PRD.md` §1 feature 5
+      The two columns this needs already exist (`migrations/
+      00001_initial_schema.sql`); no new migration required
+      → `ARCHITECTURE.md` §5b, `PRD.md` §1 feature 5,
+      `docs/PHASE5_IMPLEMENTATION.md` Unit E
 - [ ] Demo-time scale factor (config knob, `ARCHITECTURE.md` §17) wired
-      through cooldowns and World Simulator's delay/tick timing, so a live
-      demo run finishes in minutes, not hours
+      through cooldowns (already done, Phase 2/3) and World Simulator's
+      delay/tick timing (folded into Unit C, not a separate item: World
+      Simulator has no timing logic to retrofit until it exists)
 
 ## Phase 6: Load testing & performance validation
 
