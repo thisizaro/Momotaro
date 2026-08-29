@@ -602,10 +602,10 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       → `ARCHITECTURE.md` §13
 - [ ] Structured logging correlated by `record_id`/`trace_id`
       → `ARCHITECTURE.md` §13
-- [ ] Alertmanager rules (consumer lag, LLM fallback rate, stopping-rule
-      violation) → `ARCHITECTURE.md` §13
-- [ ] Grafana dashboards, per-service and business metrics
-      → `ARCHITECTURE.md` §13
+- [x] Alertmanager rules (consumer lag, LLM fallback rate, stopping-rule
+      violation) → `ARCHITECTURE.md` §13, `docs/PHASE4_IMPLEMENTATION.md` Unit D
+- [x] Grafana dashboards, per-service and business metrics
+      → `ARCHITECTURE.md` §13, `docs/PHASE4_IMPLEMENTATION.md` Unit E
 
 ## Phase 5: Demonstration realism
 

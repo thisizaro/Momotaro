@@ -1099,3 +1099,26 @@ doing is happening, check that container's own logs before assuming the
 network topology is at fault**, and prefer the tool's own config
 validator (`promtool check config`, `amtool check-config`) over hand-
 verifying YAML structure against a half-remembered schema.
+
+## 2026-08-29: a volume mounted inside another read-only volume fails outright
+
+Building Phase 4 Unit E's Grafana provisioning, the first version of
+`docker-compose.observability.yml` mounted two separate host directories
+into the `grafana` container: `./grafana/provisioning` at
+`/etc/grafana/provisioning:ro`, and `./grafana/dashboards` at
+`/etc/grafana/provisioning/dashboards/files:ro` -- the second path sitting
+*inside* the first mount's own tree. `docker compose up` failed the
+container outright at creation: `error mounting ...: create mountpoint for
+/etc/grafana/provisioning/dashboards/files mount: ... read-only file
+system`. Docker cannot create a mountpoint for the second volume inside a
+directory tree the first, read-only mount already owns.
+
+Fix: moved the dashboard JSON files to live inside the provisioning tree
+itself (`grafana/provisioning/dashboards/files/*.json`), so a single mount
+of `./grafana/provisioning` covers datasources, the dashboard provider
+config, and the dashboards themselves. No second volume needed.
+
+The general lesson: **a bind mount's target path must not fall inside
+another bind mount's own tree**, especially when the outer one is
+read-only; nest configuration files under one mount root instead of
+composing several mounts that overlap.

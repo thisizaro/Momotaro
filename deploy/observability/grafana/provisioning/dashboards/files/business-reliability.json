@@ -1,0 +1,87 @@
+{
+  "title": "Momotaro: Business & Reliability",
+  "uid": "momotaro-business-reliability",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Kafka consumer lag (raw.events), by partition",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kafka_consumer_lag",
+          "legendFormat": "{{topic}} / {{partition}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "LLM fallback rate (LLM attempted and failed, not sampled out)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(llm_fallback_total[$__rate_interval])) / clamp_min(sum(rate(requests_total{method=\"/classifier.v1.ClassifierService/Classify\", code=\"OK\"}[$__rate_interval])), 1)",
+          "legendFormat": "fallback rate"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Stopping-rule violations",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "stopping_rule_violation_total" }]
+    },
+    {
+      "id": 4,
+      "title": "Incomplete audit trails",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "incomplete_audit_trail_total" }]
+    },
+    {
+      "id": 5,
+      "title": "Impossible audit transitions",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "audit_impossible_transitions_total" }]
+    }
+  ]
+}
