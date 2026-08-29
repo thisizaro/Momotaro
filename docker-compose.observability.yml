@@ -1,10 +1,10 @@
 # Optional local-dev observability stack (docs/PHASE4_IMPLEMENTATION.md
-# Unit C). Kept out of docker-compose.yml deliberately: that file backs
-# `make up`, which `make test-integration` also depends on, and integration
-# tests assert nothing about metrics, so there is no reason for every CI
-# integration run to also pull and start Prometheus.
+# Units C and D). Kept out of docker-compose.yml deliberately: that file
+# backs `make up`, which `make test-integration` also depends on, and
+# integration tests assert nothing about metrics or alerts, so there is no
+# reason for every CI integration run to also pull and start these.
 #
-#   make up-observability   start the base stack plus Prometheus
+#   make up-observability   start the base stack plus Prometheus + Alertmanager
 #   make down                stop everything, base stack included
 #
 # App services are not containers on this network (docker-compose.yml's own
@@ -26,3 +26,12 @@ services:
     ports: ["9900:9090"]
     volumes:
       - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    depends_on: [alertmanager]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    # Host port 9901: 9900 is Prometheus's own UI on this same host.
+    ports: ["9901:9093"]
+    volumes:
+      - ./deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro

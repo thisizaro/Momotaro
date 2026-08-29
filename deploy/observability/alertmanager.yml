@@ -1,0 +1,16 @@
+# Minimal local-dev Alertmanager config (docs/PHASE4_IMPLEMENTATION.md
+# Unit D). No real notification channel is wired up anywhere in this
+# system yet (no Slack webhook, no PagerDuty key, nothing in .env.example),
+# so the single receiver is deliberately a no-op: firing alerts are visible
+# in Alertmanager's own UI (http://localhost:9901) and Prometheus's own
+# `ALERTS` metric, which is the point for a demo -- proving the rule fires
+# -- without inventing a fake destination for it to page.
+route:
+  receiver: default
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+receivers:
+  - name: default

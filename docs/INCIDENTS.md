@@ -1045,3 +1045,57 @@ final state looks like a fallback. Two independent code paths can produce the
 same observable outcome, and a per-record cost-safety gate (Unit H) is exactly
 the kind of thing that silently makes the primary unreachable without erroring
 anywhere.
+
+## 2026-08-29: a naive llm_fallback_total would have alerted on completely normal operation
+
+Building Phase 4 Unit D's Alertmanager rules (`docs/PHASE4_IMPLEMENTATION.md`),
+the first version of the classifier's new `llm_fallback_total` counter
+incremented on any `resp.GetSource() == SOURCE_RULES_FALLBACK`. That is
+correct-looking and wrong: `force_rules_only` (the per-record cost-safety
+sampling gate, `docs/PHASE3_IMPLEMENTATION.md` Unit H) strips every non-rules
+rung out of the chain *before* it ever runs, and also answers with
+`SOURCE_RULES_FALLBACK`. With the demo profile's default
+`LLM_SAMPLE_RATE=0.15`, roughly 85% of records hit this path on a perfectly
+healthy run. `LLMFallbackRateHigh > 0.5` would have fired constantly, on
+every normal batch, for a reason that has nothing to do with the LLM
+degrading.
+
+Caught before it ever shipped, by writing the negative test first
+(`TestClassifyDoesNotIncrementFallbackCounterWhenNoLLMRungExists`) rather than
+only the positive one: a rules-only chain must not increment the counter,
+and the first implementation failed that test immediately. Fix:
+`llmWasAttempted(resp.GetHops())` checks whether any hop names a rung other
+than `"rules"` -- only true when a real LLM rung was actually tried and
+still lost to `rules` -- and the counter only increments when that is also
+true.
+
+The general lesson: **two config-driven code paths that reach the same
+`Source` value are not the same event**, and a metric meant to alert on one
+of them needs to distinguish "asked and failed" from "never asked" using
+something more specific than the field the rest of the system already
+uses for a coarser purpose (here, the hop list, not `Source`).
+
+## 2026-08-29: `alerting.alertmanager_configs` is not a real Prometheus config key
+
+Writing Phase 4 Unit D's `deploy/observability/prometheus.yml`, the
+`alerting:` block was written as `alertmanager_configs:` on the reasonable
+assumption that the YAML key matches Prometheus's internal Go field name
+(`AlertmanagerConfigs`). `docker compose up` for the observability stack
+started the container without any visible top-level failure; the actual
+error, `parsing YAML file ...: field alertmanager_configs not found in type
+config.plain`, was sitting in `docker logs momotaro-prometheus-1`, not in
+`docker compose`'s own output, so it would have been easy to miss and read
+the silent absence of scrape/alert traffic as a networking problem instead
+of a config one.
+
+Found by running `docker run ... --entrypoint promtool prom/prometheus
+check config` directly against the file rather than only inferring from
+container logs -- `promtool` names the exact line and the exact wrong key.
+Fix: the real YAML key is `alertmanagers`, plural, not
+`alertmanager_configs`.
+
+The general lesson: **when a container "starts" but nothing it should be
+doing is happening, check that container's own logs before assuming the
+network topology is at fault**, and prefer the tool's own config
+validator (`promtool check config`, `amtool check-config`) over hand-
+verifying YAML structure against a half-remembered schema.

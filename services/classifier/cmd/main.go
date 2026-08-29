@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
@@ -194,6 +195,11 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	)
 
 	m := metrics.New()
+	llmFallback := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "llm_fallback_total",
+		Help: "Classifications answered by the deterministic rules engine rather than a live LLM rung.",
+	})
+	m.Registry().MustRegister(llmFallback)
 	metricsServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.MetricsPort),
 		Handler:           m.Handler(),
@@ -216,7 +222,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		interceptors.UnaryServerRequireDeadline(),
 		interceptors.UnaryServerMetrics(m),
 	))
-	classifierv1.RegisterClassifierServiceServer(grpcServer, server.New(chain, log))
+	classifierv1.RegisterClassifierServiceServer(grpcServer, server.New(chain, log, llmFallback))
 
 	serveErr := make(chan error, 1)
 	go func() {
