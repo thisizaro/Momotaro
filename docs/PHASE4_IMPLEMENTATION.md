@@ -21,7 +21,7 @@ all, rather than built speculatively.
 |---|---|---|---|
 | A | Prometheus metrics: shared gRPC interceptor + per-service `/metrics` | merged | nothing |
 | B | Kafka consumer-lag exporter (decision-engine) | merged | nothing |
-| C | docker-compose Prometheus wiring + scrape config | not started | A, B |
+| C | docker-compose Prometheus wiring + scrape config | merged | A, B |
 | D | Alertmanager rules | not started | C |
 | E | Grafana dashboards | not started | C |
 | F | OpenTelemetry tracing across gRPC + Kafka hops | on hold | pending a go/no-go decision |
@@ -135,14 +135,62 @@ addresses since gRPC dialing is lazy) and confirmed
 
 ## Unit C: docker-compose Prometheus wiring
 
-**Status**: not started.
+**Status**: merged.
 **Depends on**: A and B, so there is something real to scrape.
 
-New `deploy/observability/` directory (repurposing the currently-empty
-`deploy/` placeholder) for `prometheus.yml`; three new containers
-(`prometheus`, `alertmanager`, `grafana`) added to `docker-compose.yml`,
-consistent with that file's own stated scope ("local development
-infrastructure only").
+**What it is**: Prometheus, scraping every service's `/metrics` endpoint.
+Alertmanager and Grafana are their own units (D, E): a container with no
+rules or dashboards yet is a placeholder, not a deliverable.
+
+Getting Prometheus real targets surfaced a real gap: `.env.example`'s
+`GRPC_PORT`/`METRICS_PORT` are documented as "defaults for running one at a
+time", so there was no fixed, collision-free port per service to scrape once
+more than one runs together. Resolved (docs/DECISIONS.md 2026-08-29) with a
+fixed port table via new `make run-<service>` targets, and a **separate**
+`docker-compose.observability.yml` rather than adding to the base
+`docker-compose.yml`, so `make up`/`make test-integration` (and CI's
+`integration` job) stay exactly as fast as before: no test asserts anything
+about metrics, so there is no reason for every integration run to also pull
+and start Prometheus.
+
+**Files**:
+- `deploy/observability/prometheus.yml` (new): scrape config, one job per
+  service, targeting `host.docker.internal:<fixed metrics port>`. App
+  services are still not containers on the docker-compose network (that
+  file's own header comment, unchanged), so this is the only way in.
+- `docker-compose.observability.yml` (new): the `prometheus` container,
+  `extra_hosts: host-gateway` for portability across Docker Desktop and
+  native Linux Engine 20.10+, host port 9900 (not 9090: that is ingestion's
+  `GRPC_PORT` on the same host).
+- `Makefile`: seven new `run-<service>` targets, each exporting a fixed,
+  permanent `GRPC_PORT`/`METRICS_PORT` pair (and the cross-service address
+  env vars that need to agree with them) so all seven can run
+  simultaneously without colliding; a new `up-observability` target
+  layering both compose files; `down`/`down-clean` updated to reference
+  both files so either is safe to tear down regardless of which was
+  started.
+- `.env.example`: a note pointing at `make run-<service>` for anyone still
+  reading the single `GRPC_PORT`/`METRICS_PORT` pair as the only option.
+
+**Verification**: `docker compose -f docker-compose.yml -f
+docker-compose.observability.yml config -q` accepts both files together.
+Ran all six real services (ingestion, classifier, executor, audit,
+decision-engine, api-gateway) simultaneously via their new `make run-*`
+targets and confirmed zero port collisions and every `/metrics` endpoint
+live (`curl` 200 from the host on each fixed port). Ran `make
+up-observability` and confirmed Prometheus starts cleanly and its own
+target list (`/api/v1/targets`) shows exactly the seven expected jobs at
+the right addresses.
+**Gap, stated plainly**: the actual `host.docker.internal` scrape hop
+itself could not be confirmed inside this session's sandboxed dev
+environment — its Bash tool's network namespace has no route back from
+Docker's containers to ports those same commands bind (tested
+`host-gateway`, plain `host.docker.internal`, and the raw docker0 bridge
+address, all connection-refused, despite `ss -ltn` showing every service
+listening on `0.0.0.0`). This is the standard Docker-documented mechanism
+and should work on a real machine or in CI (native Linux Engine, no extra
+sandbox layer); confirm the scrape actually succeeds there before trusting
+this note alone. See docs/DECISIONS.md 2026-08-29 for the full account.
 
 ## Unit D: Alertmanager rules
 
