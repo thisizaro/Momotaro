@@ -153,7 +153,7 @@ func TestScoreAndRoutePicksTheHighestEVPermittedAction(t *testing.T) {
 	model := loadEconomicsModel(t)
 	const amountPaise = 500000 // 5000 rupees, big enough that RETRY clearly wins
 
-	state, pendingAction, reason, score := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), amountPaise, testNow)
+	state, pendingAction, reason, score, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), amountPaise, testNow)
 
 	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
 		t.Errorf("state = %v, want RETRY_SCHEDULED", state)
@@ -169,6 +169,80 @@ func TestScoreAndRoutePicksTheHighestEVPermittedAction(t *testing.T) {
 	}
 }
 
+// The DecisionTrace scoreAndRoute returns must show every permitted
+// candidate, not just the winner, and the winner it reports must be
+// byte-identical to the actual chosen score (docs/PHASE5_IMPLEMENTATION.md
+// Unit M): this is what makes "why not the alternatives" answerable rather
+// than asserted.
+func TestScoreAndRouteTraceShowsEveryCandidateAndAgreesWithTheWinner(t *testing.T) {
+	model := loadEconomicsModel(t)
+	const amountPaise = 500000
+
+	_, _, _, score, trace := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), amountPaise, testNow)
+
+	if len(trace.Candidates) != len(spendingActions) {
+		t.Fatalf("trace has %d candidates, want one per spending action (%d)", len(trace.Candidates), len(spendingActions))
+	}
+	found := false
+	for _, c := range trace.Candidates {
+		if c == score {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("trace.Candidates does not contain the winning score %+v byte-identically", score)
+	}
+	if len(trace.Blocked) != 0 {
+		t.Errorf("trace.Blocked = %v, want empty: nothing was refused in this scenario", trace.Blocked)
+	}
+}
+
+// When the guardrails refuse every action, the trace must show WHICH rule
+// blocked which action (there is nothing to score, since permittedActions
+// returned nothing), so the audit trail carries the refusal reasons even
+// though no economics ran.
+func TestScoreAndRouteTraceCarriesGuardrailRefusalsWhenNothingIsPermitted(t *testing.T) {
+	model := loadEconomicsModel(t)
+
+	h := freshHistory()
+	h.Retries = testGuardrails.MaxRetries
+	h.Contacts = testGuardrails.MaxContacts
+
+	_, _, _, _, trace := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+
+	if len(trace.Candidates) != 0 {
+		t.Errorf("trace.Candidates = %v, want empty: nothing was permitted to score", trace.Candidates)
+	}
+	if trace.Blocked[commonv1.ActionType_ACTION_TYPE_RETRY] == "" {
+		t.Error("trace.Blocked has no reason for RETRY, want the retry-budget-exhausted reason")
+	}
+	if trace.Blocked[commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER] == "" {
+		t.Error("trace.Blocked has no reason for NUDGE_REMINDER, want the contact-cap reason")
+	}
+}
+
+// The economics-stop case: the trace must still show every candidate that
+// was scored and lost, even though nothing was worth doing.
+func TestScoreAndRouteTraceShowsLosingCandidatesWhenUneconomic(t *testing.T) {
+	model := loadEconomicsModel(t)
+
+	guardrails := GuardrailConfig{MaxRetries: 10, MaxContacts: 1, ContactCooldown: 24 * time.Hour, RecoveryWindow: 7 * 24 * time.Hour}
+	h := freshHistory()
+	h.Retries = 3
+	h.Contacts = 1
+
+	_, _, _, _, trace := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+
+	if len(trace.Candidates) == 0 {
+		t.Fatal("trace.Candidates is empty, want the scored-but-losing candidate(s) that made this uneconomic")
+	}
+	for _, c := range trace.Candidates {
+		if c.EVPaise > 0 {
+			t.Errorf("candidate %+v has positive EV, contradicts the record closing as uneconomic", c)
+		}
+	}
+}
+
 // The compliance stop: once the guardrails refuse every spending action
 // (here, both the retry budget and the contact cap are spent), the record
 // must escalate, and it must do so because applyGuardrails said so, not
@@ -180,7 +254,7 @@ func TestScoreAndRouteEscalatesWhenGuardrailsRefuseEveryAction(t *testing.T) {
 	h.Retries = testGuardrails.MaxRetries
 	h.Contacts = testGuardrails.MaxContacts
 
-	state, pendingAction, reason, score := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+	state, pendingAction, reason, score, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
 
 	if state != commonv1.RecordState_RECORD_STATE_ESCALATED {
 		t.Errorf("state = %v, want ESCALATED", state)
@@ -210,7 +284,7 @@ func TestScoreAndRouteClosesUneconomicWhenPriorsRunOutPastGuardrailReach(t *test
 	h.Retries = 3  // three retries already spent: attempt 4 is unmodelled
 	h.Contacts = 1 // contact cap already reached, so a nudge cannot rescue this
 
-	state, pendingAction, reason, score := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+	state, pendingAction, reason, score, _ := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
 
 	if state != commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC {
 		t.Errorf("state = %v, want CLOSED_UNECONOMIC: a retry budget of 10 has not been exhausted, only the modelled priors have", state)

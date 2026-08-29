@@ -158,7 +158,7 @@ func directPath(to commonv1.RecordState, reason string) []stateStep {
 //     value (the priors have decayed to beyondListedAttemptsBps past the
 //     deepest modelled attempt): ClosedUneconomic. This is the economics
 //     stop.
-func scoreAndRoute(model *economics.Model, guardrails GuardrailConfig, bucket commonv1.RootCauseBucket, history attemptHistory, amountPaise int64, now time.Time) (state commonv1.RecordState, pendingAction commonv1.ActionType, reason string, score economics.Score) {
+func scoreAndRoute(model *economics.Model, guardrails GuardrailConfig, bucket commonv1.RootCauseBucket, history attemptHistory, amountPaise int64, now time.Time) (state commonv1.RecordState, pendingAction commonv1.ActionType, reason string, score economics.Score, trace DecisionTrace) {
 	none := commonv1.ActionType_ACTION_TYPE_UNSPECIFIED
 
 	verdict := applyGuardrails(history, guardrails, now)
@@ -166,7 +166,8 @@ func scoreAndRoute(model *economics.Model, guardrails GuardrailConfig, bucket co
 
 	if len(permitted) == 0 {
 		return commonv1.RecordState_RECORD_STATE_ESCALATED, none,
-			fmt.Sprintf("guardrails permit no action: %s", guardrailRefusalReason(verdict)), economics.Score{}
+			fmt.Sprintf("guardrails permit no action: %s", guardrailRefusalReason(verdict)), economics.Score{},
+			DecisionTrace{Blocked: verdict.blocked}
 	}
 
 	candidates := make([]economics.Candidate, 0, len(permitted))
@@ -174,15 +175,33 @@ func scoreAndRoute(model *economics.Model, guardrails GuardrailConfig, bucket co
 		candidates = append(candidates, economics.Candidate{Action: action, AttemptNo: attemptNumberFor(action, history)})
 	}
 
-	best, worthDoing := model.Best(candidates, bucket, amountPaise)
+	allScores := model.ScoreAll(candidates, bucket, amountPaise)
+	trace = DecisionTrace{Candidates: allScores, Blocked: verdict.blocked}
+
+	best, worthDoing := economics.BestOf(allScores)
 	if !worthDoing {
-		return commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC, none, "no permitted action has positive expected value", economics.Score{}
+		return commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC, none, "no permitted action has positive expected value", economics.Score{}, trace
 	}
 
 	state, pendingAction, _ = decideForAction(best.Action)
 	reason = fmt.Sprintf("best expected value: %s worth %.0f paise (p=%.4f, cost=%d paise, at risk=%d paise)",
 		best.Action, best.EVPaise, best.PRecovery, best.CostPaise, amountPaise)
-	return state, pendingAction, reason, best
+	return state, pendingAction, reason, best, trace
+}
+
+// DecisionTrace is the full record of one scoring decision: every permitted
+// candidate's score (not just the winner) and every action the guardrails
+// refused, with why. Persisted so the audit trail can answer "why not the
+// alternatives" (docs/PRD.md section 0: "every money action explainable",
+// docs/PHASE5_IMPLEMENTATION.md Unit M). Purely additive bookkeeping: it
+// records the comparison scoreAndRoute already made, it does not change
+// which action wins.
+//
+// Candidates is nil when the guardrails permitted nothing at all (there was
+// nothing to score); Blocked is nil/empty when nothing was refused.
+type DecisionTrace struct {
+	Candidates []economics.Score
+	Blocked    map[commonv1.ActionType]string
 }
 
 // guardrailRefusalReason names the rule that closed off every spending

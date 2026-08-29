@@ -152,7 +152,7 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 	}
 
 	now := s.clock.Now()
-	state, pendingAction, reason, score := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
+	state, pendingAction, reason, score, trace := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
 	var dueAt *time.Time
 	if state == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
 		dueAt = retryDueAt(c.RootCauseBucket, now, s.cfg.RetryDelay, s.cfg.TimeScale)
@@ -161,7 +161,7 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 	}
 	steps := rescoringPath(c.ClaimedState, state, reason)
 
-	if err := s.store.recordRescore(ctx, c, steps, pendingAction, score, dueAt, attemptNumber, costPaise, now); err != nil {
+	if err := s.store.recordRescore(ctx, c, steps, pendingAction, score, trace, dueAt, attemptNumber, costPaise, now); err != nil {
 		log.Error("failed to record rescore", logger.KeyError, err.Error())
 		return
 	}
@@ -203,6 +203,7 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 		steps         []stateStep
 		pendingAction commonv1.ActionType
 		score         economics.Score
+		trace         DecisionTrace
 		dueAt         *time.Time
 	)
 
@@ -219,8 +220,8 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 		if err != nil {
 			return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, fmt.Errorf("load attempt history for %s: %w", recordID, err)
 		}
-		toState, pending, reason, sc := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
-		pendingAction, score = pending, sc
+		toState, pending, reason, sc, tr := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
+		pendingAction, score, trace = pending, sc, tr
 		if toState == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
 			dueAt = retryDueAt(c.RootCauseBucket, now, s.cfg.RetryDelay, s.cfg.TimeScale)
 		} else {
@@ -243,7 +244,7 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 	// bucket from a delayed failure code would be a re-classification this
 	// path deliberately does not do (see the comment on this method).
 	// Logged by the caller so it is not silently dropped.
-	applied, err = s.store.applyResumedOutcome(ctx, c, attemptNumber, steps, pendingAction, score, dueAt, 0, now)
+	applied, err = s.store.applyResumedOutcome(ctx, c, attemptNumber, steps, pendingAction, score, trace, dueAt, 0, now)
 	if err != nil {
 		return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, err
 	}
