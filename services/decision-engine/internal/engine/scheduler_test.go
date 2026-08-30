@@ -11,6 +11,7 @@ import (
 
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
+	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
 )
@@ -60,7 +61,7 @@ func TestSchedulerClaimsDueRetryAndRecordsSuccess(t *testing.T) {
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(-time.Minute))
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS, CostPaise: 20}}
-	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -108,7 +109,7 @@ func TestSchedulerForwardsEVSnapshotToExecute(t *testing.T) {
 	seedEVSnapshot(ctx, t, pool, recordID, 12345.5, 0.6789)
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS, CostPaise: 20}}
-	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -141,7 +142,7 @@ func TestSchedulerIgnoresNotYetDueRecords(t *testing.T) {
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(time.Hour))
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}}
-	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -170,7 +171,7 @@ func TestSchedulerParksNudgeAsPendingAwaitingDelayedOutcome(t *testing.T) {
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(-time.Minute))
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_PENDING}}
-	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -189,6 +190,75 @@ func TestSchedulerParksNudgeAsPendingAwaitingDelayedOutcome(t *testing.T) {
 	}
 }
 
+// Phase 5 Unit E: a nudge-type due action must have its message text
+// composed via the Classifier before Execute is called, since Execute has
+// no way to write the wording itself (docs/ARCHITECTURE.md section 5b).
+func TestSchedulerComposesNudgeMessageBeforeExecutingANudgeAction(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	_, recordID := seedRecord(ctx, t, pool)
+	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT, time.Now().Add(-time.Minute))
+
+	classifier := &fakeClassifier{nudgeResp: &classifierv1.ComposeNudgeResponse{
+		Message: "Aapka order abhi complete nahi hua, wapas aaiye!",
+		Source:  commonv1.Source_SOURCE_LLM,
+	}}
+	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_PENDING}}
+	sched := NewScheduler(pool, classifier, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+
+	if err := sched.tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if classifier.nudgeCallCount() != 1 {
+		t.Fatalf("ComposeNudge calls = %d, want 1", classifier.nudgeCallCount())
+	}
+	nudgeReq := classifier.lastNudgeRequest()
+	if nudgeReq.GetBucket() != commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT {
+		t.Errorf("ComposeNudgeRequest.Bucket = %v, want ABANDONMENT", nudgeReq.GetBucket())
+	}
+	if nudgeReq.GetActionType() != commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER {
+		t.Errorf("ComposeNudgeRequest.ActionType = %v, want NUDGE_REMINDER", nudgeReq.GetActionType())
+	}
+
+	execReq := executor.LastRequest()
+	if execReq == nil {
+		t.Fatal("Execute was never called")
+	}
+	if execReq.GetMessage() != "Aapka order abhi complete nahi hua, wapas aaiye!" {
+		t.Errorf("ExecuteRequest.Message = %q, want the composed nudge text", execReq.GetMessage())
+	}
+	if execReq.GetMessageSource() != commonv1.Source_SOURCE_LLM {
+		t.Errorf("ExecuteRequest.MessageSource = %v, want SOURCE_LLM, the source ComposeNudge answered with", execReq.GetMessageSource())
+	}
+}
+
+// A retry never needs composed wording: only a nudge sends anything a
+// customer reads.
+func TestSchedulerDoesNotComposeNudgeForARetryAction(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic := testDLQ(t)
+	ctx := context.Background()
+	_, recordID := seedRecord(ctx, t, pool)
+	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(-time.Minute))
+
+	classifier := &fakeClassifier{}
+	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}}
+	sched := NewScheduler(pool, classifier, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+
+	if err := sched.tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if classifier.nudgeCallCount() != 0 {
+		t.Errorf("ComposeNudge calls = %d, want 0 for a retry action", classifier.nudgeCallCount())
+	}
+	if req := executor.LastRequest(); req != nil && req.GetMessage() != "" {
+		t.Errorf("ExecuteRequest.Message = %q, want empty for a retry action", req.GetMessage())
+	}
+}
+
 // A failed attempt with budget remaining is re-scored, not escalated
 // (docs/ARCHITECTURE.md section 7, docs/PHASE2_IMPLEMENTATION.md Unit E).
 // The record is fresh (no prior attempts), so the first failed retry still
@@ -202,7 +272,7 @@ func TestSchedulerReschedulesAfterFailedAttemptRatherThanEscalating(t *testing.T
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(-time.Minute))
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_FAILURE, CostPaise: 25}}
-	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -304,7 +374,7 @@ func TestSchedulerRetryLoopTerminatesViaGuardrailCap(t *testing.T) {
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_FAILURE, CostPaise: 25}}
 	cfg := SchedulerConfig{CallTimeout: 2 * time.Second, PollInterval: time.Second, DLQTopic: dlqTopic, RetryDelay: retryDelay, NudgeDelay: retryDelay, TimeScale: 1, Guardrails: testGuardrails}
-	sched := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), cfg)
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, fakeClock, testEconomics(t), cfg)
 
 	const maxIterations = 10
 	var state string
@@ -394,7 +464,7 @@ func TestSchedulerRetryLoopTerminatesViaEconomicsWhenPriorsRunOut(t *testing.T) 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_FAILURE, CostPaise: 25}}
 	guardrails := GuardrailConfig{MaxRetries: 10, MaxContacts: 1, ContactCooldown: 24 * time.Hour, RecoveryWindow: 7 * 24 * time.Hour}
 	cfg := SchedulerConfig{CallTimeout: 2 * time.Second, PollInterval: time.Second, DLQTopic: dlqTopic, RetryDelay: retryDelay, NudgeDelay: retryDelay, TimeScale: 1, Guardrails: guardrails}
-	sched := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), cfg)
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, fakeClock, testEconomics(t), cfg)
 
 	const maxIterations = 10
 	var state string
@@ -453,7 +523,7 @@ func TestSchedulerDeadLettersAfterExecuteRetriesExhausted(t *testing.T) {
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(-time.Minute))
 
 	executor := &fakeExecutor{err: errors.New("executor unavailable")}
-	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -494,7 +564,7 @@ func TestSchedulerNeverDoubleClaimsTheSameRecord(t *testing.T) {
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Now().Add(-time.Minute))
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}}
-	sched := NewScheduler(pool, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("first tick: %v", err)
@@ -536,7 +606,7 @@ func TestSchedulerFiresOnceWhenFakeClockPassesDueAt(t *testing.T) {
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, dueAt)
 
 	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_SUCCESS}}
-	sched := NewScheduler(pool, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, executor, dlqProducer, fakeClock, testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	if err := sched.tick(ctx); err != nil {
 		t.Fatalf("tick before due_at: %v", err)

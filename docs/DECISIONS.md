@@ -1543,3 +1543,70 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   gRPC; the response matched the hand-computed numbers exactly
   (gross 99240, spend 131, net 99109 paise) and `requests_total` on
   `/metrics` incremented for the call.
+- 2026-08-30: **Hinglish nudge composition (Phase 5 Unit E) mirrors the
+  provider chain and circuit breaker rather than sharing them with
+  Classify.** `provider.NudgeChain`/`NudgeBreaker` are separate types from
+  `Chain`/`Breaker`, reusing every piece that does not depend on the
+  request/response shape (`rungCtx`, the hop constants, `hopResultForError`,
+  `sourceFor`, and the construction invariants extracted into
+  `validateConfig`/`validateChainOrder`/`resolveRungs` so `NewChain` and
+  `NewNudgeChain` share them) but each getting its own circuit state per
+  named provider rather than one shared health signal for both Classify and
+  ComposeNudge calls to, say, Groq. The shared-state version is arguably
+  more correct (an outage is one outage, not two independently-discovered
+  ones), but reworking the already-tested `Breaker` to expose that safely
+  was judged a materially larger, riskier change than this unit's scope
+  justified. Recorded as a deliberate tradeoff to revisit if a real outage
+  ever shows the two breakers disagreeing about a provider's health.
+  **The LLM request builders are new types, not the existing ones with a
+  field left unset**: `groqNudgeRequest`/`geminiNudgeRequest` omit the
+  JSON-schema constraint entirely, rather than reusing `groqRequest`/
+  `geminiRequest` with `ResponseFormat`/`GenerationConfig` left as a zero
+  value, because Go's `encoding/json` `omitempty` does not omit a
+  non-pointer struct field regardless of its contents — reusing the
+  existing types would have silently sent an empty, invalid schema
+  constraint on every nudge request. Caught by a dedicated wire-shape test
+  (`TestNudgeRequestCarriesNoResponseSchema`) before it shipped, not by a
+  live failure.
+  **The real amount is never written by the model or the template**: both
+  write the literal token `{{AMOUNT}}`, substituted by `server.go` only
+  after `provider.validateNudge` confirms the raw answer contains no digit
+  outside that one placeholder occurrence. The token is duplicated
+  byte-for-byte between `provider.AmountPlaceholder` and
+  `llm.amountPlaceholder` rather than imported, because `internal/provider`'s
+  own test file (`fallback_test.go`) imports `internal/llm`, so `llm`
+  importing `provider` back is a genuine cycle — found by the compiler on
+  the first attempt, not reasoned out in advance.
+  **A real gap was found by live verification, not by any test**:
+  `intervention_attempt.message_source` already existed in the schema
+  (`docs/ARCHITECTURE.md` section 5b requires the audit trail to
+  distinguish a generated message from a templated one) but nothing wrote
+  it, because `ExecuteRequest` had no field to carry it — invisible to
+  every unit test, since none of them checked a column nothing was
+  populating. Found only by seeding a real batch against the real running
+  seven-service stack and reading the row back. Fixed properly, not
+  deferred: a second proto-only PR (#64, `ExecuteRequest.message_source`)
+  merged before threading it through
+  `clients.composeNudge` → `clients.execute` → `attempt.Store.Claim`.
+  **The Decision Engine's scheduler is the only Execute call site, and now
+  needs the Classifier too**: `NewScheduler`'s own doc comment previously
+  said it "only needs the Executor client, not the Classifier" — true for
+  re-classification (still true: a resumed record never re-classifies),
+  false for composing a nudge's wording, which this unit needed. Composing
+  the message happens inside the SAME bounded retry loop
+  `executeWithRetry` already used for Execute failures, rather than a
+  second failure-handling story: a ComposeNudge blip retries with the same
+  backoff, three failures dead-letter the record the same way three
+  Execute failures always have.
+  **Adversarially verified three times** (inverted `isNudge` in the
+  scheduler; forced `message_source` to UNSPECIFIED at the Decision
+  Engine's forwarding call; forced it to UNSPECIFIED again at the
+  Executor's persistence call), each caught by a dedicated test and
+  reverted. **Verified live twice**, before and after the `message_source`
+  fix, against the real seven-service stack: the composed, substituted
+  Hinglish text and its source both landed correctly in Postgres, and
+  `/metrics` showed `nudge_fallback_total` and `ComposeNudge`'s
+  `requests_total` both move.
+  **Built test-first throughout**, per explicit instruction this session:
+  every new behaviour had its test written and confirmed failing against
+  not-yet-written code before the implementation that made it pass.

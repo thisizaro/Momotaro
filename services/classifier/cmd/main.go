@@ -194,12 +194,26 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		"worst_case_before_terminal_rung", worstCase.String(),
 	)
 
+	nudgeRegistry, err := buildNudgeRegistry(cfg, clk, log)
+	if err != nil {
+		return err
+	}
+	nudgeChain, err := provider.NewNudgeChain(cfg.ProviderChain, nudgeRegistry, chainCfg, log)
+	if err != nil {
+		return fmt.Errorf("build nudge chain: %w", err)
+	}
+
 	m := metrics.New()
 	llmFallback := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "llm_fallback_total",
 		Help: "Classifications answered by the deterministic rules engine rather than a live LLM rung.",
 	})
 	m.Registry().MustRegister(llmFallback)
+	nudgeFallback := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "nudge_fallback_total",
+		Help: "Nudges composed from the static Hinglish template rather than a live LLM rung.",
+	})
+	m.Registry().MustRegister(nudgeFallback)
 	metricsServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.MetricsPort),
 		Handler:           m.Handler(),
@@ -222,7 +236,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		interceptors.UnaryServerRequireDeadline(),
 		interceptors.UnaryServerMetrics(m),
 	))
-	classifierv1.RegisterClassifierServiceServer(grpcServer, server.New(chain, log, llmFallback))
+	classifierv1.RegisterClassifierServiceServer(grpcServer, server.New(chain, nudgeChain, log, llmFallback, nudgeFallback))
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -323,6 +337,73 @@ func breaker(cfg serviceConfig, p provider.Provider, clk clock.Clock, log *slog.
 	}, clk, log)
 	if err != nil {
 		return nil, fmt.Errorf("wrap %s in a circuit breaker: %w", p.Name(), err)
+	}
+	return b, nil
+}
+
+// buildNudgeRegistry is buildRegistry's ComposeNudge equivalent: only the
+// rungs the configured chain actually names, the terminal rung is the
+// static Hinglish template (rules.NewTemplateNudgeProvider) rather than the
+// rules engine, and each live rung gets its own NudgeBreaker rather than
+// sharing state with its Classify counterpart's Breaker (a deliberate,
+// documented tradeoff, see docs/PHASE5_IMPLEMENTATION.md Unit E /
+// docs/DECISIONS.md). A separate *llm.Provider instance per vendor here
+// (rather than reusing the one buildRegistry built) costs one extra idle
+// HTTP client per live provider and nothing else: llm.Provider holds no
+// state that benefits from being shared.
+func buildNudgeRegistry(cfg serviceConfig, clk clock.Clock, log *slog.Logger) (map[string]provider.NudgeProvider, error) {
+	named := make(map[string]bool, len(cfg.ProviderChain))
+	for _, n := range cfg.ProviderChain {
+		named[n] = true
+	}
+
+	registry := map[string]provider.NudgeProvider{
+		provider.RulesName: rules.NewTemplateNudgeProvider(),
+	}
+
+	if named[llm.GroqName] {
+		p, err := llm.NewGroq(llm.Config{
+			APIKey:  cfg.GroqAPIKey,
+			BaseURL: cfg.GroqBaseURL,
+			Model:   cfg.GroqModel,
+		}, log)
+		if err != nil {
+			return nil, fmt.Errorf("build %s nudge rung: %w", llm.GroqName, err)
+		}
+		wrapped, err := nudgeBreaker(cfg, p, clk, log)
+		if err != nil {
+			return nil, err
+		}
+		registry[llm.GroqName] = wrapped
+	}
+
+	if named[llm.GeminiName] {
+		p, err := llm.NewGemini(llm.Config{
+			APIKey:  cfg.GeminiAPIKey,
+			BaseURL: cfg.GeminiBaseURL,
+			Model:   cfg.GeminiModel,
+		}, log)
+		if err != nil {
+			return nil, fmt.Errorf("build %s nudge rung: %w", llm.GeminiName, err)
+		}
+		wrapped, err := nudgeBreaker(cfg, p, clk, log)
+		if err != nil {
+			return nil, err
+		}
+		registry[llm.GeminiName] = wrapped
+	}
+
+	return registry, nil
+}
+
+// nudgeBreaker is breaker's ComposeNudge equivalent.
+func nudgeBreaker(cfg serviceConfig, p provider.NudgeProvider, clk clock.Clock, log *slog.Logger) (provider.NudgeProvider, error) {
+	b, err := provider.NewNudgeBreaker(p, provider.BreakerConfig{
+		Threshold: cfg.BreakerThreshold,
+		Cooldown:  cfg.BreakerCooldown,
+	}, clk, log)
+	if err != nil {
+		return nil, fmt.Errorf("wrap %s in a nudge circuit breaker: %w", p.Name(), err)
 	}
 	return b, nil
 }

@@ -93,6 +93,54 @@ func (g *geminiVendor) request(ctx context.Context, p prompt) (*http.Request, er
 	return req, nil
 }
 
+// geminiNudgeRequest is its own type rather than geminiRequest with
+// GenerationConfig's schema fields left unset, for the same reason
+// groqNudgeRequest exists: a non-pointer struct field is never omitted by
+// `omitempty` regardless of its contents, so reusing geminiRequest would
+// still ask for an (invalid, empty-schema) structured JSON response.
+type geminiNudgeRequest struct {
+	Contents          []geminiContent      `json:"contents"`
+	SystemInstruction *geminiContent       `json:"systemInstruction,omitempty"`
+	GenerationConfig  geminiNudgeGenConfig `json:"generationConfig"`
+}
+
+type geminiNudgeGenConfig struct {
+	Temperature float64 `json:"temperature"`
+}
+
+// nudgeRequest is the ComposeNudge equivalent of request: same prompt pair,
+// same endpoint, but with no response schema, since a nudge's answer is
+// prose, not a structured record.
+func (g *geminiVendor) nudgeRequest(ctx context.Context, p prompt) (*http.Request, error) {
+	payload := geminiNudgeRequest{
+		Contents: []geminiContent{{
+			Role:  "user",
+			Parts: []geminiPart{{Text: p.user}},
+		}},
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: p.system}},
+		},
+		GenerationConfig: geminiNudgeGenConfig{Temperature: 0},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/models/%s:generateContent?%s",
+		strings.TrimSuffix(g.cfg.BaseURL, "/"),
+		url.PathEscape(g.cfg.Model),
+		url.Values{"key": {g.cfg.APIKey}}.Encode(),
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
 type geminiResponse struct {
 	Candidates []struct {
 		Content struct {

@@ -288,6 +288,34 @@ func TestExecuteNudgePersistsMessageAndChannelCost(t *testing.T) {
 	}
 }
 
+// TestExecutePersistsMessageSource is Phase 5 Unit E's audit-trail
+// requirement (docs/ARCHITECTURE.md section 5b): the Decision Engine tells
+// the Executor which rung composed a nudge's text, and that must survive
+// to INTERVENTION_ATTEMPT.message_source so the trail can distinguish a
+// generated message from a templated one.
+func TestExecutePersistsMessageSource(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	recordID := seedRecord(ctx, t, pool)
+
+	s := newServer(t, pool, &countingRecovery{}, ports.StubNotification{})
+	if _, err := s.Execute(ctx, &executorv1.ExecuteRequest{
+		RecordId:      recordID,
+		ActionType:    commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER,
+		AttemptNumber: 1,
+		Message:       "aapka order abandoned hai",
+		MessageSource: commonv1.Source_SOURCE_LLM,
+		AmountPaise:   10000,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	stored := loadAttempt(ctx, t, pool, recordID, 1)
+	if stored.MessageSource != commonv1.Source_SOURCE_LLM.String() {
+		t.Errorf("stored message_source = %q, want %q", stored.MessageSource, commonv1.Source_SOURCE_LLM.String())
+	}
+}
+
 // A declined action is a successful RPC reporting a business failure. Getting
 // this backwards makes the Decision Engine's scheduler retry three times and
 // then dead-letter a record that executed perfectly.
