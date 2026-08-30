@@ -320,6 +320,13 @@ flowchart TB
     REP <-->|cached aggregates| REDIS
 ```
 
+**[RECHECK NEEDED]** The `APIGW -->|gRPC read| AUD` line above was added
+2026-08-30, after this diagram was found missing it despite the Gateway
+having dialed Audit directly since Unit G. Added from a single known
+example, not a full re-verification of every edge in this diagram against
+the current code — worth confirming the rest of this diagram (every other
+edge, not just this one) still matches reality before relying on it.
+
 Reading that diagram: solid thick arrows from the Executor are what runs in
 this repo, dotted arrows are what would replace them in a real deployment.
 The simulators are drawn **outside** the cluster box on purpose. They are

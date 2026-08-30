@@ -21,19 +21,36 @@ way.
 
 ## 1. Where data comes from (outside this system entirely)
 
-Two different sources, and it matters which one a given record came from:
+**[RECHECK NEEDED]** This section was corrected 2026-08-30 after an earlier
+version of this doc showed data reaching Ingestion directly, skipping API
+Gateway — wrong, and a direct contradiction of this project's own hard rule
+that nothing outside the cluster ever reaches a service except through the
+Gateway. The correction below is believed accurate but has not been
+independently re-verified end to end against the current code; treat it as
+unconfirmed until someone checks it against `services/api-gateway` and
+`scripts/batchgen` directly.
+
+Three ways a record can enter, and they don't all take the same route in:
 
 - **Real production traffic**: Razorpay's own platform would send a webhook
-  the instant a payment or mandate fails (`POST /v1/webhooks/payment-failed`
-  in `docs/API_GATEWAY.md`). This is the "real" entry point — one event at a
-  time, as it happens. Nothing about *why* it failed is known yet, just the
-  raw failure code the payment rail reported.
-- **Demo/synthetic data**: since there's no real Razorpay connection in this
-  hackathon build, `scripts/batchgen` (`make batchgen`) plays that role
-  instead — it invents a batch of realistic-looking failed payments and
-  writes them in the same shape a real webhook would produce. The dashboard
-  also has its own "Submit Batch" button, which does the same thing through
-  the public API rather than a script.
+  the instant a payment or mandate fails. This always goes **through the API
+  Gateway first** (`POST /v1/webhooks/payment-failed`, `docs/API_GATEWAY.md`)
+  — the Gateway checks the API key, applies rate limiting, and translates
+  the external HTTP call into an internal gRPC call to Ingestion. Nothing
+  outside the cluster ever reaches Ingestion, or any other service, directly.
+- **The dashboard's own "Submit Batch" button**: takes the exact same route
+  as real traffic — through the Gateway, to Ingestion, via the public
+  `POST /v1/batches` API. Architecturally identical to the webhook path,
+  just a different button pressing it.
+- **`scripts/batchgen` (`make batchgen`)**: the one deliberate exception.
+  It does **not** go through the Gateway or Ingestion at all — it writes
+  straight into Postgres and publishes straight onto the internal Kafka
+  topic Ingestion would normally publish to. This is intentional, not a
+  bug or a shortcut: only this tool is allowed to write the hidden ground
+  truth (below), and the public API has no field for it at all, on purpose,
+  so there is no honest way to seed it through the front door. It still
+  ends up in exactly the same place as a real event once it's in, the
+  difference is only how it got there.
 
 **One thing worth knowing early, because it trips people up**: only
 `batchgen` also writes down the *hidden real answer* — what's actually wrong
@@ -48,10 +65,14 @@ why only synthetic data can produce an "accuracy" number at all.
 
 Following one single failed payment from the moment it enters:
 
-1. **It arrives.** Whichever source above sent it, it lands on the
-   **Ingestion** service, which writes down the bare facts (amount, currency,
-   the failure code, which batch it belongs to) and hands it off internally
-   for processing. Ingestion's job ends here — it does not decide anything.
+1. **It arrives.** **[RECHECK NEEDED]** For the webhook and the dashboard
+   button, it first passes through **API Gateway** (auth check, rate limit,
+   HTTP-to-gRPC translation), which hands it to the **Ingestion** service.
+   `batchgen` skips straight to this same point instead (section 1 above).
+   Either way, Ingestion (or `batchgen` standing in for it) writes down the
+   bare facts (amount, currency, the failure code, which batch it belongs
+   to) and hands it off internally for processing. Nothing at this stage
+   decides anything yet.
 2. **It gets diagnosed.** The **Decision Engine** — the coordinator for
    everything that happens to this record from now on — asks the
    **Classifier** service one question: *why did this actually fail, and what's
@@ -72,11 +93,20 @@ Following one single failed payment from the moment it enters:
    Simulator** (pretends to be the bank *and* the customer) and the
    **Notification Simulator** (pretends to be the SMS/WhatsApp provider,
    and just logs what it would have sent).
-5. **The world responds.** The World Simulator looks up that hidden answer
-   key from step 1 and decides, based on the real recoverability odds it was
-   given at creation time, whether this attempt actually succeeds — sometimes
-   immediately, sometimes after a simulated delay (a nudge message doesn't
-   get answered instantly, so the "customer's" response can arrive later).
+5. **The world responds.** **[RECHECK NEEDED]** (added 2026-08-30, based on
+   reading the World Simulator's own contract once, not independently
+   verified against its actual behavior end to end.) Executor calls the
+   World Simulator with one question: what happened for this record and
+   this action? The answer always includes whether it's final yet. For a
+   retry, the World Simulator rolls the dice right there, using the hidden
+   recoverability odds from step 1, and answers immediately — success or
+   failure, no waiting, the same way a real retry against a bank would.
+   For a nudge, it almost always answers "not yet" instead, because a real
+   customer doesn't reply inside a single call — it quietly remembers to
+   check back later (after a simulated delay, compressed so a demo doesn't
+   sit there for real hours), and when that time comes, it reports the
+   real outcome back to the Decision Engine on its own, without Executor
+   asking again.
 6. **The result gets written down.** Whatever happened — success, failure,
    still pending — gets recorded as the new state of that record, together
    with a permanent, append-only note explaining *why* (the Classifier's
@@ -115,14 +145,20 @@ Following one single failed payment from the moment it enters:
 
 ## 4. A simplified picture
 
+**[RECHECK NEEDED]** (corrected 2026-08-30 — the earlier version of this
+diagram skipped API Gateway entirely, which was wrong; not independently
+re-verified beyond fixing that one specific mistake.)
+
 ```mermaid
 flowchart LR
     subgraph outside["Outside this system"]
-        RZP["Real payment failure\n(production)"]
-        GEN["Synthetic batch\n(demo: batchgen / dashboard button)"]
+        RZP["Real payment failure\n(production, via webhook)"]
+        BTN["Demo batch via the\ndashboard's own button"]
+        GEN["Demo batch via batchgen\n(bypasses Gateway + Ingestion,\nsee section 1)"]
     end
 
     subgraph pipeline["This system"]
+        GW["API Gateway\n(the only door in)"]
         IN["1. Arrives\n(Ingestion)"]
         DX["2. Diagnosed\n(Classifier)"]
         DEC["3. Decided\n(Decision Engine)"]
@@ -135,8 +171,10 @@ flowchart LR
         DASH["Dashboard:\nrecovered amount, audit trail,\naccuracy, correctness checks"]
     end
 
-    RZP --> IN
-    GEN --> IN
+    RZP --> GW
+    BTN --> GW
+    GW --> IN
+    GEN -.->|"direct DB write + publish,\nno Gateway/Ingestion involved"| DX
     IN --> DX --> DEC --> ACT --> RESP --> REC
     REC -->|not resolved yet| DEC
     REC --> DASH
@@ -162,9 +200,11 @@ match this walkthrough:
 - `docs/ARCHITECTURE.md` §10, §10a — the actual database tables, and which
   service is allowed to write to which one.
 
-**Known gap in this first pass**: this walkthrough does not yet distinguish
-what happens for a *nudge* (message-based) action versus a *retry*
-(immediate) action in as much detail as `ARCHITECTURE.md` §4 does — the
-delayed, asynchronous "customer responds later" path is mentioned but not
-walked through step by step. Worth adding once this document gets refined
-against the code.
+**Known gap in this first pass**: step 5 (2026-08-30 revision) now
+distinguishes the immediate (retry) and delayed (nudge) paths at a
+sentence level, but still doesn't walk through what happens *after* a
+delayed answer comes back in — how the Decision Engine picks the record
+back up, what changes in the database at that moment, whether anything
+else needs to happen before step 6. `ARCHITECTURE.md` §4's sequence
+diagram has the real, ordered version of this; it hasn't been ported into
+plain English here yet.
