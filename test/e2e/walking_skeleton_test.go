@@ -66,11 +66,13 @@ func repoRoot(t *testing.T) string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
 }
 
-// buildBinary compiles services/<name>/cmd into dir and returns its path.
-func buildBinary(t *testing.T, root, dir, name string) string {
+// buildBinary compiles <pkgDir>/<name>/cmd into dir and returns its path.
+// pkgDir is "services" for every long-running service or "demo" for the
+// Phase 5 simulators (docs/ARCHITECTURE.md section 2a's repo layout).
+func buildBinary(t *testing.T, root, dir, pkgDir, name string) string {
 	t.Helper()
 	out := filepath.Join(dir, name)
-	cmd := exec.Command("go", "build", "-o", out, "./services/"+name+"/cmd")
+	cmd := exec.Command("go", "build", "-o", out, "./"+pkgDir+"/"+name+"/cmd")
 	cmd.Dir = root
 	cmd.Env = os.Environ()
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -274,7 +276,7 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	stack := startStack(ctx, t, "1s")
+	stack := startStack(ctx, t, "3000000s")
 	gwHTTPAddr := stack.gatewayHTTP
 	auditAddr := stack.auditAddr
 
@@ -330,8 +332,24 @@ func TestWalkingSkeletonReachesRecovered(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id FROM record WHERE batch_id = $1`, submitResp.BatchID).Scan(&recordID); err != nil {
 		t.Fatalf("find ingested record: %v", err)
 	}
+	// BANK_TIMEOUT classifies as TRANSIENT_BANK -> RETRY (buckets.go), and
+	// Executor now calls the real World Simulator for that action (Phase 5
+	// Units C/D), which requires a GROUND_TRUTH row to answer at all.
+	// recovery_probability=1.0 for the correct action reproduces the old
+	// stub's "attempt 1 succeeds" script deterministically. Seeded
+	// immediately after resolving recordID, before Decision Engine's
+	// scheduler can possibly claim it: ingestion's HTTP handler already
+	// wrote the record row synchronously (that is what the query above just
+	// read), and everything after it -- Kafka publish, classify, score,
+	// schedule -- is strictly slower than this one synchronous insert.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+		VALUES ($1, 'ROOT_CAUSE_BUCKET_TRANSIENT_BANK', 1.0, 0.0, 0)`, recordID); err != nil {
+		t.Fatalf("seed ground_truth: %v", err)
+	}
 	t.Cleanup(func() {
 		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, recordID)
 		_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE batch_id = $1`, submitResp.BatchID)
 		_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, recordID)
 		_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, recordID)

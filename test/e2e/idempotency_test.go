@@ -126,8 +126,22 @@ func seedIdempotencyRecord(ctx context.Context, t *testing.T, pool *pgxpkg.Pool)
 	if _, err := pool.Exec(ctx, `INSERT INTO record (id, batch_id, type, amount_paise, failure_code) VALUES ($1, $2, 'RECORD_TYPE_PAYMENT', 10000, 'BANK_TIMEOUT')`, recordID, batchID); err != nil {
 		t.Fatalf("seed record: %v", err)
 	}
+	// BANK_TIMEOUT classifies as TRANSIENT_BANK -> RETRY (buckets.go), and
+	// Executor now calls the real World Simulator for that action (Phase 5
+	// Units C/D), which requires a GROUND_TRUTH row to answer at all.
+	// recovery_probability=1.0 for the correct action reproduces the old
+	// stub's "attempt 1 succeeds" script deterministically. Seeded here,
+	// before the record insert's transaction is even visible to any other
+	// caller, so there is no race against the scheduler's first claim, unlike
+	// the tests that submit through the real HTTP path.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+		VALUES ($1, 'ROOT_CAUSE_BUCKET_TRANSIENT_BANK', 1.0, 0.0, 0)`, recordID); err != nil {
+		t.Fatalf("seed ground_truth: %v", err)
+	}
 	t.Cleanup(func() {
 		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, recordID)
 		_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, recordID)
 		_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, recordID)
 		_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, recordID)

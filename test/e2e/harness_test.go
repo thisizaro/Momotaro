@@ -50,13 +50,14 @@ type stack struct {
 // consumer group and topic, so it resumes from the last committed offset
 // rather than replaying or skipping anything.
 //
-// There is no readiness port to wait on: unlike every other service in this
-// stack, the Decision Engine is a pure Kafka consumer and scheduler with no
-// RPCs for anything else to call, so it never opens GRPC_PORT (the config
-// loader requires the value, but nothing here listens on it -- confirmed by
-// grepping main.go for a Listen call before assuming otherwise). Callers
-// rely on their own polling of record_state/Audit for the process actually
-// resuming work, the same as they would for any other asynchronous effect.
+// There is no readiness port this harness waits on for it specifically:
+// the Decision Engine IS a real gRPC server too (services/decision-engine/
+// cmd/main.go registers DecisionEngineServiceServer on GRPC_PORT, to answer
+// ReportDelayedOutcome, Phase 5 Unit A), but nothing in this stack needs to
+// dial it synchronously at startup the way Executor dials World Simulator,
+// so callers rely on their own polling of record_state/Audit for the
+// process actually resuming work, the same as they would for any other
+// asynchronous effect.
 func (s *stack) restartDecisionEngine(t *testing.T) {
 	t.Helper()
 	s.decisionEngine.kill(t)
@@ -117,20 +118,29 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 		}
 	}
 
-	classifierBin := buildBinary(t, root, binDir, "classifier")
-	executorBin := buildBinary(t, root, binDir, "executor")
-	auditBin := buildBinary(t, root, binDir, "audit")
-	ingestionBin := buildBinary(t, root, binDir, "ingestion")
-	decisionEngineBin := buildBinary(t, root, binDir, "decision-engine")
-	apiGatewayBin := buildBinary(t, root, binDir, "api-gateway")
+	classifierBin := buildBinary(t, root, binDir, "services", "classifier")
+	executorBin := buildBinary(t, root, binDir, "services", "executor")
+	auditBin := buildBinary(t, root, binDir, "services", "audit")
+	ingestionBin := buildBinary(t, root, binDir, "services", "ingestion")
+	decisionEngineBin := buildBinary(t, root, binDir, "services", "decision-engine")
+	apiGatewayBin := buildBinary(t, root, binDir, "services", "api-gateway")
+	// Phase 5 Units C/D: Executor no longer has an in-process stub for
+	// either port, it dials these two for real, so the harness must run
+	// them too or Executor's own required config fails fast at startup.
+	// Both live under demo/, not services/ (docs/ARCHITECTURE.md section
+	// 2a: demo-only components are never part of the main app).
+	worldSimulatorBin := buildBinary(t, root, binDir, "demo", "world-simulator")
+	notificationSimulatorBin := buildBinary(t, root, binDir, "demo", "notification-simulator")
 
 	classifierPort, classifierMetrics := freePort(t), freePort(t)
 	executorPort, executorMetrics := freePort(t), freePort(t)
 	auditPort, auditMetrics := freePort(t), freePort(t)
 	ingestionPort, ingestionMetrics := freePort(t), freePort(t)
-	deGRPCPort, deMetrics := freePort(t), freePort(t) // unused but required config
+	deGRPCPort, deMetrics := freePort(t), freePort(t) // also World Simulator's ReportDelayedOutcome callback target
 	gwPort, gwMetrics := freePort(t), freePort(t)
 	gwHTTPPort := freePort(t)
+	worldSimPort, worldSimMetrics := freePort(t), freePort(t)
+	notificationSimPort, notificationSimMetrics := freePort(t), freePort(t)
 
 	var procs []*process
 	t.Cleanup(func() {
@@ -142,12 +152,24 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 	classifierAddr := fmt.Sprintf("127.0.0.1:%d", classifierPort)
 	executorAddr := fmt.Sprintf("127.0.0.1:%d", executorPort)
 	ingestionAddr := fmt.Sprintf("127.0.0.1:%d", ingestionPort)
+	worldSimAddr := fmt.Sprintf("127.0.0.1:%d", worldSimPort)
+	notificationSimAddr := fmt.Sprintf("127.0.0.1:%d", notificationSimPort)
 	s.auditAddr = fmt.Sprintf("127.0.0.1:%d", auditPort)
 	s.executorAddr = executorAddr
 	s.gatewayHTTP = fmt.Sprintf("127.0.0.1:%d", gwHTTPPort)
 
 	procs = append(procs, startProcess(t, "classifier", classifierBin, merge(commonEnv(classifierPort, classifierMetrics), classifierEnv)))
-	procs = append(procs, startProcess(t, "executor", executorBin, commonEnv(executorPort, executorMetrics)))
+	// World Simulator and Notification Simulator start before Executor:
+	// not strictly required (grpc.NewClient dials lazily), but it keeps
+	// the dependency order in this list honest.
+	procs = append(procs, startProcess(t, "world-simulator", worldSimulatorBin, merge(commonEnv(worldSimPort, worldSimMetrics), map[string]string{
+		"DECISION_ENGINE_ADDR": fmt.Sprintf("127.0.0.1:%d", deGRPCPort),
+	})))
+	procs = append(procs, startProcess(t, "notification-simulator", notificationSimulatorBin, commonEnv(notificationSimPort, notificationSimMetrics)))
+	procs = append(procs, startProcess(t, "executor", executorBin, merge(commonEnv(executorPort, executorMetrics), map[string]string{
+		"WORLD_SIMULATOR_ADDR":        worldSimAddr,
+		"NOTIFICATION_SIMULATOR_ADDR": notificationSimAddr,
+	})))
 	procs = append(procs, startProcess(t, "audit", auditBin, commonEnv(auditPort, auditMetrics)))
 	procs = append(procs, startProcess(t, "ingestion", ingestionBin, merge(commonEnv(ingestionPort, ingestionMetrics), map[string]string{
 		"RAW_EVENTS_TOPIC": s.topic,
@@ -155,7 +177,7 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 
 	readyCtx, readyCancel := context.WithTimeout(ctx, startupWindow)
 	defer readyCancel()
-	for _, addr := range []string{classifierAddr, executorAddr, s.auditAddr, ingestionAddr} {
+	for _, addr := range []string{classifierAddr, worldSimAddr, notificationSimAddr, executorAddr, s.auditAddr, ingestionAddr} {
 		if err := waitForTCP(readyCtx, addr); err != nil {
 			t.Fatalf("service did not become ready: %v", err)
 		}

@@ -734,6 +734,52 @@ Redis delayed-outcome entry was scheduled correctly, and confirmed
 `requests_total` appeared on all three services' `/metrics` with the
 right labels.
 
+**CI caught something local verification did not: the whole `test/e2e`
+suite broke.** Every e2e test failed at startup, because the harness
+(`test/e2e/harness_test.go`) never learned about the two new required
+Executor settings and never started either simulator. Fixed properly, not
+worked around:
+- `startStackWithEnv` now builds and starts `demo/world-simulator` and
+  `demo/notification-simulator` too, wires `DECISION_ENGINE_ADDR` into
+  the former and `WORLD_SIMULATOR_ADDR`/`NOTIFICATION_SIMULATOR_ADDR`
+  into Executor's env, and waits on both new ports before any test runs.
+  `buildBinary` gained a `pkgDir` parameter (`"services"` vs `"demo"`,
+  docs/ARCHITECTURE.md section 2a's repo layout) since it had hardcoded
+  `services/` for every prior caller.
+- A deeper problem underneath the startup failure: every e2e test seeds
+  or submits its own record directly, and none of them ever wrote a
+  `GROUND_TRUTH` row, because nothing before this unit ever needed one.
+  World Simulator requires one to answer at all. Seeded one per record
+  in every affected test (`walking_skeleton_test.go`, `smoke_test.go`,
+  `idempotency_test.go`, `batch_invariants_test.go`,
+  `crash_safety_test.go`, `fallback_test.go`, `rerun_safety_test.go`),
+  with values chosen to reproduce each test's own pre-existing assumption
+  deterministically (`recovery_probability=1.0` where the old stub's
+  script meant "always succeeds"; `0.0` where Unit H's fabricated history
+  means "this one real attempt must fail"; a large sentinel
+  `response_delay_seconds` for the two NUDGE smoke cases, since World
+  Simulator always answers `PENDING` for a nudge with a positive scaled
+  delay regardless of the roll, docs/ARCHITECTURE.md section 6).
+- **A real race, caught by running the full suite with `-race` locally
+  before pushing again, not by CI.** Records submitted through the real
+  HTTP path get their id back only after submission, so ground truth for
+  them can only be seeded afterward, racing the scheduler's first claim.
+  Under the default `retryDelay="1s"` (which, at `DEMO_TIME_SCALE=300000`,
+  collapses to microseconds, leaving only the ~300ms scheduler poll
+  interval as real buffer), `-race`'s overhead was enough to lose that
+  race once: a `BANK_TIMEOUT` record got dead-lettered because World
+  Simulator answered `NotFound` before the seed landed. Fixed the same
+  way Units H/K already establish for their own seeding: every test using
+  the tight default now passes `"3000000s"` instead of `"1s"` (~10s real),
+  buying comfortable margin without changing any assertion. Confirmed
+  by two clean `-race` runs of the whole suite afterward, including one
+  via the exact command CI runs (`make test-integration`'s
+  `go test -race -count=1 -tags='integration e2e' ./...`).
+- `idempotency_test.go` did not need either fix: its ground truth is
+  seeded before the record is ever published, race-free by construction,
+  and its second subtest calls Executor's gRPC port directly, bypassing
+  the scheduler entirely.
+
 ## Unit I: Razorpay's published error codes as the failure vocabulary
 
 **Status**: merged. **Depends on**: nothing. **Rough size**: 2 hours, as

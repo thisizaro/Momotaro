@@ -1463,3 +1463,40 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   since Phase 5 was first drafted (every other lettered unit had one).
   Added it now, ticked, rather than leaving the work permanently invisible
   in the human-facing checklist.
+- 2026-08-30: **CI found what local verification for Unit D missed: the
+  whole `test/e2e` suite broke**, and the fix needed to be the real one,
+  not a workaround. Two independent gaps, both closed:
+  **(1) The harness never learned about the two new required Executor
+  settings and never started either simulator.** `test/e2e/harness_test.go`
+  now builds and starts `demo/world-simulator` and
+  `demo/notification-simulator` alongside the other six services.
+  `buildBinary` gained a `pkgDir` parameter, since it had hardcoded
+  `services/` for every prior caller and both new binaries live under
+  `demo/`.
+  **(2) Every e2e test seeds or submits its own record and none of them
+  ever wrote a `GROUND_TRUTH` row**, because nothing before Units C/D
+  ever needed one; World Simulator requires one to answer at all. Seeded
+  one per record across all seven affected test files, with values chosen
+  to reproduce each test's own pre-existing deterministic assumption
+  (`recovery_probability=1.0` for "always succeeds" cases, `0.0` for Unit
+  H's "this one real attempt must fail" case, a large sentinel
+  `response_delay_seconds` for the two NUDGE smoke cases, since World
+  Simulator answers `PENDING` for any nudge with a positive scaled delay
+  regardless of the roll).
+  **A real race was caught locally with `-race`, before pushing again, not
+  left for CI to find twice.** HTTP-submitted records only get their id
+  back after submission, so seeding ground truth for them races the
+  scheduler's first claim; under the default `retryDelay="1s"` (which
+  collapses to microseconds at `DEMO_TIME_SCALE=300000`, leaving only the
+  ~300ms poll interval as real buffer), `-race`'s overhead was enough to
+  lose that race once, dead-lettering a record. Fixed the same way Units
+  H/K already establish: every test using the tight default now passes
+  `"3000000s"` (~10s real) instead, confirmed clean across two full
+  `-race` runs afterward, one via the exact command CI uses.
+  **The lesson, stated plainly so it is not relearned**: verifying a unit
+  live against the running stack proves the new code path works; it does
+  not prove nothing else depended on the path being replaced. The e2e
+  suite depended on the Executor's old stub being deterministic and
+  ground-truth-free in ways neither this unit's own tests nor its live
+  verification would ever exercise, because they never ran the existing
+  test suite that did.
