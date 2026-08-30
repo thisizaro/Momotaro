@@ -1341,3 +1341,93 @@ Node already provisioned. `npm run typecheck`, `npm run build`, and
 `npm run lint` all ran clean; the dev server boots and serves a 200. The
 manual review this pass did instead turned out accurate — no leftover
 pre-freeze spellings found on independent re-grep either.
+
+### 2026-08-30, `decision-engine` crashed on a stale `raw.events` message, taking the whole process down
+
+**What happened:** Manually smoke-testing every `make run-<service>` target
+one at a time (docs/PLAN.md Phase 5 done, verifying local dev ergonomics).
+`decision-engine` started cleanly (both gRPC and metrics servers up), then
+1.3 seconds later exited fatally:
+```
+consume raw.events: handle raw.events[0]@4: load attempt history for
+7b70ef3f-8d50-4756-9157-9cffd1d2cdd6: no rows in result set
+```
+
+**Root cause:** `engine.HandleMessage`'s `loadAttemptHistory` call
+(`services/decision-engine/internal/engine/store.go`) runs `FROM record r
+... WHERE r.id = $1`, which returns zero rows if the `record` row does not
+exist. This message's `record_id` had no matching Postgres row -- almost
+certainly a stale message left on the plain, unisolated `raw.events` topic
+by earlier manual live-verification runs against the shared local stack
+this session (`docs/PHASE5_IMPLEMENTATION.md` Unit F/G both did live
+verification against this exact topic), whose Postgres data no longer
+exists. Under the system's own write path this cannot happen -- Ingestion
+always writes the `record` row before publishing to Kafka -- so this was
+environmental drift on a long-lived shared local broker, not something a
+fresh clone would hit.
+
+**But the crash itself is a real gap, independent of how this instance was
+triggered.** `kafkax.ConsumeKeyed`'s own doc comment states the contract
+plainly: "a non-nil error is meant for infrastructure failures, not
+per-record business outcomes." `HandleMessage` honors this correctly for
+two failure kinds (malformed JSON, classify-failure-after-retries -- both
+dead-lettered, both tested), but four other Postgres lookups in the same
+function (`recordStateExists`, `loadAttemptRows`, `loadInstrumentHistory`,
+`loadAttemptHistory`) just `return err` unclassified. Any one bad/orphaned
+row hitting any of these four crashes the whole service, and since
+`ConsumeKeyed` won't commit past a failed message, restarting just replays
+the same message and crashes again -- an unrecoverable crash loop that
+wedges the entire Kafka partition behind one bad record, not just skips it.
+
+**Why no test caught this:** no test ever constructs "a raw.events message
+exists for a record Postgres doesn't have," because the system's own write
+path makes that combination structurally impossible to produce from inside
+the code. That is exactly the class of gap that stays invisible: an
+assumption that holds for every path the code itself takes is never
+defended against for a path something external could still create.
+
+**Fix:** not done in this pass, tracked in `docs/BACKLOG.md` ("Classify
+Postgres 'no rows' errors as dead-letter-worthy in
+`decision-engine.HandleMessage`"). Deliberately not fixed reactively here
+per docs/ENGINEERING.md section 1 -- this needs tests-first, same as
+everything else in this codebase, not a same-session patch.
+
+**Immediate mitigation used**: reset the local dev environment
+(`make down-clean && make up && make migrate-up`) rather than hand-editing
+Kafka state, removing the stale message along with ~1,360 other
+accumulated test-run topics found on the same broker (see the next entry).
+
+**Lesson**: a documented handler contract ("classify your own errors,
+don't propagate everything") is only as good as every call site actually
+following it. Grep for every `return err` in a Kafka handler against the
+contract's own doc comment, not just the two paths that happened to get
+built with dead-lettering in mind from the start.
+
+### 2026-08-30, ~1,360 accumulated Kafka topics on the shared local dev broker
+
+**What happened:** Kafka UI showed roughly 55 pages of topics. Broken down:
+1,056 `decision-engine-test-<uuid>` (one per `go test` run of that
+package's own integration suite), ~190 `e2e-raw-events*`/`e2e-audit-events*`
+(one set per `go test -tags=e2e` run), 72 `kafkax-test-<uuid>`, and a
+handful of `raw.events.f-livecheck`/`.g-livecheck` (manual live-verification
+runs during Phase 5 Units F/G).
+
+**Root cause:** every test tier that touches Kafka deliberately creates its
+own isolated, uniquely-named topic per run (correct, and exactly what
+prevents concurrent/repeated test runs from interfering with each other --
+`docs/AGENTS.md`'s own testing conventions). Nothing ever deletes an old
+one afterward, and this session ran the full suite, the e2e suite, and
+several manual live-checks repeatedly across multiple days against the same
+long-lived local broker. Pure accumulation, not a bug in any of the tests
+themselves.
+
+**Fix:** none needed in code. `make down-clean && make up` gives a fully
+fresh broker (Kafka has no named volume in `docker-compose.yml`, so its
+data does not survive a `docker compose down -v` regardless). Confirmed
+this is genuinely machine-portable -- no absolute or machine-specific state
+in the base stack -- so the same reset works identically on any clone.
+
+**Prevention:** worth considering a `make kafka-tidy` target (delete every
+topic matching `decision-engine-test-*`/`e2e-*`/`kafkax-test-*`) if this
+keeps recurring during heavy local test iteration, tracked in
+`docs/BACKLOG.md` rather than built speculatively now.
