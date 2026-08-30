@@ -6,8 +6,8 @@ interface Props {
 }
 
 export function RecoveryBar({ report }: Props) {
-  const recovered = report.recovered_amount;
-  const atRisk = report.at_risk_amount;
+  const recovered = report.recovered_paise;
+  const atRisk = report.at_risk_paise;
   const unrecovered = atRisk - recovered;
   const recoveredPct = atRisk > 0 ? (recovered / atRisk) * 100 : 0;
   const unrecoveredPct = atRisk > 0 ? (unrecovered / atRisk) * 100 : 0;

@@ -1314,3 +1314,30 @@ something, check that anything actually *produces* it -- a `grep` across
 the whole module for the topic name costs seconds and would have caught
 this on day one of Phase 0 rather than at the start of Phase 5's last
 backend unit.
+
+### 2026-08-30, no Node/npm available in the web/ contract-alignment pass's environment
+**What happened:** Asked to run `npm run typecheck`, `npm run build`, and
+`npm run dev` after aligning `web/` with the newly-frozen `API_GATEWAY.md`
+contract. No `node`/`npm`/`npx` binary was found anywhere on `PATH` or in
+common install locations (Volta's shim dir exists but is empty, no global
+npm folder, no `node_modules`), so none of the three commands could be run.
+**Root cause:** The environment this pass ran in has never had Node
+provisioned, unrelated to the code changes themselves.
+**Fix:** None available from inside this pass. Did a manual, file-by-file
+review instead: re-read every changed file, grepped the whole `src/` tree
+for leftover old field names/enum spellings from the pre-freeze shapes, and
+hand-checked the type-inference spots most likely to fool `strict` mode
+(a `??` fallback object literal without a contextual type, in the
+`accuracy.confusion` aggregation in `mockEngine.ts`, which needed an
+explicit annotation to avoid inferring `{}`). This is real but weaker
+evidence than a clean `tsc`/`vite build`/rendered `npm run dev` page.
+**Prevention:** Whoever picks this branch up next should run
+`npm install && npm run typecheck && npm run build && npm run dev` before
+trusting it fully — flagged explicitly in the task's own summary rather
+than silently reported as verified.
+**Resolved same day**: the diff was transferred (via a git patch, both
+clones shared the same remote at the same commit) into an environment with
+Node already provisioned. `npm run typecheck`, `npm run build`, and
+`npm run lint` all ran clean; the dev server boots and serves a 200. The
+manual review this pass did instead turned out accurate — no leftover
+pre-freeze spellings found on independent re-grep either.

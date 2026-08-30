@@ -1,45 +1,24 @@
 import { useEffect } from 'react';
-import { X, Cpu, MessageSquare, ArrowUpCircle, Clock } from 'lucide-react';
+import { X, Cpu } from 'lucide-react';
 import {
-  BUCKET_COLORS,
-  BUCKET_LABELS,
-  FAILURE_CODE_LABELS,
+  RECORD_TYPE_LABELS,
   STATE_COLORS,
   STATE_LABELS,
   formatCurrency,
+  formatFailureCode,
   formatPaise,
   formatTime,
 } from '@/lib/format';
-import type { InterventionType, RecordDetail } from '@/types';
+import type { RecordAuditResponse } from '@/types';
 
 interface Props {
   /** Whether the drawer is showing. Without this the backdrop and panel
    *  render on first paint, blurring the page behind an empty white panel. */
   open: boolean;
-  detail: RecordDetail | null;
+  detail: RecordAuditResponse | null;
   loading: boolean;
   onClose: () => void;
 }
-
-const ACTION_ICONS: Record<InterventionType, typeof Cpu> = {
-  retry: Clock,
-  nudge: MessageSquare,
-  escalate: ArrowUpCircle,
-  none: Cpu,
-};
-
-const ACTION_LABELS: Record<InterventionType, string> = {
-  retry: 'Retry',
-  nudge: 'Nudge',
-  escalate: 'Escalate',
-  none: 'None',
-};
-
-const OUTCOME_COLORS: Record<string, string> = {
-  success: 'text-emerald-600 bg-emerald-50',
-  failed: 'text-rose-600 bg-rose-50',
-  pending: 'text-amber-600 bg-amber-50',
-};
 
 export function RecordDrawer({ open, detail, loading, onClose }: Props) {
   useEffect(() => {
@@ -72,7 +51,7 @@ export function RecordDrawer({ open, detail, loading, onClose }: Props) {
             <div className="flex items-start justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Record Detail</h2>
-                <p className="text-sm font-mono text-slate-400 mt-0.5">{detail.id}</p>
+                <p className="text-sm font-mono text-slate-400 mt-0.5">{detail.record.id}</p>
               </div>
               <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors">
                 <X className="w-5 h-5 text-slate-400" />
@@ -83,15 +62,15 @@ export function RecordDrawer({ open, detail, loading, onClose }: Props) {
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-slate-50 rounded-lg p-3">
                 <p className="text-xs text-slate-400 uppercase tracking-wide">Amount</p>
-                <p className="text-lg font-bold text-slate-900 mt-1">{formatCurrency(detail.amount)}</p>
+                <p className="text-lg font-bold text-slate-900 mt-1">{formatCurrency(detail.record.amount_paise)}</p>
               </div>
               <div className="bg-slate-50 rounded-lg p-3">
                 <p className="text-xs text-slate-400 uppercase tracking-wide">Type</p>
-                <p className="text-lg font-bold text-slate-900 mt-1 capitalize">{detail.type}</p>
+                <p className="text-lg font-bold text-slate-900 mt-1">{RECORD_TYPE_LABELS[detail.record.type]}</p>
               </div>
               <div className="bg-slate-50 rounded-lg p-3">
                 <p className="text-xs text-slate-400 uppercase tracking-wide">Failure Code</p>
-                <p className="text-sm font-semibold text-slate-700 mt-1">{FAILURE_CODE_LABELS[detail.failure_code]}</p>
+                <p className="text-sm font-semibold text-slate-700 mt-1">{formatFailureCode(detail.record.failure_code)}</p>
               </div>
               <div className="bg-slate-50 rounded-lg p-3">
                 <p className="text-xs text-slate-400 uppercase tracking-wide">Current State</p>
@@ -101,86 +80,48 @@ export function RecordDrawer({ open, detail, loading, onClose }: Props) {
               </div>
             </div>
 
-            {/* Classification */}
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Classification</h3>
-              <div className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full" style={{ backgroundColor: BUCKET_COLORS[detail.root_cause_bucket] }} />
-                <span className="text-sm font-medium text-slate-700">{BUCKET_LABELS[detail.root_cause_bucket]}</span>
-                <span className="text-xs text-slate-400 ml-auto font-mono">{detail.classification_source}</span>
-              </div>
-              {detail.rationale && (
-                <div className="flex items-start gap-2 bg-amber-50/50 border border-amber-100 rounded-lg p-3">
-                  <Cpu className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-                  <p className="text-sm text-slate-600 leading-relaxed">{detail.rationale}</p>
-                </div>
-              )}
-            </div>
-
-            {/* Interventions */}
-            <div className="space-y-3">
-              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                Intervention Attempts ({detail.interventions.length})
-              </h3>
-              {detail.interventions.length === 0 ? (
-                <p className="text-sm text-slate-300">No interventions executed yet.</p>
-              ) : (
-                <div className="space-y-2">
-                  {detail.interventions.map((iv) => {
-                    const Icon = ACTION_ICONS[iv.action_type];
-                    return (
-                      <div key={iv.id} className="border border-slate-200 rounded-lg p-3 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center">
-                            <Icon className="w-3.5 h-3.5 text-slate-500" />
-                          </div>
-                          <span className="text-sm font-medium text-slate-700">
-                            {ACTION_LABELS[iv.action_type]} #{iv.attempt_number}
-                          </span>
-                          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ml-auto ${OUTCOME_COLORS[iv.outcome]}`}>
-                            {iv.outcome}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-4 text-xs text-slate-400">
-                          <span>Cost: <span className="font-medium text-slate-600">{formatPaise(iv.cost_paise)}</span></span>
-                          <span>P(recovery): <span className="font-medium text-slate-600">{(iv.p_recovery_at_decision * 100).toFixed(0)}%</span></span>
-                          <span>EV: <span className="font-medium text-slate-600">{iv.ev_score_at_decision.toFixed(3)}</span></span>
-                          <span className="ml-auto font-mono">{formatTime(iv.executed_at)}</span>
-                        </div>
-                        {iv.message_text && (
-                          <div className="bg-slate-50 rounded-md p-2.5 mt-1">
-                            <p className="text-xs text-slate-500 italic leading-relaxed">"{iv.message_text}"</p>
-                            <p className="text-xs text-slate-300 mt-1 font-mono">source: {iv.message_source}</p>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
             {/* Audit Trail */}
             <div className="space-y-3">
-              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Audit Trail</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                  Audit Trail ({detail.entries.length})
+                </h3>
+                {!detail.trail_complete && (
+                  <span className="text-xs text-amber-600">trail incomplete</span>
+                )}
+              </div>
               <div className="relative pl-5">
                 <div className="absolute left-1.5 top-1 bottom-1 w-px bg-slate-200" />
-                {detail.audit.map((entry, i) => (
-                  <div key={entry.id} className="relative pb-4 last:pb-0">
+                {detail.entries.map((entry, i) => (
+                  <div key={i} className="relative pb-4 last:pb-0">
                     <span className="absolute -left-[14px] top-1 w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" />
                     <div className="ml-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-slate-700">{entry.to_state}</span>
-                        {entry.from_state && (
-                          <span className="text-xs text-slate-300">from {entry.from_state}</span>
-                        )}
+                        <span className="text-sm font-medium text-slate-700">{STATE_LABELS[entry.to_state]}</span>
+                        <span className="text-xs text-slate-300">from {STATE_LABELS[entry.from_state]}</span>
                         <span className="text-xs text-slate-300 ml-auto font-mono">{formatTime(entry.ts)}</span>
                       </div>
                       <p className="text-xs text-slate-500 mt-0.5">{entry.reason}</p>
                       {entry.rationale && (
-                        <p className="text-xs text-slate-400 mt-1 italic leading-relaxed">{entry.rationale}</p>
+                        <div className="flex items-start gap-2 bg-amber-50/50 border border-amber-100 rounded-lg p-2.5 mt-1.5">
+                          <Cpu className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
+                          <p className="text-xs text-slate-600 leading-relaxed">{entry.rationale}</p>
+                        </div>
                       )}
-                      <p className="text-xs text-slate-300 mt-1 font-mono">source: {entry.source}</p>
+                      {entry.attempt_number > 0 && (
+                        <div className="flex items-center gap-4 text-xs text-slate-400 mt-1.5">
+                          <span>Attempt #{entry.attempt_number}</span>
+                          <span>Cost: <span className="font-medium text-slate-600">{formatPaise(entry.cost_paise)}</span></span>
+                        </div>
+                      )}
+                      {entry.message_text && (
+                        <div className="bg-slate-50 rounded-md p-2.5 mt-1.5">
+                          <p className="text-xs text-slate-500 italic leading-relaxed">"{entry.message_text}"</p>
+                        </div>
+                      )}
+                      <p className="text-xs text-slate-300 mt-1 font-mono">
+                        {entry.actor} · source: {entry.source}
+                      </p>
                     </div>
                   </div>
                 ))}

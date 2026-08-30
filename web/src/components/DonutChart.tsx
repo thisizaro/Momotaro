@@ -1,20 +1,28 @@
 import { useMemo } from 'react';
-import { BUCKET_COLORS, BUCKET_LABELS, formatCurrencyShort } from '@/lib/format';
-import type { BucketBreakdown, RootCauseBucket } from '@/types';
+import { BUCKET_COLORS, BUCKET_LABELS } from '@/lib/format';
+import type { RootCauseBreakdown, RootCauseBucket } from '@/types';
 
 interface Props {
-  data: Record<RootCauseBucket, BucketBreakdown>;
+  data: Partial<Record<RootCauseBucket, RootCauseBreakdown>>;
 }
 
-const BUCKETS: RootCauseBucket[] = ['transient', 'hard_decline', 'risk_hold'];
+const BUCKETS: RootCauseBucket[] = [
+  'ROOT_CAUSE_BUCKET_TRANSIENT_BANK',
+  'ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS',
+  'ROOT_CAUSE_BUCKET_HARD_DECLINE',
+  'ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED',
+  'ROOT_CAUSE_BUCKET_RISK_HOLD',
+  'ROOT_CAUSE_BUCKET_ABANDONMENT',
+  'ROOT_CAUSE_BUCKET_OVERDUE',
+];
 
 export function DonutChart({ data }: Props) {
-  const total = BUCKETS.reduce((sum, b) => sum + data[b].count, 0);
+  const total = BUCKETS.reduce((sum, b) => sum + (data[b]?.record_count ?? 0), 0);
 
   const segments = useMemo(() => {
     let offset = 0;
-    return BUCKETS.map((bucket) => {
-      const count = data[bucket].count;
+    return BUCKETS.filter((b) => (data[b]?.record_count ?? 0) > 0).map((bucket) => {
+      const count = data[bucket]?.record_count ?? 0;
       const pct = total > 0 ? count / total : 0;
       const dash = pct * CIRCUMFERENCE;
       const seg = {

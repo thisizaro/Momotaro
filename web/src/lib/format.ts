@@ -1,4 +1,5 @@
-import type { FailureCode, RecordState, RootCauseBucket } from '@/types';
+import type { ActionType, Outcome, RecordState, RecordType, RootCauseBucket } from '@/types';
+import { TERMINAL_RECORD_STATES } from '@/types';
 
 export function formatCurrency(paise: number): string {
   const rupees = paise / 100;
@@ -45,66 +46,109 @@ export function formatRelativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
+  RECORD_TYPE_PAYMENT: 'Payment',
+  RECORD_TYPE_MANDATE: 'Mandate',
+  RECORD_TYPE_CHECKOUT: 'Checkout',
+  RECORD_TYPE_INVOICE: 'Invoice',
+};
+
 export const STATE_LABELS: Record<RecordState, string> = {
-  New: 'New',
-  Scoring: 'Scoring',
-  RetryScheduled: 'Retry Scheduled',
-  Retrying: 'Retrying',
-  NudgeScheduled: 'Nudge Scheduled',
-  Nudged: 'Nudged',
-  Recovered: 'Recovered',
-  Escalated: 'Escalated',
-  ClosedUneconomic: 'Closed (Uneconomic)',
+  RECORD_STATE_NEW: 'New',
+  RECORD_STATE_SCORING: 'Scoring',
+  RECORD_STATE_RETRY_SCHEDULED: 'Retry Scheduled',
+  RECORD_STATE_RETRYING: 'Retrying',
+  RECORD_STATE_NUDGE_SCHEDULED: 'Nudge Scheduled',
+  RECORD_STATE_NUDGED: 'Nudged',
+  RECORD_STATE_RECOVERED: 'Recovered',
+  RECORD_STATE_ESCALATED: 'Escalated',
+  RECORD_STATE_CLOSED_UNECONOMIC: 'Closed (Uneconomic)',
 };
 
 export const STATE_COLORS: Record<RecordState, string> = {
-  New: 'bg-slate-100 text-slate-600 border-slate-200',
-  Scoring: 'bg-amber-50 text-amber-700 border-amber-200',
-  RetryScheduled: 'bg-blue-50 text-blue-700 border-blue-200',
-  Retrying: 'bg-blue-100 text-blue-800 border-blue-300',
-  NudgeScheduled: 'bg-cyan-50 text-cyan-700 border-cyan-200',
-  Nudged: 'bg-cyan-100 text-cyan-800 border-cyan-300',
-  Recovered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  Escalated: 'bg-rose-50 text-rose-700 border-rose-200',
-  ClosedUneconomic: 'bg-slate-200 text-slate-500 border-slate-300',
+  RECORD_STATE_NEW: 'bg-slate-100 text-slate-600 border-slate-200',
+  RECORD_STATE_SCORING: 'bg-amber-50 text-amber-700 border-amber-200',
+  RECORD_STATE_RETRY_SCHEDULED: 'bg-blue-50 text-blue-700 border-blue-200',
+  RECORD_STATE_RETRYING: 'bg-blue-100 text-blue-800 border-blue-300',
+  RECORD_STATE_NUDGE_SCHEDULED: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+  RECORD_STATE_NUDGED: 'bg-cyan-100 text-cyan-800 border-cyan-300',
+  RECORD_STATE_RECOVERED: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  RECORD_STATE_ESCALATED: 'bg-rose-50 text-rose-700 border-rose-200',
+  RECORD_STATE_CLOSED_UNECONOMIC: 'bg-slate-200 text-slate-500 border-slate-300',
 };
 
 export const STATE_DOT_COLORS: Record<RecordState, string> = {
-  New: 'bg-slate-400',
-  Scoring: 'bg-amber-400',
-  RetryScheduled: 'bg-blue-400',
-  Retrying: 'bg-blue-500',
-  NudgeScheduled: 'bg-cyan-400',
-  Nudged: 'bg-cyan-500',
-  Recovered: 'bg-emerald-500',
-  Escalated: 'bg-rose-500',
-  ClosedUneconomic: 'bg-slate-400',
+  RECORD_STATE_NEW: 'bg-slate-400',
+  RECORD_STATE_SCORING: 'bg-amber-400',
+  RECORD_STATE_RETRY_SCHEDULED: 'bg-blue-400',
+  RECORD_STATE_RETRYING: 'bg-blue-500',
+  RECORD_STATE_NUDGE_SCHEDULED: 'bg-cyan-400',
+  RECORD_STATE_NUDGED: 'bg-cyan-500',
+  RECORD_STATE_RECOVERED: 'bg-emerald-500',
+  RECORD_STATE_ESCALATED: 'bg-rose-500',
+  RECORD_STATE_CLOSED_UNECONOMIC: 'bg-slate-400',
 };
 
 export const BUCKET_LABELS: Record<RootCauseBucket, string> = {
-  transient: 'Transient',
-  hard_decline: 'Hard Decline',
-  risk_hold: 'Risk Hold',
+  ROOT_CAUSE_BUCKET_TRANSIENT_BANK: 'Transient (Bank)',
+  ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS: 'Insufficient Funds',
+  ROOT_CAUSE_BUCKET_HARD_DECLINE: 'Hard Decline',
+  ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED: 'User Action Needed',
+  ROOT_CAUSE_BUCKET_RISK_HOLD: 'Risk Hold',
+  ROOT_CAUSE_BUCKET_ABANDONMENT: 'Abandonment',
+  ROOT_CAUSE_BUCKET_OVERDUE: 'Overdue',
 };
 
 export const BUCKET_COLORS: Record<RootCauseBucket, string> = {
-  transient: '#3b82f6',
-  hard_decline: '#f43f5e',
-  risk_hold: '#f59e0b',
+  ROOT_CAUSE_BUCKET_TRANSIENT_BANK: '#3b82f6',
+  ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS: '#f97316',
+  ROOT_CAUSE_BUCKET_HARD_DECLINE: '#f43f5e',
+  ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED: '#f59e0b',
+  ROOT_CAUSE_BUCKET_RISK_HOLD: '#8b5cf6',
+  ROOT_CAUSE_BUCKET_ABANDONMENT: '#94a3b8',
+  ROOT_CAUSE_BUCKET_OVERDUE: '#14b8a6',
 };
 
-export const FAILURE_CODE_LABELS: Record<FailureCode, string> = {
-  insufficient_funds: 'Insufficient Funds',
-  bank_timeout: 'Bank Timeout',
-  hard_decline: 'Hard Decline',
-  risk_hold: 'Risk Hold',
-  expired_instrument: 'Expired Instrument',
-  blocked_instrument: 'Blocked Instrument',
-  rail_congestion: 'Rail Congestion',
+export const ACTION_TYPE_LABELS: Record<ActionType, string> = {
+  ACTION_TYPE_RETRY: 'Retry',
+  ACTION_TYPE_NUDGE_METHOD_UPDATE: 'Nudge (Update Method)',
+  ACTION_TYPE_NUDGE_REMINDER: 'Nudge (Reminder)',
+  ACTION_TYPE_ESCALATE: 'Escalate',
+  ACTION_TYPE_NONE: 'None',
 };
+
+export const OUTCOME_LABELS: Record<Outcome, string> = {
+  OUTCOME_SUCCESS: 'success',
+  OUTCOME_FAILURE: 'failed',
+  OUTCOME_PENDING: 'pending',
+};
+
+export const OUTCOME_COLORS: Record<Outcome, string> = {
+  OUTCOME_SUCCESS: 'text-emerald-600 bg-emerald-50',
+  OUTCOME_FAILURE: 'text-rose-600 bg-rose-50',
+  OUTCOME_PENDING: 'text-amber-600 bg-amber-50',
+};
+
+/**
+ * `failure_code` is an open string set by the upstream rail (Wire
+ * conventions 3), not a closed enum. This table is best-effort for known
+ * codes; formatFailureCode() below falls back for anything else rather than
+ * rendering blank.
+ */
+const FAILURE_CODE_LABELS: Record<string, string> = {
+  bank_not_available: 'Bank Not Available',
+  insufficient_funds: 'Insufficient Funds',
+  card_expired: 'Card Expired',
+  issuer_declined: 'Issuer Declined',
+  risk_threshold_breached: 'Risk Threshold Breached',
+};
+
+export function formatFailureCode(code: string): string {
+  return FAILURE_CODE_LABELS[code] ?? code.replace(/_/g, ' ');
+}
 
 export function isTerminalState(state: RecordState): boolean {
-  return state === 'Recovered' || state === 'Escalated' || state === 'ClosedUneconomic';
+  return TERMINAL_RECORD_STATES.includes(state);
 }
 
 export function isInFlight(state: RecordState): boolean {
