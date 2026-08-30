@@ -36,7 +36,7 @@ func TestGetBatchReportComputesHeadlineNumbers(t *testing.T) {
 	inFlight := seedRecord(ctx, t, pool, batchID, 30000, "RECORD_TYPE_PAYMENT")
 	seedRecordState(ctx, t, pool, inFlight, "RECORD_STATE_RETRY_SCHEDULED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 0)
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
 	if err != nil {
 		t.Fatalf("GetBatchReport: %v", err)
@@ -95,7 +95,7 @@ func TestGetBatchReportGroupsByRootCauseAndIntervention(t *testing.T) {
 	seedRecordState(ctx, t, pool, b, "RECORD_STATE_ESCALATED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
 	seedAttempt(ctx, t, pool, b, 1, "ACTION_TYPE_RETRY", "OUTCOME_FAILURE", 500)
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
 	if err != nil {
 		t.Fatalf("GetBatchReport: %v", err)
@@ -147,7 +147,7 @@ func TestGetBatchReportOmitsAccuracyWithoutGroundTruth(t *testing.T) {
 	rec := seedRecord(ctx, t, pool, batchID, 100000, "RECORD_TYPE_PAYMENT")
 	seedRecordState(ctx, t, pool, rec, "RECORD_STATE_RECOVERED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
 	if err != nil {
 		t.Fatalf("GetBatchReport: %v", err)
@@ -172,7 +172,7 @@ func TestGetBatchReportComputesAccuracyAgainstGroundTruth(t *testing.T) {
 	seedRecordState(ctx, t, pool, b, "RECORD_STATE_ESCALATED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
 	seedGroundTruth(ctx, t, pool, b, "ROOT_CAUSE_BUCKET_HARD_DECLINE")
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
 	if err != nil {
 		t.Fatalf("GetBatchReport: %v", err)
@@ -209,7 +209,7 @@ func TestGetBatchReportOmitsBaselineComparisonWithoutGroundTruth(t *testing.T) {
 	rec := seedRecord(ctx, t, pool, batchID, 100000, "RECORD_TYPE_PAYMENT")
 	seedRecordState(ctx, t, pool, rec, "RECORD_STATE_RECOVERED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
 	if err != nil {
 		t.Fatalf("GetBatchReport: %v", err)
@@ -234,7 +234,7 @@ func TestGetBatchReportComputesBaselineComparisonAgainstGroundTruth(t *testing.T
 	seedRecordState(ctx, t, pool, rh, "RECORD_STATE_ESCALATED", "ROOT_CAUSE_BUCKET_RISK_HOLD", 0)
 	seedGroundTruthFull(ctx, t, pool, rh, "ROOT_CAUSE_BUCKET_RISK_HOLD", 0.05, 0.0)
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
 	if err != nil {
 		t.Fatalf("GetBatchReport: %v", err)
@@ -262,7 +262,7 @@ func TestGetBatchReportComputesBaselineComparisonAgainstGroundTruth(t *testing.T
 
 func TestGetBatchReportUnknownBatchNotFound(t *testing.T) {
 	pool := testPool(t)
-	s := New(pool)
+	s := New(pool, NewHub())
 
 	_, err := s.GetBatchReport(context.Background(), &reportingv1.GetBatchReportRequest{BatchId: uuid.NewString()})
 	if status.Code(err) != codes.NotFound {
@@ -272,7 +272,7 @@ func TestGetBatchReportUnknownBatchNotFound(t *testing.T) {
 
 func TestGetBatchReportMissingBatchID(t *testing.T) {
 	pool := testPool(t)
-	s := New(pool)
+	s := New(pool, NewHub())
 
 	_, err := s.GetBatchReport(context.Background(), &reportingv1.GetBatchReportRequest{})
 	if status.Code(err) != codes.InvalidArgument {
@@ -289,7 +289,7 @@ func TestListBatchRecordsReturnsPageWithTotalCount(t *testing.T) {
 		seedRecordState(ctx, t, pool, rec, "RECORD_STATE_RECOVERED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
 	}
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.ListBatchRecords(ctx, &reportingv1.ListBatchRecordsRequest{BatchId: batchID})
 	if err != nil {
 		t.Fatalf("ListBatchRecords: %v", err)
@@ -320,7 +320,7 @@ func TestListBatchRecordsFiltersByStateAndBucket(t *testing.T) {
 	escalated := seedRecord(ctx, t, pool, batchID, 10000, "RECORD_TYPE_PAYMENT")
 	seedRecordState(ctx, t, pool, escalated, "RECORD_STATE_ESCALATED", "ROOT_CAUSE_BUCKET_RISK_HOLD", 0)
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	resp, err := s.ListBatchRecords(ctx, &reportingv1.ListBatchRecordsRequest{
 		BatchId:     batchID,
 		StateFilter: commonv1.RecordState_RECORD_STATE_ESCALATED,
@@ -345,7 +345,7 @@ func TestListBatchRecordsPaginatesWithNextPageToken(t *testing.T) {
 		seedRecordState(ctx, t, pool, rec, "RECORD_STATE_RECOVERED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
 	}
 
-	s := New(pool)
+	s := New(pool, NewHub())
 	first, err := s.ListBatchRecords(ctx, &reportingv1.ListBatchRecordsRequest{BatchId: batchID, PageSize: 2})
 	if err != nil {
 		t.Fatalf("ListBatchRecords page 1: %v", err)
@@ -373,7 +373,7 @@ func TestListBatchRecordsPaginatesWithNextPageToken(t *testing.T) {
 
 func TestListBatchRecordsUnknownBatchNotFound(t *testing.T) {
 	pool := testPool(t)
-	s := New(pool)
+	s := New(pool, NewHub())
 
 	_, err := s.ListBatchRecords(context.Background(), &reportingv1.ListBatchRecordsRequest{BatchId: uuid.NewString()})
 	if status.Code(err) != codes.NotFound {

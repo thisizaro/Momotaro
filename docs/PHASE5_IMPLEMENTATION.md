@@ -27,7 +27,7 @@ scope from the checklist alone.
 | C | World Simulator (real) | merged | A |
 | D | Executor: wire real World/Notification Simulator clients | merged | C |
 | E | Hinglish nudge composition (Classifier) | merged | A (for the caller; the Classifier-side work itself is independent) |
-| F | Reporting Service | in progress: unary RPCs merged, `StreamBatchUpdates` deferred | nothing strictly, more useful once B/C produce real data |
+| F | Reporting Service | merged | nothing strictly, more useful once B/C produce real data |
 | G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
 | H | Dashboard: wire to real Gateway | not started | G |
 | I | Razorpay's real error codes as the failure vocabulary | merged | nothing |
@@ -1147,6 +1147,90 @@ comes from Decision Engine. This PR is a prerequisite for `StreamBatchUpdates`,
 not `StreamBatchUpdates` itself: Reporting still has no Kafka consumer and
 no streaming RPC implementation, so the checkbox stays unticked and the
 work above continues in a following PR.
+
+**2026-08-30, `StreamBatchUpdates` itself, in a following PR**: three new
+pieces, deliberately kept as three separate, independently testable units
+rather than one Kafka-to-gRPC blob.
+
+- **`Hub`** (`hub.go`): a pure in-memory fan-out, keyed by `batch_id`, no
+  Postgres and no Kafka in it at all. `subscribe(batchID)` returns a
+  buffered channel and an idempotent `unsubscribe` (`sync.Once`-guarded,
+  so a caller that both defers it and calls it explicitly cannot double-close
+  the channel); `publish(batchID, update)` fans out non-blockingly,
+  silently dropping for a subscriber whose buffer is full rather than
+  blocking every other subscriber, on this batch or any other, or the
+  Kafka consumer loop that calls it. That drop-not-block choice is the
+  same tolerance `docs/ARCHITECTURE.md` section 10a already states for
+  `audit.events` itself ("losing a message costs a stale cache, never a
+  wrong number"), applied one hop further down the pipeline. Exported
+  (`Hub`/`NewHub`), unlike everything else new in this unit, because
+  `cmd/main.go` constructs one and hands the same instance to both the
+  consumer and the gRPC server; its `subscribe`/`publish` methods stay
+  unexported, used only by the two types in this package that need them.
+- **`AuditConsumer`** (`consume.go`): the Kafka-facing half.
+  `HandleMessage` decodes one `auditevent.Event`, translates it into a
+  `reportingv1.BatchUpdate`, and calls `hub.publish`. Never returns an
+  error for a malformed payload, only logs and skips: `kafkax.Consumer
+  .Consume`'s own doc comment is explicit that a handler error stops the
+  whole consumer loop (there is no DLQ path for this topic, matching
+  `audit.events`' own best-effort status), so treating one bad message as
+  fatal would silently stop every subsequent live update for every batch,
+  a far worse outcome than dropping the one bad message.
+- **`StreamBatchUpdates`** (`stream.go`): the gRPC-facing half. Validates
+  `batch_id` (empty, malformed UUID, unknown batch, the same three checks
+  `GetBatchReport`/`ListBatchRecords` already make), then subscribes and
+  relays until either the hub channel closes or the client's own stream
+  context is cancelled (a dashboard tab closing, or the Gateway's relay
+  disconnecting) -- returning `stream.Context().Err()` in that case, so a
+  client disconnect is distinguishable from a real failure without
+  inspecting state.
+
+**Neither half knows the other exists beyond the shared `*Hub`**: `stream.go`
+never imports anything Kafka-shaped, `consume.go` never imports anything
+gRPC-shaped. `cmd/main.go` is the only place both are constructed, mirroring
+`services/decision-engine/cmd/main.go`'s own multi-goroutine supervision
+shape (consumer and gRPC server each in their own goroutine, either one
+exiting cancels a shared `runCtx` so the other stops too, graceful shutdown
+closes both).
+
+**Tested in three tiers, deliberately not one integration test standing in
+for all of it**: `hub_test.go` (pure Go, no build tag -- delivery to one and
+many subscribers, batch isolation under concurrent publishes, the
+full-buffer drop, unsubscribe actually stopping delivery and closing the
+channel); `consume_test.go` (pure Go -- correct field translation, a
+malformed payload never erroring, routing by `batch_id` not `record_id`);
+`stream_test.go` (`//go:build integration`, real Postgres for
+`batchExists` -- the three validation edges, and one assembly test that
+drives the real `StreamBatchUpdates` method with a minimal fake
+`grpc.ServerStreamingServer` (only `Send`/`Context` overridden, everything
+else delegates to a nil-embedded `grpc.ServerStream` that the handler never
+calls), publishes through the real `*Hub`, and asserts both the delivered
+updates and a clean `context.Canceled` return on client disconnect).
+Adversarially verified: broke `Hub.publish`'s batch-keyed lookup into a
+broadcast-to-everyone loop and confirmed both cross-batch tests caught it;
+separately swapped `FromState`/`ToState` in the Kafka-to-`BatchUpdate`
+translation and confirmed the consumer test caught it. Both reverted,
+confirmed green.
+
+**Verified live against the real seven-service stack** (an eighth binary,
+Reporting, now included): submitted a real batch, subscribed a real gRPC
+streaming client to `StreamBatchUpdates` *before* submitting a second
+batch (the hub has no replay buffer by design -- a client that subscribes
+after a transition has already published sees nothing from it, matching
+the connection-scoped, MISS-on-late-join semantics of a live feed, not a
+log to reread), and watched a real `RETRYING -> RECOVERED` update arrive
+with the correct `recovered_delta_paise`, sourced from a real
+`audit.events` message a real Decision Engine published moments earlier.
+
+**Deliberately not done in this pass**: Reporting is not part of
+`test/e2e/harness_test.go` yet. Building a permanent e2e proof now would
+duplicate Unit G's own upcoming work almost exactly -- the Gateway's
+WebSocket relay needs Reporting running in the harness anyway to dial
+`StreamBatchUpdates` through, and a submit-batch-and-watch-the-WebSocket
+e2e test is the more complete version of the same proof this unit already
+gave manually. Tracked here rather than silently skipped: Unit G's e2e
+work should add Reporting to the harness once, not have this unit add it
+first only to extend it again.
 
 ## Unit K: baseline comparison in Reporting
 

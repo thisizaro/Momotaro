@@ -1644,3 +1644,41 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   (docs/ARCHITECTURE.md section 10a's own contract), never a failed
   Execute/Classify/ResumeNudge call that already succeeded where it
   actually matters, Postgres.
+- 2026-08-30: **Reporting's live fan-out (`Hub`, Phase 5 Unit F's
+  `StreamBatchUpdates`) drops rather than blocks when a subscriber falls
+  behind, and has no replay buffer.** Two related choices, both trading
+  perfect delivery for the property that actually matters here: one slow
+  or stuck dashboard connection must never stall the Kafka consumer loop
+  for every other subscriber, on this batch or any other. A publish to a
+  full subscriber channel is silently dropped for that one subscriber
+  (`select` with a `default` case) rather than blocking; a client that
+  subscribes after a transition already published simply never sees it,
+  the same way a live feed works and a log does not. Both are the same
+  tolerance `docs/ARCHITECTURE.md` section 10a already states for
+  `audit.events` itself ("losing a message costs a stale cache, never a
+  wrong number"), carried one hop further down the pipeline rather than
+  re-argued from scratch.
+  **`Hub` is exported, its methods are not.** `cmd/main.go` constructs one
+  `*Hub` and hands the same instance to both the Kafka consumer
+  (`AuditConsumer`) and the gRPC server (`Server`), so the type itself
+  has to be visible outside the `server` package; `subscribe`/`publish`
+  stay lowercase because only those two package-internal types ever call
+  them, and there is no reason for `cmd/main.go` to be able to.
+  **Tested in three tiers on purpose, not one integration test standing
+  in for all of it**: the fan-out logic (`hub_test.go`) and the Kafka
+  message translation (`consume_test.go`) are both pure Go, no build tag,
+  fast, and each proves one thing precisely; only the gRPC-facing half
+  (`stream_test.go`) needs real Postgres, for the same `batch_id`
+  validation `GetBatchReport`/`ListBatchRecords` already do. A minimal
+  fake `grpc.ServerStreamingServer` (only `Send`/`Context` overridden,
+  everything else delegates to a nil-embedded `grpc.ServerStream` the
+  handler never calls) drives one assembly test through the real
+  `StreamBatchUpdates` method end to end, proving the three pieces
+  actually connect, not just that each is correct in isolation.
+  **Reporting is deliberately not added to `test/e2e/harness_test.go` in
+  this PR.** Unit G's Gateway WebSocket relay needs Reporting running in
+  the harness anyway to dial `StreamBatchUpdates` through, and a
+  submit-batch-and-watch-the-WebSocket e2e test is the more complete
+  version of the live verification this unit already did by hand.
+  Recorded here so the omission reads as a sequencing choice, not an
+  oversight the next unit has to rediscover.
