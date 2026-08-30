@@ -202,6 +202,64 @@ func TestGetBatchReportComputesAccuracyAgainstGroundTruth(t *testing.T) {
 	}
 }
 
+func TestGetBatchReportOmitsBaselineComparisonWithoutGroundTruth(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	batchID := seedBatch(ctx, t, pool)
+	rec := seedRecord(ctx, t, pool, batchID, 100000, "RECORD_TYPE_PAYMENT")
+	seedRecordState(ctx, t, pool, rec, "RECORD_STATE_RECOVERED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
+
+	s := New(pool)
+	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
+	if err != nil {
+		t.Fatalf("GetBatchReport: %v", err)
+	}
+	if resp.GetReport().BaselineComparison != nil {
+		t.Error("BaselineComparison present for a batch with no ground_truth, want nil (docs/API_GATEWAY.md: a missing key means no answer key exists)")
+	}
+}
+
+func TestGetBatchReportComputesBaselineComparisonAgainstGroundTruth(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	batchID := seedBatch(ctx, t, pool)
+
+	// RISK_HOLD's correct action is ESCALATE, so neither the naive
+	// policy's retries nor its one nudge is ever correct here: every one
+	// of the four attempts sees wrong_action_probability, all four still
+	// cost money regardless of outcome. Hand-computed in
+	// baseline_test.go's TestEvaluateNaivePolicyRiskHoldSpendsForNearZeroRecovery:
+	// gross 0, spend 100 (3 retries + 1 nudge at 25 paise each).
+	rh := seedRecord(ctx, t, pool, batchID, 100000, "RECORD_TYPE_PAYMENT")
+	seedRecordState(ctx, t, pool, rh, "RECORD_STATE_ESCALATED", "ROOT_CAUSE_BUCKET_RISK_HOLD", 0)
+	seedGroundTruthFull(ctx, t, pool, rh, "ROOT_CAUSE_BUCKET_RISK_HOLD", 0.05, 0.0)
+
+	s := New(pool)
+	resp, err := s.GetBatchReport(ctx, &reportingv1.GetBatchReportRequest{BatchId: batchID})
+	if err != nil {
+		t.Fatalf("GetBatchReport: %v", err)
+	}
+	bc := resp.GetReport().GetBaselineComparison()
+	if bc == nil {
+		t.Fatal("BaselineComparison is nil, want populated")
+	}
+	if bc.PolicyName != "naive_retry3_nudge1" {
+		t.Errorf("PolicyName = %q, want naive_retry3_nudge1", bc.PolicyName)
+	}
+	if bc.GrossRecoveredPaise != 0 {
+		t.Errorf("GrossRecoveredPaise = %d, want 0 (RISK_HOLD's wrong_action_probability is 0)", bc.GrossRecoveredPaise)
+	}
+	if bc.InterventionSpendPaise != 100 {
+		t.Errorf("InterventionSpendPaise = %d, want 100 (3 retries + 1 nudge at 25 paise each, charged regardless of outcome)", bc.InterventionSpendPaise)
+	}
+	if bc.NetRecoveredPaise != -100 {
+		t.Errorf("NetRecoveredPaise = %d, want -100", bc.NetRecoveredPaise)
+	}
+	if bc.Note == "" {
+		t.Error("Note is empty, want the honesty caveat")
+	}
+}
+
 func TestGetBatchReportUnknownBatchNotFound(t *testing.T) {
 	pool := testPool(t)
 	s := New(pool)

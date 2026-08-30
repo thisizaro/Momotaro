@@ -95,3 +95,18 @@ func seedGroundTruth(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recor
 		t.Fatalf("seed ground_truth: %v", err)
 	}
 }
+
+// seedGroundTruthFull inserts a GROUND_TRUTH row for recordID with an
+// explicit recovery/wrong-action probability pair, for Unit K's baseline
+// comparison tests, which need to control both numbers rather than
+// seedGroundTruth's fixed 0.5/0 (accuracy scoring only ever reads
+// true_bucket, so it never needed to).
+func seedGroundTruthFull(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID, trueBucket string, recoveryProbability, wrongActionProbability float64) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability)
+		VALUES ($1, $2, $3, $4)`,
+		recordID, trueBucket, recoveryProbability, wrongActionProbability); err != nil {
+		t.Fatalf("seed ground_truth: %v", err)
+	}
+}

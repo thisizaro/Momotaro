@@ -243,6 +243,52 @@ func (s *store) confusionCounts(ctx context.Context, batchID string) ([]confusio
 	return result, nil
 }
 
+// groundTruthRow is one record's GROUND_TRUTH profile plus its amount, the
+// input evaluateNaivePolicy (baseline.go) needs to compute Unit K's
+// baseline comparison. Kept separate from confusionCounts: that query
+// serves the accuracy scorer's predicted-vs-true join, this needs the
+// probabilities and the amount, not the classifier's actual prediction.
+type groundTruthRow struct {
+	TrueBucket             commonv1.RootCauseBucket
+	RecoveryProbability    float64
+	WrongActionProbability float64
+	AmountPaise            int64
+}
+
+// groundTruthForBaseline returns one row per record in batchID that has a
+// GROUND_TRUTH profile, regardless of the record's current state: the
+// naive policy is a counterfactual evaluated over the same population the
+// real batch classified, not only over the records that have finished.
+// Empty when the batch has no ground truth (real traffic, not synthetic),
+// the caller's signal to omit baseline_comparison entirely
+// (docs/API_GATEWAY.md).
+func (s *store) groundTruthForBaseline(ctx context.Context, batchID string) ([]groundTruthRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT gt.true_bucket, gt.recovery_probability, gt.wrong_action_probability, r.amount_paise
+		FROM ground_truth gt
+		JOIN record r ON r.id = gt.record_id
+		WHERE r.batch_id = $1`, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("load ground truth for baseline, batch %s: %w", batchID, err)
+	}
+	defer rows.Close()
+
+	var result []groundTruthRow
+	for rows.Next() {
+		var g groundTruthRow
+		var trueBucket string
+		if err := rows.Scan(&trueBucket, &g.RecoveryProbability, &g.WrongActionProbability, &g.AmountPaise); err != nil {
+			return nil, fmt.Errorf("scan ground truth row: %w", err)
+		}
+		g.TrueBucket = commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[trueBucket])
+		result = append(result, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ground truth rows: %w", err)
+	}
+	return result, nil
+}
+
 // recordListRow is one row of a ListBatchRecords page.
 type recordListRow struct {
 	RecordID     string

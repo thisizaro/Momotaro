@@ -75,6 +75,10 @@ func (s *Server) GetBatchReport(ctx context.Context, req *reportingv1.GetBatchRe
 	if err != nil {
 		return nil, err
 	}
+	groundTruthRows, err := s.store.groundTruthForBaseline(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
 
 	report := &reportingv1.BatchReport{
 		BatchId:                batchID,
@@ -99,6 +103,7 @@ func (s *Server) GetBatchReport(ctx context.Context, req *reportingv1.GetBatchRe
 		ByRootCause:            bucketStatsMap(bucketRows),
 		ByIntervention:         interventionStatsMap(interventionRows),
 		Accuracy:               classificationAccuracy(confusionRows),
+		BaselineComparison:     baselineComparison(groundTruthRows),
 		GeneratedAt:            s.clock(),
 	}
 

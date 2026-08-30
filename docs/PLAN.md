@@ -748,7 +748,7 @@ ordered by value per hour. Detail for each is in
       itself. Citing the specific rule in the audit reason string is
       tracked separately in `docs/BACKLOG.md`, folded into Unit M's
       plumbing rather than done twice
-- [ ] Baseline comparison in Reporting: what a naive "retry everything three
+- [x] Baseline comparison in Reporting: what a naive "retry everything three
       times, nudge everything" policy would have recovered against the same
       sealed ground truth, so "measured money recovered" is a result rather
       than a number → `docs/PHASE5_IMPLEMENTATION.md` Unit K
