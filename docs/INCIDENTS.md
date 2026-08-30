@@ -1431,3 +1431,58 @@ in the base stack -- so the same reset works identically on any clone.
 topic matching `decision-engine-test-*`/`e2e-*`/`kafkax-test-*`) if this
 keeps recurring during heavy local test iteration, tracked in
 `docs/BACKLOG.md` rather than built speculatively now.
+
+### 2026-08-30, CI's post-merge run on `main` failed for a PR that never touched the failing code
+
+**What happened:** the automatic CI run GitHub triggers on every push to
+`main` (distinct from the PR's own `pull_request`-triggered run, which had
+already passed) went red right after merging #75
+(`infra/batchgen-make-target`) -- two failures in
+`services/decision-engine/internal/engine`:
+`TestSchedulerDeadLettersAfterExecuteRetriesExhausted` ("executor called 0
+times, want at least maxExecuteAttempts=3") and
+`TestSchedulerFiresOnceWhenFakeClockPassesDueAt` ("current_state before
+due_at = RETRYING, want RETRY_SCHEDULED").
+
+**Root cause:** not a regression. #75 only touched `Makefile` and
+`scripts/batchgen/main.go` (confirmed via `git diff` across the whole merge
+range, zero lines in `decision-engine`), and the PR's own pre-merge check
+already ran this exact suite against this exact code and passed. Reproduced
+locally instead: the two named tests in isolation, then the whole
+`decision-engine/internal/engine` package three more times -- four clean
+runs, zero failures. The failure shape (a record further along the state
+machine than a single direct `tick()` call should produce, an executor call
+count of zero where a background process apparently consumed it instead)
+matches this codebase's own documented, accepted tradeoff: the scheduler's
+claim-due-work query runs system-wide with no per-test isolation
+(`docs/AGENTS.md` testing conventions already account for this). Under
+CI's shared, more contended runner, a background scheduler loop from one
+test occasionally claims a record a *different* test in the same binary
+just seeded, before that test can check it. Same general flakiness
+category this session already hit once before with a different pair of
+tests (`TestSchedulerForwardsEVSnapshotToExecute`/
+`TestSchedulerRetryLoopTerminatesViaEconomicsWhenPriorsRunOut`, that time
+from a literal leftover manual process rather than in-CI cross-test
+interference).
+
+**Fix:** none needed; `main` is not actually broken. Logged for the record
+as a second confirmed data point on this flakiness source, not because it
+needs action now.
+
+**Lesson**: a red push-triggered run on `main` right after a merge is not
+automatically evidence the merge was bad -- check whether the PR's own
+pre-merge run (against the identical code) already passed, and check the
+actual diff for whether it could plausibly have caused the specific
+failure, before assuming a regression.
+
+**Recurred within the hour, same test, on the PR documenting the first
+occurrence**: this very PR's own `pull_request`-triggered check (touching
+only this file) failed `TestSchedulerFiresOnceWhenFakeClockPassesDueAt`
+again. A docs-only PR failing a decision-engine test rules out any
+content correlation entirely -- confirms this is purely environmental,
+not something worth chasing per-PR. Resolved by `gh run rerun --failed`,
+which passed clean on retry. Two occurrences in under 20 minutes is
+frequent enough that the underlying test-isolation gap (see root cause
+above) may be worth actually fixing rather than continuing to document
+and retry -- flagged in `docs/BACKLOG.md` for whoever picks it up, rather
+than fixed reactively in this pass.
