@@ -5,7 +5,7 @@ import type {
   BatchReport,
   BatchSummary,
   BatchUpdate,
-  RecordDetail,
+  RecordAuditResponse,
   RecordSummary,
 } from '@/types';
 import { MetricsGrid } from '@/components/MetricsGrid';
@@ -25,7 +25,7 @@ function App() {
   const [updates, setUpdates] = useState<BatchUpdate[]>([]);
   const [live, setLive] = useState(false);
   const [drawerRecordId, setDrawerRecordId] = useState<string | null>(null);
-  const [drawerDetail, setDrawerDetail] = useState<RecordDetail | null>(null);
+  const [drawerDetail, setDrawerDetail] = useState<RecordAuditResponse | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -51,12 +51,12 @@ function App() {
 
     // Initial fetch
     const loadBatchData = async () => {
-      const [rpt, recs] = await Promise.all([
+      const [rpt, recsResponse] = await Promise.all([
         api.getBatchReport(activeBatchId),
         api.getBatchRecords(activeBatchId),
       ]);
       setReport(rpt);
-      setRecords(recs);
+      setRecords(recsResponse.records);
     };
     loadBatchData();
 
@@ -80,7 +80,7 @@ function App() {
   const handleSubmitBatch = useCallback(async () => {
     setSubmitting(true);
     try {
-      const { batch_id } = await api.submitBatch(80);
+      const { batch_id } = await api.submitBatch('dashboard-generated', 80);
       const list = await api.getBatches();
       setBatches(list);
       setActiveBatchId(batch_id);
@@ -164,7 +164,7 @@ function App() {
           <div className="card p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-4">Root Cause Distribution</h3>
             {report ? (
-              <DonutChart data={report.by_root_cause_bucket} />
+              <DonutChart data={report.by_root_cause} />
             ) : (
               <div className="h-[140px] animate-pulse bg-slate-50 rounded-lg" />
             )}
@@ -199,12 +199,16 @@ function App() {
             {report ? (
               <div className="space-y-4">
                 <div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-3xl font-bold text-slate-900">
-                      {(report.classification_accuracy_vs_ground_truth * 100).toFixed(1)}%
-                    </span>
-                    <span className="text-sm text-slate-400">vs ground truth</span>
-                  </div>
+                  {report.accuracy ? (
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-3xl font-bold text-slate-900">
+                        {(report.accuracy.overall_accuracy * 100).toFixed(1)}%
+                      </span>
+                      <span className="text-sm text-slate-400">vs ground truth</span>
+                    </div>
+                  ) : (
+                    <span className="text-sm text-slate-400">No ground truth for this batch</span>
+                  )}
                   <p className="text-xs text-slate-400 mt-1">
                     Measures how often the LLM classifier agrees with the true root cause.
                   </p>
@@ -213,19 +217,20 @@ function App() {
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-slate-500">Retry attempts</span>
                     <span className="text-sm font-semibold text-slate-700 tabular-nums">
-                      {report.by_intervention_type.retry.count}
+                      {report.by_intervention.ACTION_TYPE_RETRY?.attempt_count ?? 0}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-slate-500">Nudge attempts</span>
                     <span className="text-sm font-semibold text-slate-700 tabular-nums">
-                      {report.by_intervention_type.nudge.count}
+                      {(report.by_intervention.ACTION_TYPE_NUDGE_METHOD_UPDATE?.attempt_count ?? 0) +
+                        (report.by_intervention.ACTION_TYPE_NUDGE_REMINDER?.attempt_count ?? 0)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-slate-500">Escalations</span>
                     <span className="text-sm font-semibold text-slate-700 tabular-nums">
-                      {report.by_intervention_type.escalate.count}
+                      {report.by_intervention.ACTION_TYPE_ESCALATE?.attempt_count ?? 0}
                     </span>
                   </div>
                 </div>

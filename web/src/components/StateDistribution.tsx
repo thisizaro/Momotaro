@@ -1,4 +1,4 @@
-import { STATE_COLORS, STATE_DOT_COLORS, STATE_LABELS } from '@/lib/format';
+import { STATE_DOT_COLORS, STATE_LABELS } from '@/lib/format';
 import type { RecordState, RecordSummary } from '@/types';
 
 interface Props {
@@ -6,16 +6,28 @@ interface Props {
 }
 
 const STATE_ORDER: RecordState[] = [
-  'New',
-  'Scoring',
-  'RetryScheduled',
-  'Retrying',
-  'NudgeScheduled',
-  'Nudged',
-  'Recovered',
-  'Escalated',
-  'ClosedUneconomic',
+  'RECORD_STATE_NEW',
+  'RECORD_STATE_SCORING',
+  'RECORD_STATE_RETRY_SCHEDULED',
+  'RECORD_STATE_RETRYING',
+  'RECORD_STATE_NUDGE_SCHEDULED',
+  'RECORD_STATE_NUDGED',
+  'RECORD_STATE_RECOVERED',
+  'RECORD_STATE_ESCALATED',
+  'RECORD_STATE_CLOSED_UNECONOMIC',
 ];
+
+const STATE_FILL: Record<RecordState, string> = {
+  RECORD_STATE_NEW: '#cbd5e1',
+  RECORD_STATE_SCORING: '#f59e0b',
+  RECORD_STATE_RETRY_SCHEDULED: '#60a5fa',
+  RECORD_STATE_RETRYING: '#3b82f6',
+  RECORD_STATE_NUDGE_SCHEDULED: '#22d3ee',
+  RECORD_STATE_NUDGED: '#06b6d4',
+  RECORD_STATE_RECOVERED: '#10b981',
+  RECORD_STATE_ESCALATED: '#f43f5e',
+  RECORD_STATE_CLOSED_UNECONOMIC: '#94a3b8',
+};
 
 export function StateDistribution({ records }: Props) {
   const counts = STATE_ORDER.reduce((acc, s) => {
@@ -36,19 +48,7 @@ export function StateDistribution({ records }: Props) {
             <div
               key={state}
               className="transition-all duration-500"
-              style={{
-                width: `${pct}%`,
-                backgroundColor:
-                  state === 'Recovered' ? '#10b981' :
-                  state === 'Escalated' ? '#f43f5e' :
-                  state === 'ClosedUneconomic' ? '#94a3b8' :
-                  state === 'Retrying' ? '#3b82f6' :
-                  state === 'Nudged' ? '#06b6d4' :
-                  state === 'Scoring' ? '#f59e0b' :
-                  state === 'RetryScheduled' ? '#60a5fa' :
-                  state === 'NudgeScheduled' ? '#22d3ee' :
-                  '#cbd5e1',
-              }}
+              style={{ width: `${pct}%`, backgroundColor: STATE_FILL[state] }}
               title={`${STATE_LABELS[state]}: ${count}`}
             />
           );
@@ -67,3 +67,4 @@ export function StateDistribution({ records }: Props) {
     </div>
   );
 }
+

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronRight, Filter } from 'lucide-react';
-import { BUCKET_COLORS, BUCKET_LABELS, STATE_COLORS, STATE_LABELS, formatCurrency } from '@/lib/format';
-import type { RecordState, RecordSummary, RootCauseBucket } from '@/types';
+import { BUCKET_COLORS, BUCKET_LABELS, RECORD_TYPE_LABELS, STATE_COLORS, STATE_LABELS, formatCurrency } from '@/lib/format';
+import type { RecordSummary, RootCauseBucket } from '@/types';
 
 interface Props {
   records: RecordSummary[];
@@ -10,17 +10,27 @@ interface Props {
 
 type StateFilter = 'all' | 'in_flight' | 'terminal';
 
+const ALL_BUCKETS: RootCauseBucket[] = [
+  'ROOT_CAUSE_BUCKET_TRANSIENT_BANK',
+  'ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS',
+  'ROOT_CAUSE_BUCKET_HARD_DECLINE',
+  'ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED',
+  'ROOT_CAUSE_BUCKET_RISK_HOLD',
+  'ROOT_CAUSE_BUCKET_ABANDONMENT',
+  'ROOT_CAUSE_BUCKET_OVERDUE',
+];
+
 export function RecordsTable({ records, onSelect }: Props) {
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const [bucketFilter, setBucketFilter] = useState<RootCauseBucket | 'all'>('all');
 
   const filtered = records.filter((r) => {
     if (stateFilter === 'in_flight') {
-      if (['Recovered', 'Escalated', 'ClosedUneconomic'].includes(r.current_state)) return false;
+      if (['RECORD_STATE_RECOVERED', 'RECORD_STATE_ESCALATED', 'RECORD_STATE_CLOSED_UNECONOMIC'].includes(r.current_state)) return false;
     } else if (stateFilter === 'terminal') {
-      if (!['Recovered', 'Escalated', 'ClosedUneconomic'].includes(r.current_state)) return false;
+      if (!['RECORD_STATE_RECOVERED', 'RECORD_STATE_ESCALATED', 'RECORD_STATE_CLOSED_UNECONOMIC'].includes(r.current_state)) return false;
     }
-    if (bucketFilter !== 'all' && r.root_cause_bucket !== bucketFilter) return false;
+    if (bucketFilter !== 'all' && r.bucket !== bucketFilter) return false;
     return true;
   });
 
@@ -47,9 +57,11 @@ export function RecordsTable({ records, onSelect }: Props) {
                        focus:outline-none focus:ring-2 focus:ring-slate-200 cursor-pointer"
           >
             <option value="all">All causes</option>
-            <option value="transient">Transient</option>
-            <option value="hard_decline">Hard Decline</option>
-            <option value="risk_hold">Risk Hold</option>
+            {ALL_BUCKETS.map((bucket) => (
+              <option key={bucket} value={bucket}>
+                {BUCKET_LABELS[bucket]}
+              </option>
+            ))}
           </select>
         </div>
       </div>
@@ -69,23 +81,23 @@ export function RecordsTable({ records, onSelect }: Props) {
           <tbody>
             {filtered.slice(0, 100).map((r) => (
               <tr
-                key={r.id}
-                onClick={() => onSelect(r.id)}
+                key={r.record_id}
+                onClick={() => onSelect(r.record_id)}
                 className="border-b border-slate-50 hover:bg-slate-50/50 cursor-pointer transition-colors"
               >
                 <td className="px-5 py-2.5">
-                  <span className="text-sm font-mono text-slate-600">{r.id.slice(0, 8)}</span>
+                  <span className="text-sm font-mono text-slate-600">{r.record_id.slice(0, 8)}</span>
                 </td>
                 <td className="px-3 py-2.5">
-                  <span className="text-xs text-slate-500 capitalize">{r.type}</span>
+                  <span className="text-xs text-slate-500">{RECORD_TYPE_LABELS[r.type]}</span>
                 </td>
                 <td className="px-3 py-2.5 text-right">
-                  <span className="text-sm font-medium text-slate-700 tabular-nums">{formatCurrency(r.amount)}</span>
+                  <span className="text-sm font-medium text-slate-700 tabular-nums">{formatCurrency(r.amount_paise)}</span>
                 </td>
                 <td className="px-3 py-2.5">
                   <span className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: BUCKET_COLORS[r.root_cause_bucket] }} />
-                    <span className="text-xs text-slate-500">{BUCKET_LABELS[r.root_cause_bucket]}</span>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: BUCKET_COLORS[r.bucket] }} />
+                    <span className="text-xs text-slate-500">{BUCKET_LABELS[r.bucket]}</span>
                   </span>
                 </td>
                 <td className="px-3 py-2.5">

@@ -47,8 +47,8 @@ export function MetricsGrid({ report }: Props) {
       <MetricCard
         icon={CheckCircle2}
         label="Recovered"
-        value={formatCurrencyShort(report.recovered_amount)}
-        sublabel={`of ${formatCurrencyShort(report.at_risk_amount)} at risk`}
+        value={formatCurrencyShort(report.recovered_paise)}
+        sublabel={`of ${formatCurrencyShort(report.at_risk_paise)} at risk`}
         accent="text-slate-900"
         iconBg="bg-blue-50 text-blue-600"
       />
