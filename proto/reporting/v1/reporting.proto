@@ -73,6 +73,28 @@ message BatchReport {
   // data. Absent for real traffic, where there is no answer key.
   ClassificationAccuracy accuracy = 16;
   google.protobuf.Timestamp generated_at = 17;
+
+  // What a naive, un-diagnosed policy would have recovered on the same
+  // sealed ground truth (docs/PHASE5_IMPLEMENTATION.md Unit K). Computed
+  // analytically, not by re-running the batch. Same presence rule as
+  // accuracy: present only once GROUND_TRUTH exists for this batch, never
+  // present zeroed-out.
+  BaselineComparison baseline_comparison = 18;
+}
+
+// A fixed naive policy (retry every record up to 3x, nudge every record
+// once, no economics, no guardrails beyond a hard attempt cap) evaluated
+// against the same GROUND_TRUTH the real batch ran against, so "measured
+// money recovered" has a comparison point instead of standing alone.
+message BaselineComparison {
+  string policy_name = 1;
+  int64 gross_recovered_paise = 2;
+  int64 intervention_spend_paise = 3;
+  int64 net_recovered_paise = 4;
+  // The honesty caveat, verbatim, carried on the wire so it cannot be
+  // dropped between here and a dashboard tile: both figures are evaluated
+  // in a world we authored, this is not a claim about real recovered money.
+  string note = 5;
 }
 
 message BucketStats {
