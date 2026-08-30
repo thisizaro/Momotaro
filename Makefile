@@ -125,6 +125,17 @@ run-world-simulator:
 run-notification-simulator:
 	GRPC_PORT=9204 METRICS_PORT=9205 go run ./demo/notification-simulator/cmd
 
+COUNT  ?= 100
+SOURCE ?= synthetic-demo
+SEED   ?=
+
+## batchgen: seed a synthetic batch with hidden ground truth, straight into
+## Postgres and raw.events (override with COUNT=n SOURCE=name SEED=n).
+## Requires the stack up (make up) and decision-engine et al. already
+## running (make run-<service>) to actually process what this seeds.
+batchgen:
+	go run ./scripts/batchgen -count $(COUNT) -source $(SOURCE) $(if $(SEED),-seed $(SEED),)
+
 ## up: start local infra (postgres, redis, kafka, kafka ui)
 up:
 	docker compose up -d
@@ -182,4 +193,4 @@ docker-build:
         vet fmt check up up-observability down down-clean migrate-up migrate-status \
         docker-build run-ingestion run-classifier run-executor run-audit \
         run-decision-engine run-api-gateway run-reporting run-world-simulator \
-        run-notification-simulator
+        run-notification-simulator batchgen
