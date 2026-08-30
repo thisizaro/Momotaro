@@ -27,12 +27,13 @@ import (
 
 // stack is a running pipeline: the addresses a test needs, and nothing else.
 type stack struct {
-	gatewayHTTP  string // host:port for the public HTTP API
-	auditAddr    string // host:port for Audit's gRPC
-	executorAddr string // host:port for Executor's gRPC
-	topic        string // this stack's isolated raw.events topic
-	dlqTopic     string
-	auditTopic   string // this stack's isolated audit.events topic
+	gatewayHTTP   string // host:port for the public HTTP API
+	auditAddr     string // host:port for Audit's gRPC
+	executorAddr  string // host:port for Executor's gRPC
+	reportingAddr string // host:port for Reporting's gRPC
+	topic         string // this stack's isolated raw.events topic
+	dlqTopic      string
+	auditTopic    string // this stack's isolated audit.events topic
 
 	// Decision Engine restart support (Unit K, docs/PHASE2_IMPLEMENTATION.md):
 	// everything needed to kill the running process and start an
@@ -126,6 +127,7 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 	ingestionBin := buildBinary(t, root, binDir, "services", "ingestion")
 	decisionEngineBin := buildBinary(t, root, binDir, "services", "decision-engine")
 	apiGatewayBin := buildBinary(t, root, binDir, "services", "api-gateway")
+	reportingBin := buildBinary(t, root, binDir, "services", "reporting")
 	// Phase 5 Units C/D: Executor no longer has an in-process stub for
 	// either port, it dials these two for real, so the harness must run
 	// them too or Executor's own required config fails fast at startup.
@@ -141,6 +143,7 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 	deGRPCPort, deMetrics := freePort(t), freePort(t) // also World Simulator's ReportDelayedOutcome callback target
 	gwPort, gwMetrics := freePort(t), freePort(t)
 	gwHTTPPort := freePort(t)
+	reportingPort, reportingMetrics := freePort(t), freePort(t)
 	worldSimPort, worldSimMetrics := freePort(t), freePort(t)
 	notificationSimPort, notificationSimMetrics := freePort(t), freePort(t)
 
@@ -159,6 +162,7 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 	s.auditAddr = fmt.Sprintf("127.0.0.1:%d", auditPort)
 	s.executorAddr = executorAddr
 	s.gatewayHTTP = fmt.Sprintf("127.0.0.1:%d", gwHTTPPort)
+	s.reportingAddr = fmt.Sprintf("127.0.0.1:%d", reportingPort)
 
 	procs = append(procs, startProcess(t, "classifier", classifierBin, merge(commonEnv(classifierPort, classifierMetrics), classifierEnv)))
 	// World Simulator and Notification Simulator start before Executor:
@@ -176,10 +180,18 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 	procs = append(procs, startProcess(t, "ingestion", ingestionBin, merge(commonEnv(ingestionPort, ingestionMetrics), map[string]string{
 		"RAW_EVENTS_TOPIC": s.topic,
 	})))
+	// Consumer group isolated the same way s.auditTopic itself already is:
+	// a fresh group per stack means a leftover committed offset from an
+	// earlier run's now-dropped topic can never be mistaken for this
+	// stack's own progress (docs/INCIDENTS.md).
+	procs = append(procs, startProcess(t, "reporting", reportingBin, merge(commonEnv(reportingPort, reportingMetrics), map[string]string{
+		"AUDIT_EVENTS_TOPIC":          s.auditTopic,
+		"AUDIT_EVENTS_CONSUMER_GROUP": "e2e-reporting-" + uuid.NewString(),
+	})))
 
 	readyCtx, readyCancel := context.WithTimeout(ctx, startupWindow)
 	defer readyCancel()
-	for _, addr := range []string{classifierAddr, worldSimAddr, notificationSimAddr, executorAddr, s.auditAddr, ingestionAddr} {
+	for _, addr := range []string{classifierAddr, worldSimAddr, notificationSimAddr, executorAddr, s.auditAddr, ingestionAddr, s.reportingAddr} {
 		if err := waitForTCP(readyCtx, addr); err != nil {
 			t.Fatalf("service did not become ready: %v", err)
 		}
@@ -217,6 +229,8 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 
 	procs = append(procs, startProcess(t, "api-gateway", apiGatewayBin, merge(commonEnv(gwPort, gwMetrics), map[string]string{
 		"INGESTION_ADDR": ingestionAddr,
+		"REPORTING_ADDR": s.reportingAddr,
+		"AUDIT_ADDR":     s.auditAddr,
 		"API_KEY":        apiKey,
 		"HTTP_PORT":      strconv.Itoa(gwHTTPPort),
 		"CALL_TIMEOUT":   "5s",

@@ -11,8 +11,10 @@ import (
 	"strconv"
 	"time"
 
+	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
+	reportingv1 "github.com/thisizaro/Momotaro/proto/gen/reporting/v1"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -20,6 +22,8 @@ import (
 // Handler serves the Gateway's HTTP routes.
 type Handler struct {
 	ingestion   ingestionv1.IngestionServiceClient
+	reporting   reportingv1.ReportingServiceClient
+	audit       auditv1.AuditServiceClient
 	apiKey      string
 	callTimeout time.Duration
 	limiter     *rate.Limiter // nil means rate limiting is disabled
@@ -34,8 +38,8 @@ type Handler struct {
 // on, section 17 again: this system has no concept of a "user"). Either
 // value <= 0 disables rate limiting entirely, useful for tests and for local
 // development against a single caller.
-func New(ingestion ingestionv1.IngestionServiceClient, apiKey string, callTimeout time.Duration, rateLimitRPS float64, rateLimitBurst int) *Handler {
-	h := &Handler{ingestion: ingestion, apiKey: apiKey, callTimeout: callTimeout}
+func New(ingestion ingestionv1.IngestionServiceClient, reporting reportingv1.ReportingServiceClient, audit auditv1.AuditServiceClient, apiKey string, callTimeout time.Duration, rateLimitRPS float64, rateLimitBurst int) *Handler {
+	h := &Handler{ingestion: ingestion, reporting: reporting, audit: audit, apiKey: apiKey, callTimeout: callTimeout}
 	if rateLimitRPS > 0 && rateLimitBurst > 0 {
 		h.limiter = rate.NewLimiter(rate.Limit(rateLimitRPS), rateLimitBurst)
 	}
@@ -44,12 +48,28 @@ func New(ingestion ingestionv1.IngestionServiceClient, apiKey string, callTimeou
 
 // Routes returns the Gateway's HTTP handler. Rate limiting applies first, so
 // an over-limit caller cannot even reach the auth check, then auth, on every
-// route.
+// route except one.
+//
+// WS /v1/batches/{batch_id}/live is deliberately outside withAuth: a
+// browser's WebSocket handshake cannot set a custom header, so X-API-Key
+// does not apply there (docs/API_GATEWAY.md gap 5). That route checks the
+// negotiated WebSocket subprotocol itself, inside liveUpdates.
 func (h *Handler) Routes() http.Handler {
+	authenticated := http.NewServeMux()
+	authenticated.HandleFunc("POST /v1/batches", h.submitBatch)
+	authenticated.HandleFunc("POST /v1/webhooks/payment-failed", h.submitEvent)
+	authenticated.HandleFunc("GET /v1/batches", h.listBatches)
+	authenticated.HandleFunc("GET /v1/batches/{batch_id}/report", h.getBatchReport)
+	authenticated.HandleFunc("GET /v1/batches/{batch_id}/records", h.listBatchRecords)
+	authenticated.HandleFunc("GET /v1/records/{record_id}/audit", h.getRecordAudit)
+	authenticated.HandleFunc("GET /v1/batches/{batch_id}/invariants", h.verifyInvariantsForBatch)
+	authenticated.HandleFunc("GET /v1/invariants", h.verifyInvariantsSystemWide)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/batches", h.submitBatch)
-	mux.HandleFunc("POST /v1/webhooks/payment-failed", h.submitEvent)
-	return h.withRateLimit(h.withAuth(mux))
+	mux.Handle("/", h.withAuth(authenticated))
+	mux.HandleFunc("GET /v1/batches/{batch_id}/live", h.liveUpdates)
+
+	return h.withRateLimit(mux)
 }
 
 func (h *Handler) withRateLimit(next http.Handler) http.Handler {

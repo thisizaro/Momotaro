@@ -662,11 +662,10 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       server-streaming gRPC method
       → `PRD.md` §8, §9, §2b, `ARCHITECTURE.md` §10, §6a,
       `docs/PHASE5_IMPLEMENTATION.md` Unit F
-- [ ] API Gateway: report/records/audit GET routes plus a WebSocket relay
-      (`WS /v1/batches/{batch_id}/live`) wired to `StreamBatchUpdates`.
-      Also needs a `GET /v1/batches` list endpoint the dashboard already
-      calls but `docs/API_GATEWAY.md` never specs — add and document it
-      here, not a separate item → `ARCHITECTURE.md` §6a,
+- [x] API Gateway: report/records/audit GET routes plus a WebSocket relay
+      (`WS /v1/batches/{batch_id}/live`) wired to `StreamBatchUpdates`, plus
+      the `GET /v1/batches` list endpoint (backed by a new `ListBatches` RPC
+      on Ingestion, its own proto PR first) → `ARCHITECTURE.md` §6a,
       `docs/API_GATEWAY.md`, `docs/PHASE5_IMPLEMENTATION.md` Unit G
 - [ ] **[FRONTEND]** Dashboard: recovered amount/rate, record table, one
       record's audit drill-down, live feed, built only against
