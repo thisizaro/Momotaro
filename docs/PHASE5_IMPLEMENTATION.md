@@ -32,7 +32,7 @@ scope from the checklist alone.
 | H | Dashboard: wire to real Gateway | not started | G |
 | I | Razorpay's real error codes as the failure vocabulary | merged | nothing |
 | J | Compliance guardrails (TRAI contact hours, RBI mandate lead time) | merged | nothing |
-| K | Baseline comparison in Reporting | not started | F |
+| K | Baseline comparison in Reporting | merged | F |
 | L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
 | M | Persist EV candidate ranking + guardrail refusal reasons | merged | nothing |
 | N | Correct three stale claims in checked-in files | merged | nothing |
@@ -1007,7 +1007,8 @@ until `StreamBatchUpdates` also lands, per its own Definition of Done.
 
 ## Unit K: baseline comparison in Reporting
 
-**Status**: not started. **Depends on**: F. **Rough size**: 3 to 4 hours.
+**Status**: merged. **Depends on**: F. **Rough size**: 3 to 4 hours, as
+estimated.
 
 **What it is**: "measured money recovered" is a number. "Measured money
 recovered, versus what a conventional policy would have recovered on the same
@@ -1052,6 +1053,94 @@ knowing before a judge finds it. Also worth having ready as a closing line:
 "a 5-percentage-point improvement translates to ₹5 lakhs in recovered revenue
 for every ₹1 crore in monthly GMV", which converts a rate delta into rupees at
 merchant scale, with their citation.
+
+**Design, as built**: a proto-only PR first (#62, `BatchReport
+.baseline_comparison` and the new `BaselineComparison` message, matching
+`docs/API_GATEWAY.md`'s already-specced shape field for field), merged
+before the Reporting-service PR that depends on it, per `AGENTS.md`'s "a
+proto change is always its own PR" rule.
+
+The naive policy is genuinely blind, on purpose: it retries every record
+up to 3 times, stopping the moment one succeeds (a real competing system
+still knows when a payment cleared — that is not "economics", it is not
+re-presenting money already collected), then, only if all three retries
+failed, sends exactly one generic reminder nudge. Crucially, it does this
+for **every** record regardless of bucket, including `RISK_HOLD` and
+`HARD_DECLINE`, whose priors are near zero for a reason: the naive policy
+has no diagnosis step to know that, which is the entire point of the
+comparison.
+
+Two modelling choices this design left open, resolved and documented in
+`services/reporting/internal/server/baseline.go`:
+- **The naive policy's one nudge is `NUDGE_REMINDER`, not
+  `NUDGE_METHOD_UPDATE`.** A truly undiagnosed system sends a generic
+  "please pay" message, not a targeted "please update your card" ask —
+  that specificity would itself be a diagnosis. Concretely, this means the
+  naive nudge only gets credit (`recovery_probability` instead of
+  `wrong_action_probability`) on `ABANDONMENT`/`OVERDUE`, whose real
+  correct action already is `NUDGE_REMINDER`; on `HARD_DECLINE`/
+  `USER_ACTION_NEEDED` it is scored as wrong, same as the naive retries.
+- **The naive nudge's channel cost is SMS (25 paise)**, mirroring
+  `services/executor/internal/ports/cost.go`'s own fallback default for an
+  unspecified channel: a naive/generic system has no reason to prefer the
+  cheaper WhatsApp rate.
+
+**Computed in expectation, not by dice roll**: since this evaluates the
+policy analytically rather than re-running the batch, "probability of
+recovery" is the number itself (`evaluateNaivePolicy`), not something
+sampled. Each of the up-to-4 attempts is modelled as an independent
+Bernoulli trial, matching World Simulator's own "each call re-rolls
+independently, nothing remembers a prior attempt's result" semantics
+(`demo/world-simulator/internal/server/outcome.go`) — just summed to an
+expectation instead of rolled. Every attempt, successful or not, is
+charged its fixed direct cost (retry and SMS are both charged win or
+lose), and the whole batch's gross/spend are summed as floats and rounded
+**once** at the end, not per record, so fractional-paise rounding cannot
+visibly drift across a large batch.
+
+**A third checked-in copy of the same two cost numbers, guarded the same
+way as the second**: `naiveRetryCostPaise`/`naiveNudgeCostPaise` cannot
+import `services/executor/internal/ports` (cross-service import is a
+compile error), so they are literal constants, same duplication precedent
+as `demo/world-simulator/internal/server/bucket.go`'s `correctActionFor`.
+`cost_reconciliation_test.go` mirrors the Executor's own drift guard
+(`services/executor/internal/ports/cost_reconciliation_test.go`) almost
+line for line, scanning `configs/intervention_costs.yaml` directly rather
+than adding a YAML library dependency for two integers.
+
+**Adversarially verified twice**: flipped `RISK_HOLD`'s `correctActionFor`
+entry to `RETRY` (wrong on purpose) and confirmed both
+`TestEvaluateNaivePolicyRiskHoldSpendsForNearZeroRecovery` and
+`TestBaselineComparisonSumsAndRoundsOnceAcrossRows` went red for the
+expected reason; separately set `naiveNudgeCostPaise` to a wrong literal
+and confirmed `TestReportingCostsMatchInterventionCostsYAML` caught the
+drift. Both reverted, confirmed green.
+
+**Verified live against the real running service**: seeded a two-record
+batch directly in Postgres (one `TRANSIENT_BANK` record with
+`recovery_probability=0.8`, one `RISK_HOLD` record with
+`recovery_probability=0.05`/`wrong_action_probability=0.0`, matching this
+unit's own hand-computed unit-test cases), called `GetBatchReport` against
+the real running `services/reporting` binary over gRPC, and confirmed the
+response matched the hand-computed numbers exactly
+(`gross_recovered_paise=99240`, `intervention_spend_paise=131`,
+`net_recovered_paise=99109`) and that `requests_total{method=".../
+GetBatchReport"}` incremented on `/metrics`.
+
+**`baseline_comparison` follows the same presence rule as `accuracy`**:
+absent (not zeroed) when the batch has no `GROUND_TRUTH`, proven by
+`TestGetBatchReportOmitsBaselineComparisonWithoutGroundTruth`, so a
+dashboard cannot mistake "no answer key" for "a naive policy would have
+recovered nothing".
+
+**Not done in this pass, and not required by this unit's own scope**: the
+`baseline_comparison` tile itself is UI (Unit L / the frontend track), not
+this unit's job — the backend contract is what Unit K owed. Unit G (the
+Gateway's report route) has not been built yet at all, so there is no
+existing passthrough to update; whoever builds Unit G will find
+`baseline_comparison` already on `BatchReport` and need to do nothing
+extra for it, since `docs/API_GATEWAY.md`'s spec (written before this
+unit) already names the field.
 
 ## Unit L: surface what is already stored but invisible
 

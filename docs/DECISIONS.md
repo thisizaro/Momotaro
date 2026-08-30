@@ -1500,3 +1500,46 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   ground-truth-free in ways neither this unit's own tests nor its live
   verification would ever exercise, because they never ran the existing
   test suite that did.
+- 2026-08-30: **Reporting's baseline comparison (Phase 5 Unit K) evaluates
+  the naive policy analytically, in expectation, not by sampling.** Since
+  `GROUND_TRUTH.recovery_probability`/`wrong_action_probability` already
+  are probabilities and no run-time randomness is needed, each of the
+  naive policy's up to 4 attempts (3 retries, stopping at first success,
+  then one nudge if all three failed) is modelled as an independent
+  Bernoulli trial and summed to an expected recovered amount and an
+  expected spend, matching World Simulator's own "each call re-rolls
+  independently" semantics (`demo/world-simulator/internal/server/
+  outcome.go`) without needing a `randSource` or a seed. The whole batch's
+  gross/spend are summed as floats and rounded once at the end, not per
+  record, so fractional-paise rounding cannot visibly drift on a large
+  batch.
+  **Two modelling choices were open and are now settled**: the naive
+  policy's one nudge is `NUDGE_REMINDER`, not `NUDGE_METHOD_UPDATE`
+  (a generic "please pay" message is what an undiagnosed system sends; a
+  targeted "update your card" ask would itself be a diagnosis this policy
+  deliberately lacks), and its channel cost is SMS, mirroring
+  `services/executor/internal/ports/cost.go`'s own default for an
+  unspecified channel. Both are named explicitly in
+  `services/reporting/internal/server/baseline.go` rather than left
+  implicit, since either choice measurably changes which buckets the naive
+  policy gets "credit" for.
+  **A third checked-in copy of the retry/SMS cost constants** now exists
+  (`services/reporting/internal/server/baseline.go`'s
+  `naiveRetryCostPaise`/`naiveNudgeCostPaise`), alongside the Decision
+  Engine's YAML read and the Executor's own literal copy
+  (`services/executor/internal/ports/cost.go`), because a cross-service
+  import of `ports` is a compile error. Guarded by
+  `TestReportingCostsMatchInterventionCostsYAML`, mirroring the Executor's
+  own `cost_reconciliation_test.go` almost line for line.
+  **The proto change shipped as its own PR (#62), merged before the
+  Reporting PR that depends on it**, per `AGENTS.md`'s standing rule; both
+  the message shape and the JSON example already existed in
+  `docs/API_GATEWAY.md` from Unit O, written before either PR, so neither
+  needed a design decision at implementation time, only building to what
+  was already specced.
+  **Verified live**: seeded a two-record batch directly in Postgres (one
+  `TRANSIENT_BANK`, one `RISK_HOLD`, the same values as the hand-computed
+  unit tests) and called the real running `services/reporting` binary over
+  gRPC; the response matched the hand-computed numbers exactly
+  (gross 99240, spend 131, net 99109 paise) and `requests_total` on
+  `/metrics` incremented for the call.
