@@ -35,6 +35,14 @@ func (f *fakeIngestion) SubmitEvent(ctx context.Context, in *ingestionv1.SubmitE
 	return f.eventResp, f.eventErr
 }
 
+// ListBatches: proto-only stub for this PR (docs/PHASE5_IMPLEMENTATION.md
+// Unit G adds the real route and its own tests). Exists only so
+// *fakeIngestion keeps satisfying ingestionv1.IngestionServiceClient now
+// that the interface has a third method.
+func (f *fakeIngestion) ListBatches(ctx context.Context, in *ingestionv1.ListBatchesRequest, opts ...grpc.CallOption) (*ingestionv1.ListBatchesResponse, error) {
+	return &ingestionv1.ListBatchesResponse{}, nil
+}
+
 func newHandler(f *fakeIngestion) http.Handler {
 	return New(f, testAPIKey, 2*time.Second, 0, 0).Routes()
 }

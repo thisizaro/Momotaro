@@ -27,6 +27,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	IngestionService_SubmitEvent_FullMethodName = "/momotaro.ingestion.v1.IngestionService/SubmitEvent"
 	IngestionService_SubmitBatch_FullMethodName = "/momotaro.ingestion.v1.IngestionService/SubmitBatch"
+	IngestionService_ListBatches_FullMethodName = "/momotaro.ingestion.v1.IngestionService/ListBatches"
 )
 
 // IngestionServiceClient is the client API for IngestionService service.
@@ -37,6 +38,10 @@ type IngestionServiceClient interface {
 	SubmitEvent(ctx context.Context, in *SubmitEventRequest, opts ...grpc.CallOption) (*SubmitEventResponse, error)
 	// Demo and backfill path: many records at once, grouped under one batch.
 	SubmitBatch(ctx context.Context, in *SubmitBatchRequest, opts ...grpc.CallOption) (*SubmitBatchResponse, error)
+	// Backs GET /v1/batches (docs/API_GATEWAY.md): picking a specific,
+	// already-seeded batch out of several. On Ingestion, not Reporting: this
+	// service already owns the BATCH table and writes every row in it.
+	ListBatches(ctx context.Context, in *ListBatchesRequest, opts ...grpc.CallOption) (*ListBatchesResponse, error)
 }
 
 type ingestionServiceClient struct {
@@ -67,6 +72,16 @@ func (c *ingestionServiceClient) SubmitBatch(ctx context.Context, in *SubmitBatc
 	return out, nil
 }
 
+func (c *ingestionServiceClient) ListBatches(ctx context.Context, in *ListBatchesRequest, opts ...grpc.CallOption) (*ListBatchesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBatchesResponse)
+	err := c.cc.Invoke(ctx, IngestionService_ListBatches_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IngestionServiceServer is the server API for IngestionService service.
 // All implementations must embed UnimplementedIngestionServiceServer
 // for forward compatibility.
@@ -75,6 +90,10 @@ type IngestionServiceServer interface {
 	SubmitEvent(context.Context, *SubmitEventRequest) (*SubmitEventResponse, error)
 	// Demo and backfill path: many records at once, grouped under one batch.
 	SubmitBatch(context.Context, *SubmitBatchRequest) (*SubmitBatchResponse, error)
+	// Backs GET /v1/batches (docs/API_GATEWAY.md): picking a specific,
+	// already-seeded batch out of several. On Ingestion, not Reporting: this
+	// service already owns the BATCH table and writes every row in it.
+	ListBatches(context.Context, *ListBatchesRequest) (*ListBatchesResponse, error)
 	mustEmbedUnimplementedIngestionServiceServer()
 }
 
@@ -90,6 +109,9 @@ func (UnimplementedIngestionServiceServer) SubmitEvent(context.Context, *SubmitE
 }
 func (UnimplementedIngestionServiceServer) SubmitBatch(context.Context, *SubmitBatchRequest) (*SubmitBatchResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SubmitBatch not implemented")
+}
+func (UnimplementedIngestionServiceServer) ListBatches(context.Context, *ListBatchesRequest) (*ListBatchesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListBatches not implemented")
 }
 func (UnimplementedIngestionServiceServer) mustEmbedUnimplementedIngestionServiceServer() {}
 func (UnimplementedIngestionServiceServer) testEmbeddedByValue()                          {}
@@ -148,6 +170,24 @@ func _IngestionService_SubmitBatch_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IngestionService_ListBatches_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBatchesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IngestionServiceServer).ListBatches(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IngestionService_ListBatches_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IngestionServiceServer).ListBatches(ctx, req.(*ListBatchesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IngestionService_ServiceDesc is the grpc.ServiceDesc for IngestionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -162,6 +202,10 @@ var IngestionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitBatch",
 			Handler:    _IngestionService_SubmitBatch_Handler,
+		},
+		{
+			MethodName: "ListBatches",
+			Handler:    _IngestionService_ListBatches_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
