@@ -181,22 +181,18 @@ reported, never silently dropped. Every subsequent call scopes to
 
 ### `GET /v1/batches`
 
-**New, closes gap 1. Not yet backed** (needs a new `ListBatches` RPC). Put
-it on **Ingestion, not Reporting**: Ingestion already owns the `batch` table,
+**Closes gap 1. Backed** (Phase 5 Unit G): `ListBatches` lives on
+**Ingestion, not Reporting**, since Ingestion already owns the `batch` table,
 already writes every row in it (`services/ingestion/internal/server/store.go`),
-and already has a live Postgres connection, whereas `services/reporting` is
-still a stub. Gating a list-of-batches route behind a service that does not
-exist yet would make this route wait on the largest unbuilt unit in the
-phase for no reason. Add the RPC in Unit G's own proto PR, not here.
+and already keeps `total_records` accurate on every write, so no second
+aggregate query is needed. The proto landed in its own PR (#68) before this
+route's implementation (#69), per this repo's proto-first convention.
 
-**While this route is unbacked, the primary demo flow does not need it.**
+This route backs the *other* flow, distinct from the primary demo flow:
 `POST /v1/batches` already returns the new batch's `batch_id` directly, so
-generating and watching one batch never depends on listing batches at all.
-This route exists for the *other* flow, picking a specific, already-seeded
-batch (typically one made with `scripts/batchgen`, so it carries ground
-truth) out of several. Until it is backed, that flow has no route to call;
-say so on screen (e.g. a disabled "browse batches" control with a
-tooltip), don't leave it as a silent, permanent skeleton loader.
+generating and watching one batch never depended on listing batches at all.
+This one is for picking a specific, already-seeded batch (typically one made
+with `scripts/batchgen`, so it carries ground truth) out of several.
 
 Lists batches newest first, so a "pick the most recent one" default has
 something real to select.
@@ -357,11 +353,11 @@ that adds `ListBatches` and `count`, not here.
 
 ### `GET /v1/batches/{batch_id}/invariants` and `GET /v1/invariants`
 
-**New, closes part of Unit L. Not yet backed** (needs a Gateway route calling
-the already-implemented `Audit.VerifyInvariants`; no proto change required,
-the RPC exists today). The batch-scoped route passes `batch_id`; the
-unscoped one checks the whole system, mirroring the RPC's own "empty
-`batch_id` means everything" rule.
+**Closes part of Unit L. Backed** (Phase 5 Unit G): a thin Gateway route
+calling `Audit.VerifyInvariants`, no proto change needed since the RPC
+already existed. The batch-scoped route passes `batch_id`; the unscoped one
+checks the whole system, mirroring the RPC's own "empty `batch_id` means
+everything" rule.
 
 Response, mirrors `audit.v1.VerifyInvariantsResponse` exactly:
 ```json
@@ -382,10 +378,12 @@ Streams incremental updates as records change state, so the dashboard can
 fill in live instead of polling. Internally, the Gateway relays this from
 Reporting Service's server-streaming gRPC method (`StreamBatchUpdates`, see
 `ARCHITECTURE.md` section 6a), the browser never knows gRPC or Kafka exist.
-**Not yet backed** (Reporting doesn't exist yet); scheduled last in Phase 5
-since the dashboard's own 2-second report refetch already drives every
-aggregate on screen, this feeds only the scrolling live-event log
-(`docs/PRD.md` section 12a).
+**Backed** (Phase 5 Unit G, built last as originally scheduled, once
+Reporting's `StreamBatchUpdates` existed from Unit F). The dashboard's own
+2-second report refetch already drives every aggregate on screen, so this
+feeds only the scrolling live-event log (`docs/PRD.md` section 12a). Uses
+`github.com/coder/websocket`, a minimal RFC-6455 library, chosen since it
+was already resolved in the module graph and needs no extra footprint.
 
 **Auth, closes gap 5**: a browser's WebSocket handshake cannot set a custom
 header, so `X-API-Key` does not apply here. The key is sent as a

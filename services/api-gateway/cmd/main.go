@@ -22,7 +22,9 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	"github.com/thisizaro/Momotaro/internal/platform/metrics"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
+	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
+	reportingv1 "github.com/thisizaro/Momotaro/proto/gen/reporting/v1"
 	"github.com/thisizaro/Momotaro/services/api-gateway/internal/httpapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -34,6 +36,8 @@ const serviceName = "api-gateway"
 type serviceConfig struct {
 	config.Common
 	IngestionAddr  string
+	ReportingAddr  string
+	AuditAddr      string
 	APIKey         string
 	HTTPPort       int
 	CallTimeout    time.Duration
@@ -46,6 +50,8 @@ func loadConfig() (serviceConfig, error) {
 	cfg := serviceConfig{
 		Common:        config.LoadCommon(l, serviceName),
 		IngestionAddr: l.Str("INGESTION_ADDR"),
+		ReportingAddr: l.Str("REPORTING_ADDR"),
+		AuditAddr:     l.Str("AUDIT_ADDR"),
 		APIKey:        l.Str("API_KEY"),
 		HTTPPort:      l.Port("HTTP_PORT", 8090),
 		CallTimeout:   l.Duration("CALL_TIMEOUT", 5*time.Second),
@@ -93,7 +99,27 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	defer ingestionConn.Close()
 
-	handler := httpapi.New(ingestionv1.NewIngestionServiceClient(ingestionConn), cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
+	reportingConn, err := grpc.NewClient(cfg.ReportingAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(interceptors.UnaryClientDefaultDeadline(cfg.CallTimeout)))
+	if err != nil {
+		return fmt.Errorf("dial reporting at %s: %w", cfg.ReportingAddr, err)
+	}
+	defer reportingConn.Close()
+
+	auditConn, err := grpc.NewClient(cfg.AuditAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(interceptors.UnaryClientDefaultDeadline(cfg.CallTimeout)))
+	if err != nil {
+		return fmt.Errorf("dial audit at %s: %w", cfg.AuditAddr, err)
+	}
+	defer auditConn.Close()
+
+	handler := httpapi.New(
+		ingestionv1.NewIngestionServiceClient(ingestionConn),
+		reportingv1.NewReportingServiceClient(reportingConn),
+		auditv1.NewAuditServiceClient(auditConn),
+		cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
 
 	// api-gateway has no inbound gRPC server to instrument (it is an HTTP
 	// edge with only outbound gRPC clients), so this exposes Go/process

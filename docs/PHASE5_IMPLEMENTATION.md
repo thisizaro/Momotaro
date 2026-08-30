@@ -28,12 +28,12 @@ scope from the checklist alone.
 | D | Executor: wire real World/Notification Simulator clients | merged | C |
 | E | Hinglish nudge composition (Classifier) | merged | A (for the caller; the Classifier-side work itself is independent) |
 | F | Reporting Service | merged | nothing strictly, more useful once B/C produce real data |
-| G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
+| G | API Gateway: report/records/audit routes + WebSocket relay | merged | F |
 | H | Dashboard: wire to real Gateway | not started | G |
 | I | Razorpay's real error codes as the failure vocabulary | merged | nothing |
 | J | Compliance guardrails (TRAI contact hours, RBI mandate lead time) | merged | nothing |
 | K | Baseline comparison in Reporting | merged | F |
-| L | Surface stored-but-invisible decision provenance | not started | G (routes), H (UI) |
+| L | Surface stored-but-invisible decision provenance | not started (routes now available, G merged) | G (routes, done), H (UI) |
 | M | Persist EV candidate ranking + guardrail refusal reasons | merged | nothing |
 | N | Correct three stale claims in checked-in files | merged | nothing |
 | **O** | **Freeze the API Gateway contract** | **merged** | **nothing. Blocked G, H and the whole frontend track. Done first.** |
@@ -326,6 +326,9 @@ order, found:
    that already require a `batch_id` you'd need to have discovered some
    other way. Needs resolving when Unit G is picked up: add the endpoint
    and document it, or change the dashboard's discovery flow.
+   **Resolved in Unit G**: `GET /v1/batches` is specced in
+   `docs/API_GATEWAY.md` and backed by a new `ListBatches` RPC on
+   Ingestion, see Unit G below.
 6. **Unit B and Phase 6's `scripts/loadgen` are different tools.**
    `loadgen` submits via the real HTTP API for throughput testing and can
    never carry ground truth (Ingestion's API has no such field); Unit B
@@ -1057,10 +1060,12 @@ in `docs/BACKLOG.md` if Unit M does not end up covering it.
 
 ## Unit F: Reporting Service
 
-**Status**: in progress. `GetBatchReport` and `ListBatchRecords` merged;
-`StreamBatchUpdates` deferred. **Depends on**: nothing strictly, more
+**Status**: merged. `GetBatchReport` and `ListBatchRecords` landed first;
+`StreamBatchUpdates` followed in a second PR once its `audit.events`
+publisher prerequisite was closed. **Depends on**: nothing strictly, more
 useful once B/C produce real data. **Rough size**: half a day for the
-unary half, done; streaming is its own, more expensive unit.
+unary half; streaming (plus its Kafka-publisher prerequisite) was its own,
+more expensive follow-up.
 
 **What it is**: the one clause the rubric audit found completely
 unimplemented ("measured money recovered across a batch"). Mirrors
@@ -1231,6 +1236,148 @@ e2e test is the more complete version of the same proof this unit already
 gave manually. Tracked here rather than silently skipped: Unit G's e2e
 work should add Reporting to the harness once, not have this unit add it
 first only to extend it again.
+**Done in Unit G**: `test/e2e/harness_test.go` now starts Reporting as its
+eighth binary, and `TestGatewayReportRoutesAndLiveRelay` is exactly that
+submit-batch-and-watch-the-WebSocket test, see Unit G below.
+
+## Unit G: API Gateway report/records/audit/invariants routes and the live WebSocket relay
+
+**Status**: merged. **Depends on**: F (Reporting must exist and expose
+`StreamBatchUpdates`), K (`baseline_comparison` on `BatchReport`).
+**Rough size**: about a day, split into three PRs.
+
+**What it is**: the Gateway-side half of every route `docs/API_GATEWAY.md`
+still marked **not yet backed**: `GET /v1/batches`, `GET /v1/batches/{id}
+/report`, `GET /v1/batches/{id}/records`, `GET /v1/records/{id}/audit`,
+`GET /v1/batches/{id}/invariants` and `GET /v1/invariants`, and
+`WS /v1/batches/{id}/live`. Everything the Gateway needed to call already
+existed (Ingestion's records/batch handling, Reporting from Unit F, Audit's
+`GetRecordAudit`/`VerifyInvariants`); this unit is entirely translation —
+gRPC in, the frozen JSON shape out — plus one small new RPC (`ListBatches`)
+that `docs/API_GATEWAY.md` had already specced but nothing backed yet.
+
+**Split into three PRs, each its own service or concern**, per this repo's
+own branching convention (`AGENTS.md`: "Keep PRs small and frequent, one
+service, one concern") and the friction from touching three services in one
+PR during Unit E:
+1. **Proto PR** (#68): `ListBatches` added to `ingestion.proto` —
+   `ListBatchesRequest{limit}` / `ListBatchesResponse{repeated
+   BatchSummary}` — merged before any implementation depended on it.
+2. **Ingestion PR** (#69): `recordStore.listBatches` (newest-first,
+   default-20 cap) and the `Server.ListBatches` handler. Lives on Ingestion,
+   not Reporting: Ingestion already owns the `batch` table and keeps
+   `total_records` accurate on every write, so no second aggregate query is
+   needed, and gating this route behind Reporting would have made it wait
+   on the largest unit in the phase for no reason.
+3. **Gateway PR**: everything below.
+
+**Design, the six HTTP routes**: three new files in
+`services/api-gateway/internal/httpapi/`, one per concern
+(`docs/ENGINEERING.md` section 14):
+- `report.go` — `getBatchReport`, `listBatchRecords`, `listBatches`. Every
+  response is a hand-written struct with explicit `json` tags, matching
+  `docs/API_GATEWAY.md`'s wire convention 6 exactly: no `protojson`, no
+  `omitempty` except the one deliberate exception (`accuracy` /
+  `baseline_comparison`, nil pointers so a missing answer key renders as an
+  absent key, not `null` or a zeroed struct — proxied straight through from
+  Reporting's own already-correct absence rule, Unit F/K). Empty
+  `by_root_cause`/`by_intervention` maps are always initialized with `make`,
+  never a nil Go map, so they marshal as `{}` not `null`.
+- `audit.go` — `getRecordAudit`, `verifyInvariantsForBatch`,
+  `verifyInvariantsSystemWide`. `hops` is always `make([]providerHopJSON,
+  len(...))`, never nil, so a transition with no classification behind it
+  renders `"hops": []`, not `null`, matching `docs/API_GATEWAY.md`'s own
+  "the frontend can render them unconditionally" promise for `rationale`/
+  `message_text`/`hops`. The two invariants handlers share one
+  `verifyInvariants(w, r, batchID)` helper, differing only in whether
+  `batchID` comes from the path or is hardcoded `""` (the RPC's own "empty
+  means everything" rule).
+- `live.go` — `liveUpdates`, the WebSocket relay. Uses
+  `github.com/coder/websocket` (chosen because it was already resolved in
+  the module graph via a transitive dependency, so adding it as a direct
+  one changed nothing else in `go.sum`). Auth closes `docs/API_GATEWAY.md`
+  gap 5: a browser's WS handshake cannot set `X-API-Key`, so this route
+  sits outside `withAuth` entirely (`handler.go`'s `Routes()` now splits
+  into an `authenticated` sub-mux for the six key-checked routes and one
+  bare route for `/live`), and instead checks whether the client offered
+  the API key as a `Sec-WebSocket-Protocol` value
+  (`offersSubprotocol`) before calling `websocket.Accept`. The relay loop
+  itself is a straight `stream.Recv()` → `wsjson.Write(toBatchUpdateJSON
+  (...))` translation until the upstream stream ends (closes the socket
+  `StatusNormalClosure`) or errors (`StatusInternalError`); no buffering,
+  no reconnect logic — matching the Hub's own no-replay, connection-scoped
+  semantics from Unit F.
+
+**`Handler.New`'s signature grew** from one gRPC client to three
+(`ingestion`, `reporting`, `audit`), and `cmd/main.go` now dials all three,
+reading `REPORTING_ADDR`/`AUDIT_ADDR` alongside the existing
+`INGESTION_ADDR`. `StreamBatchUpdates` is a server-streaming RPC, not a
+unary one, so the Gateway's outbound `grpc.NewClient` chain-unary-interceptor
+(`UnaryClientDefaultDeadline`) does not apply to it — a long-lived WS
+connection is not silently cut off at `CALL_TIMEOUT`.
+
+**Tested per file, unit tests only (no new integration tier needed: every
+downstream call is a fake gRPC client, same pattern the existing
+`submitBatch`/`submitEvent` tests already used)**: `report_test.go`,
+`audit_test.go`, `live_test.go` — 32 handler tests plus 6 live-relay tests,
+38 total, all passing with `-race`. `live_test.go` adds `fakeStreamClient`
+(implements `grpc.ServerStreamingClient[StreamBatchUpdatesResponse]`, fed a
+fixed response sequence) and drives the relay through a real
+`httptest.Server` with a real `websocket.Dial`, not a mocked transport,
+since the WS upgrade handshake itself is part of what needed proving (the
+subprotocol auth check happens before `websocket.Accept` is ever called).
+
+**A real test gap found and fixed by adversarial verification, not in the
+Gateway itself but in Unit G's Ingestion PR**: broke
+`ListBatches`' default-limit guard (`limit <= 0` → `limit < 0`, so an unset
+`ListBatchesRequest{}` — `limit` genuinely `0` — no longer triggered the
+default). `TestListBatchesDefaultLimitAppliesWhenUnset` still passed: it
+only asserted the 5 oldest of 25 seeded rows were *excluded*, never that
+any row was *present*, so a broken guard producing `LIMIT 0` (zero rows,
+trivially excluding everyone) slipped through undetected. Strengthened the
+test to also assert the newest seeded row is present, confirmed it now
+failed against the broken code, reverted the break, confirmed green.
+
+**A stdlib quirk hit while testing the routes, not a bug**: an early test
+for `getBatchReport`'s empty-`batch_id` guard requested
+`/v1/batches//report` (double slash), expecting a 400/404 from the
+handler's own guard. `net/http.ServeMux` cleans redundant slashes and
+issues its own 307 redirect *before* any handler runs, so the test never
+reached the guard at all. Fixed by requesting `/v1/batches/report`
+(the segment missing entirely) instead, which the mux itself 404s on
+without a redirect — closer to what an external client actually sends for
+a malformed URL, and it does exercise routing behavior, just not the
+handler's own defensive check (which turns out to be unreachable through
+real routing for this pattern; kept anyway, consistent with every other
+handler in this file, and free).
+
+**`test/e2e/harness_test.go` gains an eighth binary, Reporting** (Unit F's
+own deferral note said this explicitly, to avoid building it twice): a
+`reporting` process, its own isolated Kafka consumer group
+(`e2e-reporting-<uuid>`, same isolation reasoning as every other consumer
+group in this harness, `docs/INCIDENTS.md`), and `api-gateway`'s process
+env gains `REPORTING_ADDR`/`AUDIT_ADDR` (previously absent — the Gateway
+would have failed fast on startup the moment `cmd/main.go`'s new required
+config fields landed, this was not optional).
+
+**New e2e test, `TestGatewayReportRoutesAndLiveRelay`**: deliberately
+narrower in scope than `TestWalkingSkeletonReachesRecovered` (which already
+proves the pipeline reaches `RECOVERED` end to end) — this one proves Unit
+G's own surface specifically. Subscribes to the live WS feed immediately
+after submitting the batch (before seeding `ground_truth`, so before the
+scheduler can possibly claim anything — the Hub has no replay buffer),
+seeds ground truth, reads the live feed until the `RECORDED_STATE_RECOVERED`
+update arrives with the correct `recovered_delta_paise`, then calls all
+five remaining routes against the real running services and asserts the
+documented shape and values on each. Passed on the first run against the
+real 8-service stack. Full e2e suite (`go test -tags=e2e
+./test/e2e/...`) reruns clean afterward, confirming the harness change
+broke nothing already passing.
+
+**Docs updated**: `docs/API_GATEWAY.md`'s three **not yet backed** markers
+for these routes (`GET /v1/batches`, the invariants routes, `WS .../live`)
+corrected to **backed**, with the stale "Reporting is still a stub" framing
+removed from the `GET /v1/batches` section.
 
 ## Unit K: baseline comparison in Reporting
 

@@ -9,9 +9,12 @@ import (
 	"testing"
 	"time"
 
+	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const testAPIKey = "test-demo-key"
@@ -24,6 +27,10 @@ type fakeIngestion struct {
 	eventResp *ingestionv1.SubmitEventResponse
 	eventErr  error
 	gotEvent  *ingestionv1.SubmitEventRequest
+
+	listBatchesResp *ingestionv1.ListBatchesResponse
+	listBatchesErr  error
+	gotListBatches  *ingestionv1.ListBatchesRequest
 }
 
 func (f *fakeIngestion) SubmitBatch(ctx context.Context, in *ingestionv1.SubmitBatchRequest, opts ...grpc.CallOption) (*ingestionv1.SubmitBatchResponse, error) {
@@ -35,16 +42,47 @@ func (f *fakeIngestion) SubmitEvent(ctx context.Context, in *ingestionv1.SubmitE
 	return f.eventResp, f.eventErr
 }
 
-// ListBatches: proto-only stub for this PR (docs/PHASE5_IMPLEMENTATION.md
-// Unit G adds the real route and its own tests). Exists only so
-// *fakeIngestion keeps satisfying ingestionv1.IngestionServiceClient now
-// that the interface has a third method.
 func (f *fakeIngestion) ListBatches(ctx context.Context, in *ingestionv1.ListBatchesRequest, opts ...grpc.CallOption) (*ingestionv1.ListBatchesResponse, error) {
+	f.gotListBatches = in
+	if f.listBatchesResp != nil || f.listBatchesErr != nil {
+		return f.listBatchesResp, f.listBatchesErr
+	}
 	return &ingestionv1.ListBatchesResponse{}, nil
 }
 
 func newHandler(f *fakeIngestion) http.Handler {
-	return New(f, testAPIKey, 2*time.Second, 0, 0).Routes()
+	return New(f, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0).Routes()
+}
+
+// fakeAudit implements auditv1.AuditServiceClient. Defined here so both
+// report_test.go and audit_test.go can construct a Handler with all three
+// backend clients.
+type fakeAudit struct {
+	recordAuditResp *auditv1.GetRecordAuditResponse
+	recordAuditErr  error
+	gotRecordAudit  *auditv1.GetRecordAuditRequest
+
+	invariantsResp *auditv1.VerifyInvariantsResponse
+	invariantsErr  error
+	gotInvariants  *auditv1.VerifyInvariantsRequest
+}
+
+func (f *fakeAudit) GetRecordAudit(ctx context.Context, in *auditv1.GetRecordAuditRequest, opts ...grpc.CallOption) (*auditv1.GetRecordAuditResponse, error) {
+	f.gotRecordAudit = in
+	return f.recordAuditResp, f.recordAuditErr
+}
+
+func (f *fakeAudit) VerifyInvariants(ctx context.Context, in *auditv1.VerifyInvariantsRequest, opts ...grpc.CallOption) (*auditv1.VerifyInvariantsResponse, error) {
+	f.gotInvariants = in
+	return f.invariantsResp, f.invariantsErr
+}
+
+// notFoundErr builds a gRPC NotFound status error, the shape every
+// downstream service returns for an unknown batch/record_id, so Gateway
+// tests can exercise the "translate a real gRPC status into the right
+// HTTP code" path without a real server.
+func notFoundErr(msg string) error {
+	return status.Error(codes.NotFound, msg)
 }
 
 func doRequest(h http.Handler, method, path, apiKey, body string) *httptest.ResponseRecorder {
@@ -256,7 +294,7 @@ func TestWebhookDeduplicated(t *testing.T) {
 
 func TestRateLimitAllowsWithinBurst(t *testing.T) {
 	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "b1", AcceptedCount: 1}}
-	h := New(fake, testAPIKey, 2*time.Second, 100, 2).Routes()
+	h := New(fake, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 100, 2).Routes()
 
 	body := `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`
 	for i := 0; i < 2; i++ {
@@ -271,7 +309,7 @@ func TestRateLimitRejectsOverBurst(t *testing.T) {
 	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "b1", AcceptedCount: 1}}
 	// A tiny sustained rate with a burst of 1: the first request consumes the
 	// only token, the second must be rejected before the bucket refills.
-	h := New(fake, testAPIKey, 2*time.Second, 1, 1).Routes()
+	h := New(fake, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 1, 1).Routes()
 
 	body := `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`
 	rec1 := doRequest(h, http.MethodPost, "/v1/batches", testAPIKey, body)
