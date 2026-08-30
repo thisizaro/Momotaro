@@ -194,7 +194,10 @@ scripts/  docs/
 - `migrations/`: all Postgres migrations, ordered, single tool, shared by
   every service. See `docs/ARCHITECTURE.md` §12a.
 - `docs/`: `PRD.md` (product, requirements, NFR targets), `ARCHITECTURE.md`
-  (system design, the how), `ENGINEERING.md` (**mandatory** coding
+  (system design, the how), `DATA_FLOW.md` (plain-English walkthrough of
+  where data comes from and where it goes, for anyone new to the project;
+  `ARCHITECTURE.md` §3/§4 are the precise version it is built from),
+  `ENGINEERING.md` (**mandatory** coding
   standards and Definition of Done), `API_GATEWAY.md` (external contract,
   the only doc the `web/` agent needs), `PLAN.md` (living phase-by-phase
   build plan), `DECISIONS.md` (append-only decision log with reasoning),
