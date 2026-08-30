@@ -124,6 +124,46 @@ func (s *recordStore) incrementBatchTotal(ctx context.Context, batchID string) e
 	return nil
 }
 
+// batchSummary is one row of a ListBatches page.
+type batchSummary struct {
+	ID           string
+	CreatedAt    time.Time
+	TotalRecords int32
+	Source       string
+}
+
+// listBatches returns up to limit BATCH rows, newest first
+// (docs/API_GATEWAY.md: "so a 'pick the most recent one' default has
+// something real to select"). total_records is read directly off the row
+// rather than computed from RECORD, since SubmitBatch/SubmitEvent already
+// keep it accurate (setBatchTotal/incrementBatchTotal above), and a second
+// aggregate query here would just be a slower way to ask the same table
+// something it already knows.
+func (s *recordStore) listBatches(ctx context.Context, limit int32) ([]batchSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, created_at, total_records, source
+		FROM batch
+		ORDER BY created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list batches: %w", err)
+	}
+	defer rows.Close()
+
+	var result []batchSummary
+	for rows.Next() {
+		var b batchSummary
+		if err := rows.Scan(&b.ID, &b.CreatedAt, &b.TotalRecords, &b.Source); err != nil {
+			return nil, fmt.Errorf("scan batch row: %w", err)
+		}
+		result = append(result, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate batch rows: %w", err)
+	}
+	return result, nil
+}
+
 // nullIfEmpty converts "" to SQL NULL so pgx binds it correctly. Any other
 // string is passed through unchanged.
 func nullIfEmpty(s string) any {
