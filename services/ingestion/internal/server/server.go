@@ -20,6 +20,7 @@ import (
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server implements ingestionv1.IngestionServiceServer.
@@ -130,6 +131,35 @@ func (s *Server) SubmitEvent(ctx context.Context, req *ingestionv1.SubmitEventRe
 	}
 
 	return &ingestionv1.SubmitEventResponse{RecordId: recordID, BatchId: batchID, Deduplicated: false}, nil
+}
+
+// defaultListBatchesLimit is docs/API_GATEWAY.md's own stated default for
+// GET /v1/batches when the caller does not specify one.
+const defaultListBatchesLimit = 20
+
+// ListBatches backs GET /v1/batches (docs/API_GATEWAY.md): picking a
+// specific, already-seeded batch out of several, newest first.
+func (s *Server) ListBatches(ctx context.Context, req *ingestionv1.ListBatchesRequest) (*ingestionv1.ListBatchesResponse, error) {
+	limit := req.GetLimit()
+	if limit <= 0 {
+		limit = defaultListBatchesLimit
+	}
+
+	rows, err := s.store.listBatches(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	batches := make([]*ingestionv1.BatchSummary, len(rows))
+	for i, b := range rows {
+		batches[i] = &ingestionv1.BatchSummary{
+			BatchId:      b.ID,
+			CreatedAt:    timestamppb.New(b.CreatedAt),
+			TotalRecords: b.TotalRecords,
+			Source:       b.Source,
+		}
+	}
+	return &ingestionv1.ListBatchesResponse{Batches: batches}, nil
 }
 
 // ingestOne persists one already-validated record and publishes it to
