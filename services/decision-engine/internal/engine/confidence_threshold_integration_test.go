@@ -20,7 +20,7 @@ import (
 func TestHandleMessagePersistsConfidenceThresholdReason(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	// A live-model-shaped response: recommends RETRY (not ESCALATE), but at
@@ -32,7 +32,7 @@ func TestHandleMessagePersistsConfidenceThresholdReason(t *testing.T) {
 		Confidence:        0.3,
 		Source:            commonv1.Source_SOURCE_LLM,
 	}}
-	cfg := testConfig(dlqTopic)
+	cfg := testConfig(dlqTopic, auditTopic)
 	cfg.ClassifyConfidenceThreshold = 0.5
 	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), cfg)
 
@@ -68,7 +68,7 @@ func TestHandleMessagePersistsConfidenceThresholdReason(t *testing.T) {
 func TestHandleMessagePersistsUnknownCodeReasonNotConfidenceReason(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: &classifierv1.ClassifyResponse{
@@ -78,7 +78,7 @@ func TestHandleMessagePersistsUnknownCodeReasonNotConfidenceReason(t *testing.T)
 		Confidence:        0.0,
 		Source:            commonv1.Source_SOURCE_RULES_FALLBACK,
 	}}
-	cfg := testConfig(dlqTopic)
+	cfg := testConfig(dlqTopic, auditTopic)
 	cfg.ClassifyConfidenceThreshold = 0.5
 	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), cfg)
 

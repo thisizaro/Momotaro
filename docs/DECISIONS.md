@@ -1610,3 +1610,37 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   **Built test-first throughout**, per explicit instruction this session:
   every new behaviour had its test written and confirmed failing against
   not-yet-written code before the implementation that made it pass.
+- 2026-08-30: **`audit.events`'s wire schema lives in a new
+  `internal/platform/auditevent` package, as plain JSON, not a proto
+  message.** Starting Phase 5 Unit F's streaming half found the topic had
+  no publisher anywhere in the codebase despite being fully architected
+  since Phase 0 (docs/INCIDENTS.md, same date, has the full story). Fixing
+  the producer side first raised a real design choice: the payload two
+  services (Decision Engine, Reporting) must agree on needed a home.
+  Considered reusing `reportingv1.BatchUpdate` directly, since its shape
+  (`record_id`, `from_state`, `to_state`, `recovered_delta_paise`) is
+  almost exactly right and would give producer and consumer the same type
+  by construction. Rejected: proto/gen exists for gRPC contracts between
+  services that call each other; Decision Engine and Reporting never do
+  (they relate only through this one Kafka topic), and importing a proto
+  package purely to reuse a struct shape stretches that convention past
+  what it is for. `internal/platform` is the actual answer AGENTS.md
+  already gives for "two services need to agree on something and neither
+  owns it": a new small package there, one const (the topic name) and one
+  struct (`Event`, plus `batch_id`, which `BatchUpdate` does not carry
+  since a stream is already scoped to one batch -- the Kafka topic is not).
+  **One notification per committed transaction, not one per internal
+  audit-entry row.** `scheduleNew` can write New -> Scoring -> X in one
+  transaction; the published event carries the transaction's start and end
+  state only, matching `reporting.v1.BatchUpdate`'s own doc comment
+  ("deliberately small: the dashboard refetches... rather than having
+  aggregates recomputed per event") and the section 5 sequence diagram,
+  which shows exactly one `publish audit.events` per decision, not one per
+  row in `AUDIT_ENTRY`.
+  **Publish failures are logged, never propagated**, mirroring
+  `deadLetterPublisher`'s existing pattern exactly: the owning transaction
+  has already committed by the time `audit.events` is published, so a
+  Kafka outage must cost a stale cache or a missed live-dashboard tick
+  (docs/ARCHITECTURE.md section 10a's own contract), never a failed
+  Execute/Classify/ResumeNudge call that already succeeded where it
+  actually matters, Postgres.

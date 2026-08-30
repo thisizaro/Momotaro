@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/thisizaro/Momotaro/internal/platform/auditevent"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
@@ -61,20 +62,28 @@ func uniqueTopic(t *testing.T) string {
 	return "decision-engine-test-" + strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
-func testDLQ(t *testing.T) (*kafkax.Producer, string) {
+// testProducer provisions one Kafka producer and two isolated topics for
+// it to publish to: a DLQ topic and an audit.events topic. One producer
+// serves both, same as production (cmd/main.go passes the same
+// *kafkax.Producer to both the dead-letter and audit-event publishers),
+// since kafkax.Producer.Publish takes the topic per call.
+func testProducer(t *testing.T) (producer *kafkax.Producer, dlqTopic, auditTopic string) {
 	t.Helper()
-	topic := uniqueTopic(t)
+	dlqTopic = uniqueTopic(t)
+	auditTopic = uniqueTopic(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := kafkax.EnsureTopic(ctx, brokers(t), topic, 1); err != nil {
-		t.Fatalf("EnsureTopic: %v", err)
+	for _, topic := range []string{dlqTopic, auditTopic} {
+		if err := kafkax.EnsureTopic(ctx, brokers(t), topic, 1); err != nil {
+			t.Fatalf("EnsureTopic %s: %v", topic, err)
+		}
 	}
 	p, err := kafkax.NewProducer(brokers(t))
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
 	}
 	t.Cleanup(p.Close)
-	return p, topic
+	return p, dlqTopic, auditTopic
 }
 
 func seedRecord(ctx context.Context, t *testing.T, pool *pgxpkg.Pool) (batchID, recordID string) {
@@ -139,6 +148,42 @@ func waitForDeadLetter(t *testing.T, topic, want string, timeout time.Duration) 
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for a dead letter matching %q on %s", want, topic)
 		return DeadLetter{}
+	}
+}
+
+// waitForAuditEvent consumes topic from the start and returns the first
+// auditevent.Event whose RecordID matches want, or fails the test after
+// timeout. Mirrors waitForDeadLetter's shape: this is the same "prove the
+// real message landed on the real topic" pattern, not an assertion against
+// the publisher's own return value.
+func waitForAuditEvent(t *testing.T, topic, want string, timeout time.Duration) auditevent.Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	consumer, err := kafkax.NewConsumer(brokers(t), "decision-engine-audit-test-"+uuid.NewString(), []string{topic})
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	defer consumer.Close()
+
+	found := make(chan auditevent.Event, 1)
+	go func() {
+		_ = consumer.Consume(ctx, func(ctx context.Context, m kafkax.Message) error {
+			var evt auditevent.Event
+			if err := json.Unmarshal(m.Value, &evt); err == nil && evt.RecordID == want {
+				found <- evt
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case evt := <-found:
+		return evt
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for an audit event matching %q on %s", want, topic)
+		return auditevent.Event{}
 	}
 }
 

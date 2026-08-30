@@ -1256,3 +1256,61 @@ dashboard's generate button already calls the exact request form
 the most obvious action on screen would, once wired up, produce a batch
 with neither of this phase's headline numbers. Addressed in
 `docs/API_GATEWAY.md` and `docs/PRD.md` section 12 in the same fix.
+
+## 2026-08-30: `audit.events` was fully architected and never had a publisher
+
+Starting Phase 5 Unit F's streaming half (`docs/PHASE5_IMPLEMENTATION.md`),
+expecting to write a Kafka consumer in Reporting for a topic the system had
+been describing since Phase 0. `docker-compose.yml` creates `audit.events`
+(12 partitions). `docs/ARCHITECTURE.md` sections 6a, 8, and 10a all describe
+it in detail: which service publishes, what it is for, why losing a
+message is safe. Nothing in the whole Go module referenced the topic name
+or published to it. A `grep` across every service found zero hits before
+this unit started writing code.
+
+**Why this stayed invisible for four phases.** `docs/ARCHITECTURE.md`
+section 10a's own rule -- "Postgres is the sole source of truth for
+history... Kafka never feeds numbers directly into a report" -- meant every
+number Reporting has shipped so far (Units F's unary half, K) was computed
+by reading Postgres directly, with no code path that would ever notice a
+missing Kafka message. `audit.events`' only two jobs (cache invalidation,
+driving `StreamBatchUpdates`) both belong to features that had not been
+built yet, so nothing exercised the gap. It is the same shape as Unit A's
+prerequisite ("Decision Engine had no gRPC server at all," discovered by
+the Phase 5 pre-planning audit) and Unit D's e2e regression (a path nothing
+had exercised end to end): a component can be fully specified in checked-in
+docs and still not exist in code, and unit/integration tests over the
+*existing* features cannot catch it, because none of them depend on it.
+
+**A second, smaller stale claim found in the same pass.**
+`docs/ARCHITECTURE.md`'s table-ownership table (section 10a) stated
+`AUDIT_ENTRY` is written by "Decision Engine and Executor." A `grep` for
+`audit_entry` across `services/executor` returns nothing; it never has.
+Every audit row in the running system today is written by Decision Engine,
+transactionally with the `RECORD_STATE` change it belongs to (Executor
+owns `INTERVENTION_ATTEMPT` only). Corrected the table and the section 8
+topic-map diagram, which carried the same claim as an `EXE --> audit.events`
+arrow.
+
+**Fixed as its own PR, before Reporting's consumer**: a new shared
+`internal/platform/auditevent` package (the wire schema two services must
+agree on -- a genuine cross-service contract, not something either service
+should own privately) and Decision Engine publishing to it, best-effort,
+right after each of its four `RECORD_STATE`-writing transactions commits
+(`scheduleNew`, `recordOutcome`, `recordRescore`, `applyResumedOutcome`).
+A publish failure is logged, never propagated as a failure of the caller's
+own operation, per section 10a's own contract for what losing this topic
+is allowed to cost. Verified with real integration tests reading the topic
+back (`waitForAuditEvent`, mirroring the existing `waitForDeadLetter`
+pattern) rather than asserting against the publisher's return value alone.
+The e2e harness gained its own isolated `audit.events` topic per stack
+(`AUDIT_EVENTS_TOPIC`), matching the existing `raw.events`/
+`raw.events.dlq` isolation and the same reason (a shared topic across test
+runs eventually replays history against records that no longer exist).
+
+**Lesson**: "the architecture doc describes it" is not evidence a
+capability exists. Before starting a unit whose job is to *consume*
+something, check that anything actually *produces* it -- a `grep` across
+the whole module for the topic name costs seconds and would have caught
+this on day one of Phase 0 rather than at the start of Phase 5's last
+backend unit.

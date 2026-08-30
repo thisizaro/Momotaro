@@ -1130,6 +1130,24 @@ test caught a populated-but-empty `Accuracy` appearing where it must not.
 Both reverted, confirmed green. `docs/PLAN.md`'s checkbox stays unticked
 until `StreamBatchUpdates` also lands, per its own Definition of Done.
 
+**2026-08-30, prerequisite found and closed before the streaming half
+could start**: `audit.events` had no publisher anywhere in the codebase,
+despite being fully architected since Phase 0 (full account in
+`docs/INCIDENTS.md`, same date). Closed as its own PR: a new shared
+`internal/platform/auditevent` package (the wire schema Decision Engine
+and Reporting must agree on) and Decision Engine publishing to it,
+best-effort, after each of its four `RECORD_STATE`-writing transactions
+commits. Verified with real integration tests reading the topic back, one
+per call site (`scheduleNew`, `recordOutcome`, `recordRescore`,
+`applyResumedOutcome`), and live against the real running stack. Also
+corrected a second stale claim found in the same pass:
+`docs/ARCHITECTURE.md`'s table-ownership table and section 8 topic-map
+diagram both said Executor writes `AUDIT_ENTRY`; it never has, every row
+comes from Decision Engine. This PR is a prerequisite for `StreamBatchUpdates`,
+not `StreamBatchUpdates` itself: Reporting still has no Kafka consumer and
+no streaming RPC implementation, so the checkbox stays unticked and the
+work above continues in a following PR.
+
 ## Unit K: baseline comparison in Reporting
 
 **Status**: merged. **Depends on**: F. **Rough size**: 3 to 4 hours, as
