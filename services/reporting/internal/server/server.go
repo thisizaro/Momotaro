@@ -19,23 +19,24 @@ const (
 	maxPageSize     = 200
 )
 
-// Server implements reportingv1.ReportingServiceServer. StreamBatchUpdates
-// is not implemented in this pass: the two unary RPCs close the rubric's
-// one real gap ("measured money recovered across a batch") and are cheaper
-// than adding a Kafka consumer and a gRPC-stream-to-WebSocket bridge for a
-// live feed the dashboard's own polling already covers for every number
-// that matters (docs/PHASE5_IMPLEMENTATION.md).
+// Server implements reportingv1.ReportingServiceServer.
 type Server struct {
 	reportingv1.UnimplementedReportingServiceServer
 
 	store *store
 	clock func() *timestamppb.Timestamp
+	// hub fans StreamBatchUpdates out to every open subscription
+	// (docs/PHASE5_IMPLEMENTATION.md Unit F). The Kafka consumer that feeds
+	// it (consume.go's AuditConsumer) is constructed and run separately, in
+	// cmd/main.go, sharing this same *Hub instance.
+	hub *Hub
 }
 
-// New returns a Server reading from pool. now defaults to the real clock;
-// tests inject a fixed one so GeneratedAt is assertable.
-func New(pool *pgxpkg.Pool) *Server {
-	return &Server{store: newStore(pool), clock: timestamppb.Now}
+// New returns a Server reading from pool and streaming from h. now
+// defaults to the real clock; tests inject a fixed one so GeneratedAt is
+// assertable.
+func New(pool *pgxpkg.Pool, h *Hub) *Server {
+	return &Server{store: newStore(pool), clock: timestamppb.Now, hub: h}
 }
 
 func (s *Server) GetBatchReport(ctx context.Context, req *reportingv1.GetBatchReportRequest) (*reportingv1.GetBatchReportResponse, error) {
