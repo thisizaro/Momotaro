@@ -184,15 +184,17 @@ Engine's 5s `CALL_TIMEOUT`. A small change to `provider.Config`. The rung is
 already built, unit-tested and confirmed against the live API, so this is
 purely about making a three-rung chain fit a real budget.
 
-### 5. `StreamBatchUpdates` and the WebSocket relay
+### 5. `StreamBatchUpdates` and the WebSocket relay -- resolved, see below
 
-If it is not reached inside Phase 5, it lands here rather than being dropped.
-`ARCHITECTURE.md` §6a remains the design. Reasoning for the ordering, and why
-the fallback is invisible on stage, is in `PRD.md` §12a. Also carries two
-known bugs to fix when picked up: the frontend passes the API key as a
-WebSocket subprotocol while the Gateway checks the `X-API-Key` header, and
-`App.tsx` appends to an unbounded `updates` array with no reconnect, backoff
-or heartbeat on the socket.
+**Resolved 2026-08-30**: reached inside Phase 5 after all (Unit F built
+`StreamBatchUpdates`, Unit G built the Gateway's WebSocket relay). The
+frontend/Gateway subprotocol-vs-header mismatch this item warned about was
+checked directly and found already correct on the frontend side; the
+Gateway now checks the subprotocol too (`services/api-gateway/internal/
+httpapi/live.go`). The unbounded `updates` array / no-reconnect gap this
+item also named is still real and not yet addressed -- that part alone
+would need its own future item if picked up, but is now a small, isolated
+`App.tsx` concern rather than blocking anything backend-side.
 
 ### 6. Phase 6 load testing
 
@@ -201,6 +203,35 @@ and throughput figures are explicitly "starting targets" that no load test has
 ever validated. If a panel asks "did you measure that", the honest answer today
 is no. Replacing those numbers with measured ones is the single cheapest way
 to make §10 defensible.
+
+### 7. Classify Postgres "no rows" errors as dead-letter-worthy in `decision-engine.HandleMessage`
+
+Found 2026-08-30 (`docs/INCIDENTS.md`, same date): a single Kafka message
+whose `record_id` has no matching Postgres row crashes the entire
+`decision-engine` process and wedges its Kafka partition permanently
+(restart just replays and re-crashes on the same message), rather than
+being dead-lettered like every other per-record failure the handler already
+knows how to route around. `kafkax.ConsumeKeyed`'s own doc comment states
+the intended contract explicitly -- a handler error should mean an
+infrastructure failure, not a per-record one -- but four call sites in
+`engine.HandleMessage` (`recordStateExists`, `loadAttemptRows`,
+`loadInstrumentHistory`, `loadAttemptHistory`) don't follow it: they
+propagate any Postgres error unclassified, including `pgx`'s "no rows"
+case, which is a per-record problem, not an infra one.
+
+**The fix, scoped**: at each of those four call sites, check
+`errors.Is(err, pgxpkg.ErrNoRows)` (the same pattern `services/ingestion/
+internal/server/store.go` already uses) and route to the dead-letter queue
+with a clear reason (e.g. "record not found, likely an orphaned Kafka
+message") instead of returning the raw error. Every other Postgres error
+(genuine connectivity failures) stays fatal, unchanged -- that part of the
+current behavior is correct and should not be touched.
+
+Not fixed reactively when found: this needs tests-first like everything
+else in this codebase (`docs/ENGINEERING.md` section 1), specifically a
+test that publishes a `raw.events` message for a `record_id` Postgres does
+not have and asserts it gets dead-lettered rather than crashing the
+consumer, for all four call sites, before touching the implementation.
 
 ## Deliberately rejected, with the reason
 
