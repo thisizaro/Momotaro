@@ -17,6 +17,10 @@ service IngestionService {
   rpc SubmitEvent(SubmitEventRequest) returns (SubmitEventResponse);
   // Demo and backfill path: many records at once, grouped under one batch.
   rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
+  // Backs GET /v1/batches (docs/API_GATEWAY.md): picking a specific,
+  // already-seeded batch out of several. On Ingestion, not Reporting: this
+  // service already owns the BATCH table and writes every row in it.
+  rpc ListBatches(ListBatchesRequest) returns (ListBatchesResponse);
 }
 
 // A record as submitted from outside, before we assign it an id. Distinct
@@ -60,4 +64,22 @@ message SubmitBatchResponse {
   // Records rejected at validation, by index in the request, with a reason.
   // A partial accept is reported, never silently dropped.
   map<int32, string> rejected = 3;
+}
+
+message ListBatchesRequest {
+  // Optional, default 20 (docs/API_GATEWAY.md).
+  int32 limit = 1;
+}
+
+message BatchSummary {
+  string batch_id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  int32 total_records = 3;
+  string source = 4;
+}
+
+message ListBatchesResponse {
+  // Newest first, so a "pick the most recent one" default has something
+  // real to select (docs/API_GATEWAY.md).
+  repeated BatchSummary batches = 1;
 }
