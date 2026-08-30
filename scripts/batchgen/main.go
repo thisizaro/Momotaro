@@ -13,10 +13,14 @@
 // through the real HTTP API for throughput testing and can never carry
 // ground truth: this one writes directly to Postgres because only it can.
 //
-// Usage:
+// Usage: requires POSTGRES_DSN and KAFKA_BROKERS in the environment (see
+// .env.example) -- `make batchgen` sets these up for you the same way every
+// other make target does; a bare `go run` below does not, and fails fast
+// with a clear message if they are unset.
 //
 //	go run ./scripts/batchgen -count 100
 //	go run ./scripts/batchgen -count 500 -seed 42   # reproducible batch
+//	make batchgen COUNT=100 SOURCE=demo-manual-check SEED=42   # equivalent
 package main
 
 import (
