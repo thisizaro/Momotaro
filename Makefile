@@ -113,6 +113,11 @@ run-api-gateway:
 run-reporting:
 	GRPC_PORT=9200 METRICS_PORT=9201 go run ./services/reporting/cmd
 
+## run-world-simulator: run world-simulator on its fixed local port
+run-world-simulator:
+	GRPC_PORT=9202 METRICS_PORT=9203 DECISION_ENGINE_ADDR=localhost:9196 \
+	go run ./demo/world-simulator/cmd
+
 ## up: start local infra (postgres, redis, kafka, kafka ui)
 up:
 	docker compose up -d
@@ -169,4 +174,4 @@ docker-build:
 .PHONY: help tools proto proto-lint proto-breaking build test test-integration \
         vet fmt check up up-observability down down-clean migrate-up migrate-status \
         docker-build run-ingestion run-classifier run-executor run-audit \
-        run-decision-engine run-api-gateway run-reporting
+        run-decision-engine run-api-gateway run-reporting run-world-simulator

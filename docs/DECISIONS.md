@@ -1362,3 +1362,59 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   headline aggregate, both `GROUP BY` breakdowns, ground-truth accuracy
   and confusion, pagination across pages, and not-found/invalid-argument
   edges.
+- 2026-08-30: **World Simulator is real, replacing Phase 1's stub** (Phase 5
+  Unit C). `SimulateOutcome` now rolls a record's hidden `GROUND_TRUTH`
+  profile against the action taken: a retry answers immediately, a nudge
+  answers `PENDING` and its real answer is delivered later via a Redis
+  sorted set (`wsim:delayed_outcomes`) and a background poller calling
+  `DecisionEngine.ReportDelayedOutcome`. This unparks the ~70% of records
+  that previously sat in `NUDGED` forever, since nothing ever resolved
+  them, and is what makes Unit F's accuracy/recovery numbers actual
+  measurements rather than a scripted happy path.
+  **The correct-action mirror table is a deliberate small duplication**:
+  `isCorrectAction` needs to know what the classifier would have
+  recommended for a record's true bucket, but cannot import
+  `services/classifier/internal/rules` (private to that service; cross-
+  service code is gRPC only). Same precedent as
+  `scripts/batchgen/profile.go`'s `ObviousBucket` table, and carries the
+  same "must stay in sync" comment.
+  **A failed retry reuses the record's own original `failure_code`**
+  rather than inventing a per-attempt code model `GROUND_TRUTH` does not
+  carry: "the same underlying reason struck again" is simple and
+  defensible.
+  **Each call re-rolls independently**, matching the plain-English
+  probability model in `docs/ARCHITECTURE.md` section 6 rather than a
+  decay curve the data does not encode.
+  **The Redis member format extends the architecture doc's own example**
+  (`record_id:attempt_number:outcome`) with a fourth field, `failure_code`,
+  since `ReportDelayedOutcomeRequest` accepts one and it is already
+  documented as informational downstream (`scheduler.go`'s `ResumeNudge`),
+  so carrying it through costs nothing.
+  **`queue.due()` is not perfectly atomic, by design**: a single poller
+  goroutine in a single instance has nothing to race against, and
+  `ReportDelayedOutcome` is already at-least-once/idempotent-safe
+  downstream. Revisit only if this service ever runs with more than one
+  replica.
+  **`deliver` retries up to 3 times before logging a loss**, mirroring
+  `scheduler.go`'s `executeWithRetry` exactly, rather than inventing a new
+  resilience pattern.
+  **New dependency, `github.com/redis/go-redis/v9`**: the first real Redis
+  client in the codebase (every other Redis mention elsewhere is a
+  deliberate "not Redis" comment). No shared `internal/platform/redis`
+  wrapper added, since this is the only consumer today.
+  **Verified live against the real stack, not only by test**: ran the
+  service, made a real `SimulateOutcome` call, confirmed the Redis entry's
+  exact format, and confirmed `requests_total` appeared on `/metrics`
+  with correct labels.
+  **Adversarial verification caught a bug in the test suite itself, not
+  just the code**: the zero-delay-resolves-immediately test originally
+  used `ESCALATE` as its action, which is never a nudge, so removing the
+  zero-delay guard did not fail it (the guard was never reached). Fixed
+  the test to use a real nudge action type, re-verified the break was now
+  caught, then reverted. A reminder that a green adversarial-verification
+  pass on a broken test proves nothing.
+  **Found while implementing, not fixed here**:
+  `demo/notification-simulator` is still an unimplemented stub. Unit D
+  ("wire real World/Notification Simulator clients") may need to build it
+  for real, not only wire a client to it, tracked in `docs/BACKLOG.md` if
+  D does not end up covering it on its own.

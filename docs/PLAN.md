@@ -637,7 +637,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       hidden ground-truth recoverability profile per record, written
       straight into `BATCH`/`RECORD`/`GROUND_TRUTH` (table already exists,
       Phase 0) → `ARCHITECTURE.md` §6, §10, `docs/PHASE5_IMPLEMENTATION.md` Unit B
-- [ ] World Simulator upgraded from Phase 1's stub to the full probabilistic
+- [x] World Simulator upgraded from Phase 1's stub to the full probabilistic
       outcome model reading ground truth, including the Redis-backed
       delayed-outcome queue and its `ReportDelayedOutcome` callback into
       Decision Engine for nudge-type actions → `ARCHITECTURE.md` §6,

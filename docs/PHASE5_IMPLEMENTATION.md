@@ -24,7 +24,7 @@ scope from the checklist alone.
 |---|---|---|---|
 | A | Decision Engine gRPC server (`ReportDelayedOutcome`) | merged | nothing |
 | B | Synthetic batch generator | merged | nothing |
-| C | World Simulator (real) | not started | A |
+| C | World Simulator (real) | merged | A |
 | D | Executor: wire real World/Notification Simulator clients | not started | C |
 | E | Hinglish nudge composition (Classifier) | not started | A (for the caller; the Classifier-side work itself is independent) |
 | F | Reporting Service | in progress: unary RPCs merged, `StreamBatchUpdates` deferred | nothing strictly, more useful once B/C produce real data |
@@ -535,6 +535,120 @@ builders go straight to a technical interview. That makes `DECISIONS.md` and
 makes Unit N (stale claims in checked-in files) worth an hour: right now
 `configs/intervention_costs.yaml` accuses this codebase of computing its
 headline metric against the wrong cost model, and that accusation is false.
+
+## Unit C: World Simulator (real)
+
+**Status**: merged. **Depends on**: A (its `ReportDelayedOutcome` RPC is
+the callback target). **Rough size**: a full day, matching the estimate
+(the largest single unit in the phase: a new Postgres+Redis+gRPC-client
+service from a 41-line stub).
+
+**What it is**: `docs/ARCHITECTURE.md` section 6 in full: `SimulateOutcome`
+rolls a record's hidden `GROUND_TRUTH` profile against the action taken,
+answering a retry immediately and a nudge as `PENDING` with the real
+answer delivered later via a Redis-backed delayed-outcome queue and a
+background poller calling `DecisionEngine.ReportDelayedOutcome`. This
+unparks the ~70% of records that previously sat in `NUDGED` forever
+(Phase 1's stub never resolved a nudge) and is what makes the accuracy and
+recovery numbers Unit F reports actual measurements rather than a scripted
+happy path.
+
+**Design**:
+- Mirrors `services/audit/`'s file split (`docs/ENGINEERING.md` section
+  14): `store.go` (the one read-only query, joining `record` for the
+  original `failure_code` and `ground_truth` for the hidden profile),
+  `bucket.go` and `outcome.go` (pure roll logic, no I/O), `queue.go` (the
+  Redis sorted set), `poller.go` (the background delivery loop), `server.go`
+  (gRPC orchestration only).
+- **`isCorrectAction` needs its own copy of the classifier's bucket→action
+  table**, since cross-service code is gRPC only and
+  `services/classifier/internal/rules` is private to that service. This is
+  a deliberate, small duplication, not an oversight, same precedent as
+  `scripts/batchgen/profile.go`'s `ObviousBucket` table: both carry a "must
+  stay in sync with the classifier's table" comment.
+- **A failed retry reuses the record's own original `failure_code`**
+  (`record.failure_code`, read once at ingestion, never updated) rather
+  than inventing a new per-attempt failure-code model `GROUND_TRUTH` does
+  not carry. Simple and defensible: "the same underlying reason struck
+  again."
+- **Each `SimulateOutcome` call re-rolls independently**; nothing
+  remembers a prior attempt's result. Matches the plain-English model in
+  section 6 ("resolves on retry with 80% probability") rather than
+  inventing a decay curve the data does not encode.
+- **A nudge with a zero `response_delay_seconds` resolves immediately**
+  instead of scheduling a zero-delay Redis entry pointlessly, which is the
+  "usually `PENDING`" the proto comment allows for.
+- **The Redis member format extends section 6's example
+  (`record_id:attempt_number:outcome`) with a fourth field,
+  `failure_code`**: `ReportDelayedOutcomeRequest` accepts one, and
+  `scheduler.go`'s `ResumeNudge` already documents it as informational
+  (logged, never decision-driving), so carrying it through costs nothing
+  and keeps a failed nudge's audit trail as informative as a failed
+  retry's.
+- **`queue.due()` is not perfectly atomic** (`ZRANGEBYSCORE` then one
+  `ZREM` per member, not a single Lua script): World Simulator runs its
+  poller as one goroutine in one instance, so there is no concurrent
+  poller to race against, and `ReportDelayedOutcome` is already
+  at-least-once and idempotent-safe downstream (a duplicate is discarded,
+  not an error). Revisit if this service is ever run with more than one
+  replica.
+- **`deliver` retries a failed `ReportDelayedOutcome` call up to 3 times**
+  (`maxDeliverAttempts`, mirroring `scheduler.go`'s `executeWithRetry`
+  exactly) before logging the outcome as lost. The entry is already
+  removed from Redis by the time `due()` returns it, so an exhausted
+  retry is a real, visible loss (logged at `Error`), not a silent one;
+  acceptable for a DEMO ONLY component that a real deployment deletes
+  entirely (section 3b).
+- Every wall-clock delay goes through `config.Common.Scale`
+  (`DEMO_TIME_SCALE`), same as every other service. The poller's own tick
+  interval is deliberately **not** scaled (`WORLDSIM_POLL_INTERVAL`,
+  default 1s): scaling an already-small interval down further would make
+  polling impractically frequent, and a small fixed interval already
+  catches a compressed `resolves_at` promptly, mirroring
+  `services/decision-engine`'s own `SchedulerConfig.PollInterval`.
+- New dependency: `github.com/redis/go-redis/v9`. This is the first real
+  Redis client in the codebase (every other mention of Redis elsewhere is
+  a deliberate "not Redis" comment); no `internal/platform/redis` wrapper
+  was added since World Simulator is the only consumer today, consistent
+  with not building shared infrastructure ahead of a second need.
+- Wired into local dev and observability the same way every service is:
+  `make run-world-simulator` (fixed ports 9202/9203), a `world-simulator`
+  scrape target in `deploy/observability/prometheus.yml.tmpl`, and
+  `DECISION_ENGINE_ADDR`/`WORLDSIM_POLL_INTERVAL` added to `.env.example`.
+  Verified live, not just by inspection: ran the service against the real
+  docker-compose stack, made a real `SimulateOutcome` call, confirmed the
+  Redis sorted set held the correctly-formatted scheduled entry, and
+  confirmed `requests_total`/`request_duration_seconds` appeared on
+  `/metrics` with the right method and status labels.
+
+**Definition of done additions**: 22 tests against real Postgres and real
+Redis (`go test -tags=integration`): the roll logic's correct-vs-wrong
+action selection, the mirror table, immediate retry success/failure
+(including that the response's `failure_code` is empty on success),
+wrong-action probability actually applying, nudge scheduling and its
+exact Redis payload, the zero-delay-resolves-immediately edge,
+`DEMO_TIME_SCALE` actually scaling `resolves_at`, not-found/invalid-argument
+edges, the queue's schedule/due/remove cycle including a malformed
+member, and the poller's delivery, retry-then-succeed, and
+give-up-after-max-attempts paths. Adversarially verified five times:
+inverted which probability applies to the correct vs. wrong action
+(caught by three separate tests); removed the zero-delay guard, which
+initially did **not** get caught because the test exercising it used
+`ESCALATE` instead of a real nudge action type and so never touched
+`isNudge` at all — fixed the test itself to use `NUDGE_METHOD_UPDATE`,
+re-broke the code, confirmed the corrected test now failed, then
+reverted; swapped which branch of the immediate response carries
+`failure_code`, caught by the retry-success test. All reverted, confirmed
+green.
+
+**Found and flagged, not fixed here**: `demo/notification-simulator` is
+still a 41-line stub, same as World Simulator was before this unit. Unit
+D ("Executor: wire real World/Notification Simulator clients") may
+therefore need to implement the Notification Simulator for real, not only
+wire a client to something already built — its own job is much smaller
+(log what would have been sent; nothing is really delivered, per its
+proto's own comment) but it is not yet done, and D's scope should account
+for that rather than assume it is.
 
 ## Unit I: Razorpay's published error codes as the failure vocabulary
 
