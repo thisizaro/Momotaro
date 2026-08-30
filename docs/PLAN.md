@@ -684,10 +684,15 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       00001_initial_schema.sql`); no new migration required
       → `ARCHITECTURE.md` §5b, `PRD.md` §1 feature 5,
       `docs/PHASE5_IMPLEMENTATION.md` Unit E
-- [ ] Demo-time scale factor (config knob, `ARCHITECTURE.md` §17) wired
+- [x] Demo-time scale factor (config knob, `ARCHITECTURE.md` §17) wired
       through cooldowns (already done, Phase 2/3) and World Simulator's
       delay/tick timing (folded into Unit C, not a separate item: World
-      Simulator has no timing logic to retrofit until it exists)
+      Simulator has no timing logic to retrofit until it exists). Stale
+      checkbox found and corrected 2026-08-30: `DEMO_TIME_SCALE` has been
+      wired since Unit C merged (`config.Common.DemoTimeScale`, applied in
+      `demo/world-simulator/internal/server/server.go`'s `scale` field and
+      `services/decision-engine/cmd/main.go`), this line was just never
+      ticked
 
 ### Added 2026-08-29, after reading the actual judging rubric
 
