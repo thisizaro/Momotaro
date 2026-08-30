@@ -43,6 +43,13 @@ message ExecuteRequest {
   // Executor records what it is told and never recomputes them.
   double ev_score_at_decision = 7;
   double p_recovery_at_decision = 8;
+  // Which rung actually wrote `message`: SOURCE_LLM for a live model
+  // answer, SOURCE_RULES_FALLBACK for the static Hinglish template.
+  // Unset for a retry, which never carries a message at all. Persisted on
+  // INTERVENTION_ATTEMPT.message_source so the audit trail distinguishes a
+  // generated message from a templated one (docs/ARCHITECTURE.md section
+  // 5b), the same distinction `source`/`hops` already give Classify.
+  common.v1.Source message_source = 9;
 }
 
 message ExecuteResponse {
