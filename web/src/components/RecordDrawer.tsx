@@ -10,6 +10,7 @@ import {
   formatTime,
 } from '@/lib/format';
 import type { RecordAuditResponse } from '@/types';
+import { ErrorBanner } from '@/components/ErrorBanner';
 
 interface Props {
   /** Whether the drawer is showing. Without this the backdrop and panel
@@ -17,10 +18,12 @@ interface Props {
   open: boolean;
   detail: RecordAuditResponse | null;
   loading: boolean;
+  error?: string | null;
   onClose: () => void;
+  onRetry?: () => void;
 }
 
-export function RecordDrawer({ open, detail, loading, onClose }: Props) {
+export function RecordDrawer({ open, detail, loading, error, onClose, onRetry }: Props) {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -41,11 +44,21 @@ export function RecordDrawer({ open, detail, loading, onClose }: Props) {
         onClick={onClose}
       />
       <div className="fixed right-0 top-0 bottom-0 w-full max-w-lg bg-white shadow-2xl z-50 overflow-y-auto scrollbar-thin fade-in">
-        {loading || !detail ? (
+        {loading ? (
           <div className="flex items-center justify-center h-full">
             <div className="w-6 h-6 border-2 border-slate-200 border-t-slate-400 rounded-full animate-spin" />
           </div>
-        ) : (
+        ) : error ? (
+          <div className="p-6 space-y-4">
+            <div className="flex items-start justify-between">
+              <h2 className="text-lg font-bold text-slate-900">Record Detail</h2>
+              <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors">
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
+            <ErrorBanner message={error} onRetry={onRetry} />
+          </div>
+        ) : !detail ? null : (
           <div className="p-6 space-y-6">
             {/* Header */}
             <div className="flex items-start justify-between">
