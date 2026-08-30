@@ -18,11 +18,11 @@ import (
 func TestHandleMessageForcesRulesOnlyAtDefaultSampleRate(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
-	cfg := testConfig(dlqTopic) // LLMSampleRate defaults to the zero value, 0.0
+	cfg := testConfig(dlqTopic, auditTopic) // LLMSampleRate defaults to the zero value, 0.0
 	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), cfg)
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "RISK_HOLD"})
@@ -42,11 +42,11 @@ func TestHandleMessageForcesRulesOnlyAtDefaultSampleRate(t *testing.T) {
 func TestHandleMessageAllowsLiveCallAtFullSampleRate(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
-	cfg := testConfig(dlqTopic)
+	cfg := testConfig(dlqTopic, auditTopic)
 	cfg.LLMSampleRate = 1.0
 	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), cfg)
 

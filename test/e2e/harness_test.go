@@ -32,6 +32,7 @@ type stack struct {
 	executorAddr string // host:port for Executor's gRPC
 	topic        string // this stack's isolated raw.events topic
 	dlqTopic     string
+	auditTopic   string // this stack's isolated audit.events topic
 
 	// Decision Engine restart support (Unit K, docs/PHASE2_IMPLEMENTATION.md):
 	// everything needed to kill the running process and start an
@@ -108,11 +109,12 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 	// record_state's foreign key before reaching this test's own message.
 	// See docs/INCIDENTS.md.
 	s := &stack{
-		topic:    "e2e-raw-events-" + uuid.NewString(),
-		dlqTopic: "e2e-raw-events-dlq-" + uuid.NewString(),
+		topic:      "e2e-raw-events-" + uuid.NewString(),
+		dlqTopic:   "e2e-raw-events-dlq-" + uuid.NewString(),
+		auditTopic: "e2e-audit-events-" + uuid.NewString(),
 	}
 	group := "e2e-decision-engine-" + uuid.NewString()
-	for _, topic := range []string{s.topic, s.dlqTopic} {
+	for _, topic := range []string{s.topic, s.dlqTopic, s.auditTopic} {
 		if err := kafkax.EnsureTopic(ctx, []string{kafkaBrokers}, topic, 1); err != nil {
 			t.Fatalf("EnsureTopic %s: %v", topic, err)
 		}
@@ -190,6 +192,7 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 		"RAW_EVENTS_TOPIC":          s.topic,
 		"RAW_EVENTS_CONSUMER_GROUP": group,
 		"RAW_EVENTS_DLQ_TOPIC":      s.dlqTopic,
+		"AUDIT_EVENTS_TOPIC":        s.auditTopic,
 		// Short and isolated: production's real cause-aware timing
 		// (ARCHITECTURE.md section 5a) is Phase 2 work, and Phase 1's fixed
 		// delay defaults to 30s, which is not under pipelineWait.

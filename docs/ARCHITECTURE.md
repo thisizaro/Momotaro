@@ -804,7 +804,6 @@ flowchart LR
     K1 --> DEC[Decision Engine]
     DEC -->|"poison messages, after N failures"| K3[(raw.events.dlq)]
     DEC -->|audit.events| K2[(audit.events)]
-    EXE[Executor] -->|audit.events| K2
     K2 --> REP[Reporting Service\nconsumer group: reporting]
     PG[(Postgres)] --> AUD[Audit Service\nreads PG directly, no Kafka]
 ```
@@ -1075,7 +1074,7 @@ database and unmanaged sharing is how that becomes a mess:
 | `BATCH`, `RECORD` | Ingestion | Decision Engine, Classifier, Reporting, Audit |
 | `RECORD_STATE` | Decision Engine (incl. its scheduler worker) | Reporting, Audit |
 | `INTERVENTION_ATTEMPT` | Executor | Decision Engine, Classifier, Reporting, Audit |
-| `AUDIT_ENTRY` | Decision Engine and Executor, transactionally with their own state changes, append-only | Audit, Reporting |
+| `AUDIT_ENTRY` | Decision Engine, transactionally with its own `RECORD_STATE` changes, append-only | Audit, Reporting |
 | `GROUND_TRUTH` | batch generator (`scripts/`) | World Simulator, Reporting accuracy scorer **only** |
 
 No service writes a table it does not own. Cross-service reads go through

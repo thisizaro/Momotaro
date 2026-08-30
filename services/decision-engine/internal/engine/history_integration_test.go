@@ -180,7 +180,7 @@ func TestLoadInstrumentHistoryCapped(t *testing.T) {
 func TestHandleMessageSendsHistoryAndInstrumentHistoryToClassifier(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	instrument := "instr-" + uuid.NewString()
 	base := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
 
@@ -192,7 +192,7 @@ func TestHandleMessageSendsHistoryAndInstrumentHistoryToClassifier(t *testing.T)
 	seedAttemptOutcome(ctx, t, pool, otherRecordID, 1, commonv1.ActionType_ACTION_TYPE_RETRY, commonv1.Outcome_OUTCOME_FAILURE, base.Add(5*time.Minute))
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "RISK_HOLD", InstrumentRef: instrument})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -230,11 +230,11 @@ func TestHandleMessageSendsHistoryAndInstrumentHistoryToClassifier(t *testing.T)
 func TestHandleMessageSendsNoInstrumentHistoryWhenInstrumentRefEmpty(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "RISK_HOLD"})
 	if err := e.HandleMessage(ctx, msg); err != nil {

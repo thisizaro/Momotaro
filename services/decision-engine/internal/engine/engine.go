@@ -53,6 +53,11 @@ type Config struct {
 	// itself via TimeScale below.
 	RetryMandateLeadTime time.Duration
 	DLQTopic             string
+	// AuditEventsTopic is audit.events (docs/ARCHITECTURE.md sections 8,
+	// 10a, 6a): published to, best-effort, after every RECORD_STATE +
+	// AUDIT_ENTRY transaction commits, so Reporting can drive
+	// StreamBatchUpdates (docs/PHASE5_IMPLEMENTATION.md Unit F).
+	AuditEventsTopic string
 	// TimeScale is DEMO_TIME_SCALE (docs/ARCHITECTURE.md section 17),
 	// threaded from config.Common so retryDueAt can compress salary-window
 	// waits for a live demo.
@@ -85,18 +90,22 @@ type Engine struct {
 	store     *store
 	clients   *clients
 	dlq       *deadLetterPublisher
+	audit     *auditEventPublisher
 	clock     clock.Clock
 	economics *economics.Model
 	cfg       Config
 }
 
 // New returns an Engine. dlqProducer publishes to cfg.DLQTopic
-// (raw.events.dlq in production).
+// (raw.events.dlq in production) and, on cfg.AuditEventsTopic, audit.events
+// (docs/PHASE5_IMPLEMENTATION.md Unit F): one producer serves both, since
+// kafkax.Producer.Publish takes the topic per call.
 func New(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, model *economics.Model, cfg Config) *Engine {
 	return &Engine{
 		store:     newStore(pool),
 		clients:   &clients{classifier: classifier, executor: executor, callTimeout: cfg.CallTimeout, llmSampleRate: cfg.LLMSampleRate},
 		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
+		audit:     newAuditEventPublisher(dlqProducer, cfg.AuditEventsTopic),
 		clock:     clk,
 		economics: model,
 		cfg:       cfg,
@@ -178,6 +187,13 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 
 	if err := e.store.scheduleNew(ctx, log, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), classifyResp.GetHops(), score, trace, dueAt, now); err != nil {
 		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)
+	}
+	// Best-effort, after the transaction above has already committed:
+	// audit.events is a notification stream, never a system of record
+	// (docs/ARCHITECTURE.md section 10a), so a publish failure here must
+	// not undo or fail a state change that already happened.
+	if err := e.audit.Publish(ctx, evt.RecordID, evt.BatchID, steps[0].From, final, recoveredDelta(final, evt.AmountPaise), now); err != nil {
+		log.Error("failed to publish audit event", logger.KeyError, err.Error())
 	}
 
 	log.Info("record classified and scheduled",

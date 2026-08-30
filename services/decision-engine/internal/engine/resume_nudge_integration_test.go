@@ -21,7 +21,7 @@ import (
 
 func TestResumeNudgeAppliesSuccessOutcome(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	_, recordID := seedRecord(ctx, t, pool)
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_NUDGED, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Time{})
@@ -29,7 +29,7 @@ func TestResumeNudgeAppliesSuccessOutcome(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic, auditTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -59,6 +59,22 @@ func TestResumeNudgeAppliesSuccessOutcome(t *testing.T) {
 	if reason != "action succeeded" {
 		t.Errorf("audit_entry.reason = %q, want %q", reason, "action succeeded")
 	}
+
+	// Phase 5 Unit F: applyResumedOutcome's transaction is the one that
+	// actually recovered the record, an amount that only exists because
+	// World Simulator's delayed-outcome callback arrived, so
+	// recovered_delta_paise must carry it here even though nothing in this
+	// call was synchronous with the original nudge send.
+	evt := waitForAuditEvent(t, auditTopic, recordID, 5*time.Second)
+	if evt.FromState != commonv1.RecordState_RECORD_STATE_NUDGED.String() {
+		t.Errorf("audit event FromState = %q, want NUDGED", evt.FromState)
+	}
+	if evt.ToState != commonv1.RecordState_RECORD_STATE_RECOVERED.String() {
+		t.Errorf("audit event ToState = %q, want RECOVERED", evt.ToState)
+	}
+	if evt.RecoveredDeltaPaise != 10000 {
+		t.Errorf("audit event RecoveredDeltaPaise = %d, want 10000", evt.RecoveredDeltaPaise)
+	}
 }
 
 // A fresh record has retry budget and positive-EV priors left
@@ -69,7 +85,7 @@ func TestResumeNudgeAppliesSuccessOutcome(t *testing.T) {
 // shortcut, for the async case.
 func TestResumeNudgeReSchedulesRatherThanEscalatingOnFailureOutcome(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	_, recordID := seedRecord(ctx, t, pool)
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_NUDGED, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Time{})
@@ -77,7 +93,7 @@ func TestResumeNudgeReSchedulesRatherThanEscalatingOnFailureOutcome(t *testing.T
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic, auditTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_FAILURE, "CUSTOMER_UNREACHABLE")
 	if err != nil {
@@ -123,7 +139,7 @@ func TestResumeNudgeReSchedulesRatherThanEscalatingOnFailureOutcome(t *testing.T
 // decisionengine.proto's own comment on the field warns about.
 func TestResumeNudgeDiscardsStaleAttemptNumber(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	_, recordID := seedRecord(ctx, t, pool)
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_NUDGED, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Time{})
@@ -131,7 +147,7 @@ func TestResumeNudgeDiscardsStaleAttemptNumber(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic, auditTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -165,7 +181,7 @@ func TestResumeNudgeDiscardsStaleAttemptNumber(t *testing.T) {
 // exists specifically to make that gap impossible to reopen silently.
 func TestResumeNudgeDiscardsWhenNotInNudgedState(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	_, recordID := seedRecord(ctx, t, pool)
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_RECOVERED, commonv1.ActionType_ACTION_TYPE_UNSPECIFIED, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Time{})
@@ -173,7 +189,7 @@ func TestResumeNudgeDiscardsWhenNotInNudgedState(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic, auditTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -189,10 +205,10 @@ func TestResumeNudgeDiscardsWhenNotInNudgedState(t *testing.T) {
 
 func TestResumeNudgeDiscardsUnknownRecord(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 
-	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic, auditTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, uuid.NewString(), 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -215,7 +231,7 @@ func TestResumeNudgeDiscardsUnknownRecord(t *testing.T) {
 // runs, not just possible in principle.
 func TestResumeNudgeConcurrentReportsApplyExactlyOnce(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	_, recordID := seedRecord(ctx, t, pool)
 	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_NUDGED, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, time.Time{})
@@ -223,7 +239,7 @@ func TestResumeNudgeConcurrentReportsApplyExactlyOnce(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic, auditTopic))
 
 	const numReporters = 25
 	start := make(chan struct{})

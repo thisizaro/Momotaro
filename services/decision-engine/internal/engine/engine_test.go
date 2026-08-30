@@ -19,21 +19,21 @@ import (
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 )
 
-func testConfig(dlqTopic string) Config {
+func testConfig(dlqTopic, auditTopic string) Config {
 	// Guardrails must be set explicitly: the zero value blocks every action
 	// (see GuardrailConfig.Validate), which would silently turn every test
 	// below into an assertion about escalation.
-	return Config{CallTimeout: 2 * time.Second, RetryDelay: time.Minute, NudgeDelay: time.Minute, DLQTopic: dlqTopic, TimeScale: 1, Guardrails: testGuardrails}
+	return Config{CallTimeout: 2 * time.Second, RetryDelay: time.Minute, NudgeDelay: time.Minute, DLQTopic: dlqTopic, AuditEventsTopic: auditTopic, TimeScale: 1, Guardrails: testGuardrails}
 }
 
 func TestHandleMessageSchedulesRetry(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := retryClassifier()
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -90,6 +90,25 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 	if classifier.calls != 1 {
 		t.Errorf("classifier called %d times, want 1", classifier.calls)
 	}
+
+	// Phase 5 Unit F: scheduleNew's transaction commits New -> Scoring ->
+	// RetryScheduled in one go, and the caller-visible fact is the final
+	// state, not every internal microstep (reporting.v1.BatchUpdate's own
+	// comment: "deliberately small"). recovered_delta_paise is 0: nothing
+	// was recovered by merely scheduling a retry.
+	evt := waitForAuditEvent(t, auditTopic, recordID, 5*time.Second)
+	if evt.BatchID != batchID {
+		t.Errorf("audit event BatchID = %q, want %q", evt.BatchID, batchID)
+	}
+	if evt.FromState != commonv1.RecordState_RECORD_STATE_NEW.String() {
+		t.Errorf("audit event FromState = %q, want NEW", evt.FromState)
+	}
+	if evt.ToState != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED.String() {
+		t.Errorf("audit event ToState = %q, want RETRY_SCHEDULED", evt.ToState)
+	}
+	if evt.RecoveredDeltaPaise != 0 {
+		t.Errorf("audit event RecoveredDeltaPaise = %d, want 0", evt.RecoveredDeltaPaise)
+	}
 }
 
 // The decision_trace column (migration 00006, docs/PHASE5_IMPLEMENTATION.md
@@ -99,12 +118,12 @@ func TestHandleMessageSchedulesRetry(t *testing.T) {
 // which precedes any scoring at all.
 func TestHandleMessageSchedulesRetryPersistsDecisionTrace(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := retryClassifier()
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -159,7 +178,7 @@ func TestHandleMessageSchedulesRetryPersistsDecisionTrace(t *testing.T) {
 
 func TestHandleMessageSchedulesNudge(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
@@ -167,7 +186,7 @@ func TestHandleMessageSchedulesNudge(t *testing.T) {
 	// against an expired instrument has zero probability and cannot pay for
 	// itself, while a method-update nudge is the only thing that can work.
 	classifier := &fakeClassifier{resp: classifyResponseFor(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE, commonv1.ActionType_ACTION_TYPE_NUDGE_METHOD_UPDATE)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_CHECKOUT", AmountPaise: 5000, FailureCode: "ABANDONED"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -188,12 +207,12 @@ func TestHandleMessageSchedulesNudge(t *testing.T) {
 
 func TestHandleMessageEscalatesOnExplicitEscalateAction(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_ESCALATE)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "RISK_HOLD"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -234,7 +253,7 @@ func TestHandleMessageEscalatesOnExplicitEscalateAction(t *testing.T) {
 // violate record_state's primary key).
 func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
@@ -244,7 +263,7 @@ func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 	}
 
 	classifier := retryClassifier()
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -265,8 +284,8 @@ func TestHandleMessageSkipsRecordAlreadyHavingState(t *testing.T) {
 
 func TestHandleMessageDeadLettersMalformedPayload(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
-	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	raw := "not json"
 	msg := kafkax.Message{Topic: "raw.events", Key: "bad-key", Value: []byte(raw)}
@@ -285,12 +304,12 @@ func TestHandleMessageDeadLettersMalformedPayload(t *testing.T) {
 
 func TestHandleMessageDeadLettersAfterClassifyRetriesExhausted(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{err: errors.New("classifier unavailable")}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -317,7 +336,7 @@ func TestHandleMessageDeadLettersAfterClassifyRetriesExhausted(t *testing.T) {
 
 func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
@@ -325,7 +344,7 @@ func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) 
 	classifier.err = errors.New("transient")
 	classifier.failN = maxClassifyAttempts - 1 // fails all but the last attempt
 
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 10000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
 		t.Fatalf("HandleMessage: %v", err)
@@ -346,8 +365,8 @@ func TestHandleMessageRetriesTransientClassifyFailureThenSucceeds(t *testing.T) 
 
 func TestHandleMessageRejectsMalformedPayloadIsNeverFatal(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
-	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
+	e := New(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := kafkax.Message{Topic: "raw.events", Key: "bad", Value: []byte("{not valid json")}
 	if err := e.HandleMessage(context.Background(), msg); err != nil {
@@ -364,12 +383,12 @@ func TestHandleMessageRejectsMalformedPayloadIsNeverFatal(t *testing.T) {
 // It does not. It says what went wrong, and the numbers do the rest.
 func TestScorerOverridesTheClassifierRecommendationOnExpectedValue(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseFor(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 50000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {
@@ -389,12 +408,12 @@ func TestScorerOverridesTheClassifierRecommendationOnExpectedValue(t *testing.T)
 // trail replays the state diagram rather than summarising it.
 func TestScoredRecordsRecordTheScoringHopInTheTrail(t *testing.T) {
 	pool := testPool(t)
-	dlqProducer, dlqTopic := testDLQ(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
 	ctx := context.Background()
 	batchID, recordID := seedRecord(ctx, t, pool)
 
 	classifier := &fakeClassifier{resp: classifyResponseWithAction(commonv1.ActionType_ACTION_TYPE_RETRY)}
-	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic))
+	e := New(pool, classifier, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), testConfig(dlqTopic, auditTopic))
 
 	msg := rawEventMessage(t, RawEvent{RecordID: recordID, BatchID: batchID, Type: "RECORD_TYPE_PAYMENT", AmountPaise: 50000, FailureCode: "BANK_TIMEOUT"})
 	if err := e.HandleMessage(ctx, msg); err != nil {

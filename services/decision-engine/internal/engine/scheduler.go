@@ -39,8 +39,10 @@ type SchedulerConfig struct {
 	CallTimeout  time.Duration
 	PollInterval time.Duration
 	DLQTopic     string
-	RetryDelay   time.Duration
-	NudgeDelay   time.Duration
+	// AuditEventsTopic: see engine.Config's field of the same name.
+	AuditEventsTopic string
+	RetryDelay       time.Duration
+	NudgeDelay       time.Duration
 	// RetryMandateLeadTime: see engine.Config's field of the same name.
 	// Duplicated here rather than shared because the two configs already
 	// duplicate RetryDelay/NudgeDelay/TimeScale the same way, one config
@@ -61,6 +63,7 @@ type Scheduler struct {
 	store     *store
 	clients   *clients
 	dlq       *deadLetterPublisher
+	audit     *auditEventPublisher
 	clock     clock.Clock
 	economics *economics.Model
 	cfg       SchedulerConfig
@@ -82,6 +85,7 @@ func NewScheduler(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceCl
 			nudgeMaxChars: cfg.NudgeMaxChars,
 		},
 		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
+		audit:     newAuditEventPublisher(dlqProducer, cfg.AuditEventsTopic),
 		clock:     clk,
 		economics: model,
 		cfg:       cfg,
@@ -145,9 +149,13 @@ func (s *Scheduler) process(ctx context.Context, c claimedRecord) {
 	}
 
 	toState, reason := decideAfterExecute(c.PendingAction, outcome)
-	if err := s.store.recordOutcome(ctx, c, toState, reason, int(attemptNumber), resp.GetCostPaise(), s.clock.Now()); err != nil {
+	now := s.clock.Now()
+	if err := s.store.recordOutcome(ctx, c, toState, reason, int(attemptNumber), resp.GetCostPaise(), now); err != nil {
 		log.Error("failed to record outcome", logger.KeyError, err.Error())
 		return
+	}
+	if err := s.audit.Publish(ctx, c.RecordID, c.BatchID, c.ClaimedState, toState, recoveredDelta(toState, c.AmountPaise), now); err != nil {
+		log.Error("failed to publish audit event", logger.KeyError, err.Error())
 	}
 
 	log.Info("scheduled action executed",
@@ -179,6 +187,9 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 	if err := s.store.recordRescore(ctx, c, steps, pendingAction, score, trace, dueAt, attemptNumber, costPaise, now); err != nil {
 		log.Error("failed to record rescore", logger.KeyError, err.Error())
 		return
+	}
+	if err := s.audit.Publish(ctx, c.RecordID, c.BatchID, steps[0].From, state, recoveredDelta(state, c.AmountPaise), now); err != nil {
+		log.Error("failed to publish audit event", logger.KeyError, err.Error())
 	}
 
 	log.Info("attempt failed, re-scored rather than escalated",
@@ -266,7 +277,11 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 	if !applied {
 		return false, state, nil
 	}
-	return true, steps[len(steps)-1].To, nil
+	final := steps[len(steps)-1].To
+	if pubErr := s.audit.Publish(ctx, c.RecordID, c.BatchID, steps[0].From, final, recoveredDelta(final, c.AmountPaise), now); pubErr != nil {
+		logger.From(ctx).Error("failed to publish audit event", logger.KeyError, pubErr.Error())
+	}
+	return true, final, nil
 }
 
 func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attemptNumber int32) (*executorv1.ExecuteResponse, error) {

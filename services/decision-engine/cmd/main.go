@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thisizaro/Momotaro/internal/platform/auditevent"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
@@ -58,7 +59,13 @@ type serviceConfig struct {
 	Topic          string
 	ConsumerGroup  string
 	DLQTopic       string
-	WorkerPoolSize int
+	// AuditEventsTopic is AUDIT_EVENTS_TOPIC, default auditevent.Topic
+	// ("audit.events", docs/ARCHITECTURE.md section 8). Overridable for the
+	// same reason RAW_EVENTS_DLQ_TOPIC is (docs/INCIDENTS.md): an e2e test's
+	// isolated stack needs its own topic, or a fresh consumer group on the
+	// shared one would replay every other test's history.
+	AuditEventsTopic string
+	WorkerPoolSize   int
 	// RetryDelay/NudgeDelay: Phase 1 placeholders, see engine.Config.
 	RetryDelay   time.Duration
 	NudgeDelay   time.Duration
@@ -135,6 +142,7 @@ func loadConfig() (serviceConfig, error) {
 		Topic:                l.StrDefault("RAW_EVENTS_TOPIC", defaultRawEventsTopic),
 		ConsumerGroup:        l.StrDefault("RAW_EVENTS_CONSUMER_GROUP", defaultRawEventsConsumerGroup),
 		DLQTopic:             l.StrDefault("RAW_EVENTS_DLQ_TOPIC", defaultDLQTopic),
+		AuditEventsTopic:     l.StrDefault("AUDIT_EVENTS_TOPIC", auditevent.Topic),
 		WorkerPoolSize:       l.Int("WORKER_POOL_SIZE", 32),
 		RetryDelay:           l.Duration("RETRY_DELAY", 30*time.Second),
 		NudgeDelay:           l.Duration("NUDGE_DELAY", 30*time.Second),
@@ -293,6 +301,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		NudgeDelay:                  cfg.Scale(cfg.NudgeDelay),
 		RetryMandateLeadTime:        cfg.RetryMandateLeadTime,
 		DLQTopic:                    cfg.DLQTopic,
+		AuditEventsTopic:            cfg.AuditEventsTopic,
 		TimeScale:                   cfg.DemoTimeScale,
 		Guardrails:                  guardrailsFrom(cfg),
 		LLMSampleRate:               cfg.LLMSampleRate,
@@ -304,9 +313,10 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		dlqProducer, clock.New(), model, engCfg)
 
 	schedCfg := engine.SchedulerConfig{
-		CallTimeout:  cfg.CallTimeout,
-		PollInterval: cfg.Scale(cfg.PollInterval),
-		DLQTopic:     cfg.DLQTopic,
+		CallTimeout:      cfg.CallTimeout,
+		PollInterval:     cfg.Scale(cfg.PollInterval),
+		DLQTopic:         cfg.DLQTopic,
+		AuditEventsTopic: cfg.AuditEventsTopic,
 		// See engCfg.RetryDelay above: retryDueAt scales this itself.
 		RetryDelay:           cfg.RetryDelay,
 		NudgeDelay:           cfg.Scale(cfg.NudgeDelay),
