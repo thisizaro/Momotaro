@@ -290,6 +290,7 @@ flowchart TB
 
     APIGW -->|gRPC| ING
     APIGW -->|gRPC read + server-stream| REP
+    APIGW -->|gRPC read| AUD
 
     ING -- publish --> K1
     K1 -- consume --> DEC
