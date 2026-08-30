@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -33,8 +35,24 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// defaultMigrationsDir resolves the migrations directory relative to this
+// source file's own location, not the caller's working directory, so
+// `go run ./scripts/migrate` behaves identically no matter where it is
+// invoked from (docs/INCIDENTS.md, 2026-08-30: a bare "./migrations"
+// default here silently meant something different depending on cwd, and
+// failed outright for anything other than the repo root). Same technique
+// test/e2e's own repoRoot helper already uses for the identical problem.
+func defaultMigrationsDir() string {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "./migrations" // repo-root-relative fallback, old behavior
+	}
+	// scripts/migrate/main.go -> repo root is two levels up.
+	return filepath.Join(filepath.Dir(file), "..", "..", "migrations")
+}
+
 func main() {
-	dir := flag.String("dir", "./migrations", "directory holding migration files")
+	dir := flag.String("dir", defaultMigrationsDir(), "directory holding migration files")
 	dsn := flag.String("dsn", os.Getenv("POSTGRES_DSN"), "Postgres DSN (defaults to $POSTGRES_DSN)")
 	flag.Parse()
 
