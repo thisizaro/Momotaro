@@ -42,7 +42,30 @@ type smokeCase struct {
 	why string
 	// recordID is filled in after submission.
 	recordID string
+
+	// groundTruthBucket is the RootCauseBucket string World Simulator's
+	// GROUND_TRUTH row must carry for this case (Phase 5 Units C/D:
+	// Executor now calls the real World Simulator for RETRY/NUDGE, which
+	// requires one to exist). Empty means this case escalates at classify
+	// time and never reaches Executor at all, so no row is seeded.
+	groundTruthBucket      string
+	recoveryProbability    float64
+	wrongActionProbability float64
+	// responseDelaySeconds only matters for a NUDGE case. neverResolves
+	// (below) is used for both NUDGE cases here: World Simulator always
+	// answers PENDING for a nudge whose scaled delay is still positive,
+	// regardless of the roll (server.go), so this guarantees the record
+	// stays parked in NUDGED for the lifetime of any conceivable test
+	// run, matching settledStates' claim that NUDGED is genuinely at
+	// rest here, not "at rest until this specific delay happens to fire".
+	responseDelaySeconds int32
 }
+
+// neverResolves scales down to ~55 minutes under DEMO_TIME_SCALE=300000,
+// far past pipelineWait (30s): large enough that a NUDGE case's parked
+// state cannot flip to something else mid-assertion, without being an
+// obviously-wrong sentinel like MaxInt32.
+const neverResolves int32 = 999999999
 
 func smokeCases() []smokeCase {
 	return []smokeCase{
@@ -50,43 +73,61 @@ func smokeCases() []smokeCase {
 			name: "transient bank failure recovers on retry", recordType: "PAYMENT",
 			failureCode: "BANK_TIMEOUT", amountPaise: 75000,
 			wantState: commonv1.RecordState_RECORD_STATE_RECOVERED, wantTerminal: true,
-			why: "TRANSIENT_BANK -> RETRY -> scheduled -> claimed -> stub succeeds on attempt 1",
+			why:                 "TRANSIENT_BANK -> RETRY -> scheduled -> claimed -> World Simulator succeeds on attempt 1",
+			groundTruthBucket:   commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK.String(),
+			recoveryProbability: 1.0,
 		},
 		{
 			name: "insufficient funds also retries", recordType: "MANDATE",
 			failureCode: "INSUFFICIENT_FUNDS", amountPaise: 250000,
 			wantState: commonv1.RecordState_RECORD_STATE_RECOVERED, wantTerminal: true,
-			why: "INSUFFICIENT_FUNDS -> RETRY (salary-window timing is Phase 2) -> succeeds on attempt 1",
+			why:                 "INSUFFICIENT_FUNDS -> RETRY (salary-window timing is Phase 2) -> succeeds on attempt 1",
+			groundTruthBucket:   commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS.String(),
+			recoveryProbability: 1.0,
 		},
 		{
 			name: "rail congestion recovers on retry", recordType: "PAYMENT",
 			failureCode: "RAIL_CONGESTION", amountPaise: 12000,
 			wantState: commonv1.RecordState_RECORD_STATE_RECOVERED, wantTerminal: true,
-			why: "TRANSIENT_BANK -> RETRY -> succeeds on attempt 1",
+			why:                 "TRANSIENT_BANK -> RETRY -> succeeds on attempt 1",
+			groundTruthBucket:   commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK.String(),
+			recoveryProbability: 1.0,
 		},
 		{
 			name: "risk hold is escalated, never auto-actioned", recordType: "PAYMENT",
 			failureCode: "RISK_HOLD", amountPaise: 500000,
 			wantState: commonv1.RecordState_RECORD_STATE_ESCALATED, wantTerminal: true,
-			why: "RISK_HOLD -> ESCALATE at classify time; ARCHITECTURE.md 5a forbids auto-retrying a risk decision",
+			why: "RISK_HOLD -> ESCALATE at classify time; ARCHITECTURE.md 5a forbids auto-retrying a risk decision" +
+				" (never reaches Executor, so no GROUND_TRUTH row is needed)",
 		},
 		{
 			name: "unrecognised failure code is escalated for review", recordType: "PAYMENT",
 			failureCode: "SOMETHING_WE_HAVE_NEVER_SEEN", amountPaise: 9900,
 			wantState: commonv1.RecordState_RECORD_STATE_ESCALATED, wantTerminal: true,
-			why: "unknown code on a PAYMENT -> UNSPECIFIED bucket -> ESCALATE rather than a guess",
+			why: "unknown code on a PAYMENT -> UNSPECIFIED bucket -> ESCALATE rather than a guess" +
+				" (never reaches Executor, so no GROUND_TRUTH row is needed)",
 		},
 		{
 			name: "dead instrument is nudged, not retried", recordType: "PAYMENT",
 			failureCode: "EXPIRED_INSTRUMENT", amountPaise: 33000,
 			wantState: commonv1.RecordState_RECORD_STATE_NUDGED, wantTerminal: false,
-			why: "HARD_DECLINE -> NUDGE_METHOD_UPDATE (a retry cannot fix a dead card) -> sent -> PENDING, parked awaiting the Phase 5 delayed-outcome callback",
+			why: "HARD_DECLINE -> NUDGE_METHOD_UPDATE (a retry cannot fix a dead card) -> sent -> PENDING," +
+				" parked awaiting the delayed-outcome callback (Phase 5 Unit C), which this test does not wait for",
+			groundTruthBucket: commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE.String(),
+			// [ASSUMPTION] matching scripts/batchgen/profile.go's HARD_DECLINE
+			// profile; irrelevant to this test's own assertions (only that it
+			// parks in NUDGED, not what the eventual answer would have been).
+			recoveryProbability: 0.15, wrongActionProbability: 0.02,
+			responseDelaySeconds: neverResolves,
 		},
 		{
 			name: "abandoned checkout is reminded", recordType: "CHECKOUT",
 			failureCode: "CHECKOUT_ABANDONED", amountPaise: 45000,
 			wantState: commonv1.RecordState_RECORD_STATE_NUDGED, wantTerminal: false,
-			why: "ABANDONMENT -> NUDGE_REMINDER -> sent -> PENDING, parked as above",
+			why:                 "ABANDONMENT -> NUDGE_REMINDER -> sent -> PENDING, parked as above",
+			groundTruthBucket:   commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT.String(),
+			recoveryProbability: 0.80, wrongActionProbability: 0.05,
+			responseDelaySeconds: neverResolves,
 		},
 	}
 }
@@ -104,7 +145,7 @@ func TestSmokeBatchReachesExpectedTerminalStates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	stack := startStack(ctx, t, "1s")
+	stack := startStack(ctx, t, "3000000s")
 	cases := smokeCases()
 
 	batchID := submitSmokeBatch(ctx, t, stack.gatewayHTTP, cases)
@@ -195,10 +236,20 @@ func resolveRecordIDs(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, batc
 			t.Fatalf("find record for %s: %v", tc.failureCode, err)
 		}
 		tc.recordID = id
+
+		if tc.groundTruthBucket != "" {
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+				VALUES ($1, $2, $3, $4, $5)`,
+				tc.recordID, tc.groundTruthBucket, tc.recoveryProbability, tc.wrongActionProbability, tc.responseDelaySeconds); err != nil {
+				t.Fatalf("seed ground_truth for %s: %v", tc.failureCode, err)
+			}
+		}
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
 		for _, tc := range cases {
+			_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, tc.recordID)
 			_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, tc.recordID)
 			_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, tc.recordID)
 			_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, tc.recordID)

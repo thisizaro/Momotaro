@@ -101,9 +101,32 @@ func TestBatchCorrectnessInvariants(t *testing.T) {
 	recContacts := recordIDByInstrument(ctx, t, pool, batchID, instrContacts)
 	recHappy := recordIDByInstrument(ctx, t, pool, batchID, instrHappy)
 
+	// All three classify as TRANSIENT_BANK (BANK_TIMEOUT), and Executor now
+	// calls the real World Simulator for RETRY/NUDGE (Phase 5 Units C/D),
+	// which requires a GROUND_TRUTH row per record. recHappy needs to
+	// recover organically on its first attempt: recovery_probability=1.0.
+	// recRetries and recContacts each get exactly ONE real live call before
+	// this test's own fabricated history takes over (the comments below
+	// already establish that), and that one call must fail to trip
+	// MAX_RETRIES the way the old deterministic stub's "attempt 2+ fails"
+	// script did: recovery_probability=0.0. wrong_action_probability=0.0
+	// too, since recContacts' re-score may pick a real NUDGE_REMINDER
+	// (not TRANSIENT_BANK's correct action, so it rolls against
+	// wrong_action_probability, not recovery_probability) and that must
+	// also resolve immediately and deterministically rather than park in
+	// PENDING inside waitUntilResting's 45s budget.
+	for rid, recoveryP := range map[string]float64{recHappy: 1.0, recRetries: 0.0, recContacts: 0.0} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+			VALUES ($1, 'ROOT_CAUSE_BUCKET_TRANSIENT_BANK', $2, 0.0, 0)`, rid, recoveryP); err != nil {
+			t.Fatalf("seed ground_truth for %s: %v", rid, err)
+		}
+	}
+
 	t.Cleanup(func() {
 		bg := context.Background()
 		for _, rid := range []string{recRetries, recContacts, recHappy} {
+			_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, rid)
 			_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, rid)
 			_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, rid)
 			_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, rid)

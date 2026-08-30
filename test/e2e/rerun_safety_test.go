@@ -47,7 +47,7 @@ func TestSubmitEventIdempotencyDeduplicatesRecord(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	stack := startStack(ctx, t, "1s")
+	stack := startStack(ctx, t, "3000000s")
 	pool := connectPool(ctx, t)
 	auditClient := dialAudit(ctx, t, stack.auditAddr)
 
@@ -74,8 +74,22 @@ func TestSubmitEventIdempotencyDeduplicatesRecord(t *testing.T) {
 	}
 	t.Logf("first submission: record_id=%s batch_id=%s", resp1.RecordID, resp1.BatchID)
 
+	// BANK_TIMEOUT classifies as TRANSIENT_BANK -> RETRY (buckets.go), and
+	// Executor now calls the real World Simulator for that action (Phase 5
+	// Units C/D), which requires a GROUND_TRUTH row. recovery_probability=1.0
+	// for the correct action reproduces the old stub's "attempt 1 succeeds"
+	// deterministically. See walking_skeleton_test.go for why seeding this
+	// immediately after resolving the record id is safe against the
+	// scheduler's first claim.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+		VALUES ($1, 'ROOT_CAUSE_BUCKET_TRANSIENT_BANK', 1.0, 0.0, 0)`, resp1.RecordID); err != nil {
+		t.Fatalf("seed ground_truth: %v", err)
+	}
+
 	t.Cleanup(func() {
 		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, resp1.RecordID)
 		_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, resp1.RecordID)
 		_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, resp1.RecordID)
 		_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, resp1.RecordID)
@@ -194,7 +208,7 @@ func TestSubmitBatchResubmitCreatesIndependentRecords(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	stack := startStack(ctx, t, "1s")
+	stack := startStack(ctx, t, "3000000s")
 	pool := connectPool(ctx, t)
 	auditClient := dialAudit(ctx, t, stack.auditAddr)
 
@@ -244,6 +258,7 @@ func TestSubmitBatchResubmitCreatesIndependentRecords(t *testing.T) {
 				for rows.Next() {
 					var rid string
 					_ = rows.Scan(&rid)
+					_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, rid)
 					_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, rid)
 					_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, rid)
 					_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, rid)
@@ -273,6 +288,19 @@ func TestSubmitBatchResubmitCreatesIndependentRecords(t *testing.T) {
 		t.Errorf("both batches created the same record ID %s: each batch must create its own", id1)
 	}
 	t.Logf("record IDs: batch1=%s record=%s  batch2=%s record=%s", resp1.BatchID, id1, resp2.BatchID, id2)
+
+	// INSUFFICIENT_FUNDS classifies as INSUFFICIENT_FUNDS -> RETRY
+	// (buckets.go), and Executor now calls the real World Simulator for
+	// that action (Phase 5 Units C/D), which requires a GROUND_TRUTH row
+	// for each record. recovery_probability=1.0 for the correct action
+	// reproduces the old stub's "attempt 1 succeeds" deterministically.
+	for _, rid := range []string{id1, id2} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+			VALUES ($1, 'ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS', 1.0, 0.0, 0)`, rid); err != nil {
+			t.Fatalf("seed ground_truth for %s: %v", rid, err)
+		}
+	}
 
 	// --- Wait for both records to process and settle. ---
 	waitForExactRecordState(ctx, t, pool, id1,

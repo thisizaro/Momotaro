@@ -40,7 +40,7 @@ func TestFallbackFromFailedLLMToRules(t *testing.T) {
 	}))
 	defer fakeGroq.Close()
 
-	stack := startStackWithEnv(ctx, t, "1s",
+	stack := startStackWithEnv(ctx, t, "3000000s",
 		map[string]string{
 			"LLM_PROVIDER_CHAIN": "groq,rules",
 			"GROQ_API_KEY":       "e2e-fake-key",
@@ -107,8 +107,21 @@ func TestFallbackFromFailedLLMToRules(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id FROM record WHERE batch_id = $1`, submitResp.BatchID).Scan(&recordID); err != nil {
 		t.Fatalf("find ingested record: %v", err)
 	}
+	// BANK_TIMEOUT classifies as TRANSIENT_BANK -> RETRY (buckets.go), and
+	// Executor now calls the real World Simulator for that action (Phase 5
+	// Units C/D), which requires a GROUND_TRUTH row. recovery_probability=1.0
+	// for the correct action reproduces the old stub's "attempt 1 succeeds"
+	// deterministically. See walking_skeleton_test.go for why seeding this
+	// immediately after resolving recordID is safe against the scheduler's
+	// first claim.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+		VALUES ($1, 'ROOT_CAUSE_BUCKET_TRANSIENT_BANK', 1.0, 0.0, 0)`, recordID); err != nil {
+		t.Fatalf("seed ground_truth: %v", err)
+	}
 	t.Cleanup(func() {
 		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, recordID)
 		_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE batch_id = $1`, submitResp.BatchID)
 		_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, recordID)
 		_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, recordID)

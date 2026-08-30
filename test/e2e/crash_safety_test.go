@@ -64,9 +64,25 @@ func TestCrashSafetyDecisionEngineRestart(t *testing.T) {
 	batchID := resp.BatchID
 
 	recordIDs := recordIDsForBatch(ctx, t, pool, batchID, numRecords)
+
+	// All eight classify as TRANSIENT_BANK (BANK_TIMEOUT), and Executor now
+	// calls the real World Simulator for RETRY (Phase 5 Units C/D), which
+	// requires a GROUND_TRUTH row per record. recovery_probability=1.0 for
+	// the correct action reproduces the old stub's "attempt 1 succeeds"
+	// deterministically, which is what every record must do here (crash
+	// safety, not economics, is what this test proves).
+	for _, rid := range recordIDs {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+			VALUES ($1, 'ROOT_CAUSE_BUCKET_TRANSIENT_BANK', 1.0, 0.0, 0)`, rid); err != nil {
+			t.Fatalf("seed ground_truth for %s: %v", rid, err)
+		}
+	}
+
 	t.Cleanup(func() {
 		bg := context.Background()
 		for _, rid := range recordIDs {
+			_, _ = pool.Exec(bg, `DELETE FROM ground_truth WHERE record_id = $1`, rid)
 			_, _ = pool.Exec(bg, `DELETE FROM audit_entry WHERE record_id = $1`, rid)
 			_, _ = pool.Exec(bg, `DELETE FROM intervention_attempt WHERE record_id = $1`, rid)
 			_, _ = pool.Exec(bg, `DELETE FROM record_state WHERE record_id = $1`, rid)

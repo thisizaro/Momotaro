@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	notifierv1 "github.com/thisizaro/Momotaro/proto/gen/notifier/v1"
 )
@@ -26,19 +25,10 @@ type Result struct {
 type Router struct {
 	recovery     RecoveryActionPort
 	notification NotificationPort
-	clock        clock.Clock
-	// nudgeResolveDelay is how long after sending a nudge the customer's
-	// answer is expected. Already scaled by DEMO_TIME_SCALE by the caller.
-	nudgeResolveDelay time.Duration
 }
 
-func NewRouter(recovery RecoveryActionPort, notification NotificationPort, clk clock.Clock, nudgeResolveDelay time.Duration) *Router {
-	return &Router{
-		recovery:          recovery,
-		notification:      notification,
-		clock:             clk,
-		nudgeResolveDelay: nudgeResolveDelay,
-	}
+func NewRouter(recovery RecoveryActionPort, notification NotificationPort) *Router {
+	return &Router{recovery: recovery, notification: notification}
 }
 
 // Execute performs action for a record and reports what happened.
@@ -55,7 +45,7 @@ func (r *Router) Execute(ctx context.Context, recordID string, action commonv1.A
 
 	case commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER,
 		commonv1.ActionType_ACTION_TYPE_NUDGE_METHOD_UPDATE:
-		return r.nudge(ctx, recordID, action, message)
+		return r.nudge(ctx, recordID, action, attemptNumber, message)
 
 	case commonv1.ActionType_ACTION_TYPE_NONE:
 		// A deliberate decision to do nothing, which succeeds by definition
@@ -101,29 +91,47 @@ func (r *Router) retry(ctx context.Context, recordID string, action commonv1.Act
 	return res, nil
 }
 
-// nudge sends the message, then reports PENDING: the send either worked or it
-// did not, but the customer's reaction is what actually resolves the record
-// and no customer reacts inside an RPC deadline
-// (proto/worldsim/v1: "a customer does not react inside an RPC deadline").
-func (r *Router) nudge(ctx context.Context, recordID string, action commonv1.ActionType, message string) (Result, error) {
+// nudge sends the message, then, only if it was actually delivered, asks
+// the recovery port whether and when the customer is expected to react.
+// Sending and reacting are different questions: SimulateSend answers
+// "did the channel deliver this", the recovery port (demo/world-simulator
+// in the demo, a real GROUND_TRUTH-less bank/CRM signal in production)
+// answers "does this customer, specifically, pay after being asked", which
+// only something holding a recoverability model can know
+// (docs/ARCHITECTURE.md section 6). Not delivered means there is nothing
+// to wait for, so the recovery port is never called in that case.
+func (r *Router) nudge(ctx context.Context, recordID string, action commonv1.ActionType, attemptNumber int32, message string) (Result, error) {
 	channel := channelFor(action)
 	sent, err := r.notification.SimulateSend(ctx, recordID, channel, message)
 	if err != nil {
 		return Result{}, fmt.Errorf("notification port: %w", err)
 	}
 	if !sent.Sent {
-		// Nothing was delivered, so there is no reaction to wait for.
 		return Result{
 			Outcome:     commonv1.Outcome_OUTCOME_FAILURE,
 			CostPaise:   sent.CostPaise,
 			FailureCode: "NOTIFICATION_NOT_SENT",
 		}, nil
 	}
-	return Result{
-		Outcome:    commonv1.Outcome_OUTCOME_PENDING,
-		CostPaise:  sent.CostPaise,
-		ResolvesAt: r.clock.Now().Add(r.nudgeResolveDelay),
-	}, nil
+
+	out, err := r.recovery.SimulateOutcome(ctx, recordID, action, attemptNumber)
+	if err != nil {
+		return Result{}, fmt.Errorf("recovery action port: %w", err)
+	}
+	res := Result{
+		Outcome:     out.Outcome,
+		CostPaise:   sent.CostPaise, // the notification's cost, not the recovery port's (always 0 for a nudge, see grpc.go)
+		FailureCode: out.FailureCode,
+	}
+	// A nudge is "usually PENDING" (proto/worldsim/v1), since a customer
+	// does not react inside an RPC deadline, but not always: a zero-delay
+	// profile resolves immediately, and that real answer is passed
+	// through rather than forced into PENDING.
+	if !out.Immediate {
+		res.Outcome = commonv1.Outcome_OUTCOME_PENDING
+		res.ResolvesAt = out.ResolvesAt
+	}
+	return res, nil
 }
 
 // channelFor picks the delivery channel for a nudge type. A method-update ask

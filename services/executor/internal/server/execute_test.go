@@ -205,7 +205,16 @@ func TestExecuteRedeliveredPendingNudgeReplaysPromptly(t *testing.T) {
 	recordID := seedRecord(ctx, t, pool)
 
 	note := &countingNotification{out: ports.Notification{Sent: true, CostPaise: 25}}
-	s := newServer(t, pool, &countingRecovery{}, note)
+	// A real resolves_at, not the zero value: nudge() now sources it from
+	// the recovery port's own answer (services/executor/internal/ports/
+	// route.go), so a zero-value countingRecovery would give this test a
+	// nil ResolvesAt, exactly what it exists to disprove.
+	rec := &countingRecovery{out: ports.RecoveryAction{
+		Outcome:    commonv1.Outcome_OUTCOME_SUCCESS,
+		Immediate:  false,
+		ResolvesAt: time.Now().Add(2 * time.Minute),
+	}}
+	s := newServer(t, pool, rec, note)
 	req := &executorv1.ExecuteRequest{
 		RecordId:      recordID,
 		ActionType:    commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER,

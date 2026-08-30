@@ -1418,3 +1418,85 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   ("wire real World/Notification Simulator clients") may need to build it
   for real, not only wire a client to it, tracked in `docs/BACKLOG.md` if
   D does not end up covering it on its own.
+- 2026-08-30: **Executor wired to real World/Notification Simulator
+  clients, and the nudge path restructured to actually use World
+  Simulator's answer** (Phase 5 Unit D). Closing this properly needed
+  more than swapping two stubs.
+  **`demo/notification-simulator` was still an unimplemented 41-line
+  stub**, discovered while starting this unit (flagged in Unit C's own
+  writeup beforehand). Built for real: logs what would have been sent and
+  prices it by channel, matching `StubNotification`'s existing behaviour,
+  now over a real gRPC boundary. Holds no state; no Postgres, no Redis.
+  **`route.go`'s `nudge()` never called `RecoveryActionPort` at all**,
+  only `NotificationPort` for the send. Without also calling
+  `SimulateOutcome` for a nudge, Unit C's entire delayed-outcome mechanism
+  is dead code in production: nothing would ever call
+  `DecisionEngine.ReportDelayedOutcome` for a nudge, and every nudge would
+  keep sitting in `NUDGED` forever. `nudge()` now sends the message, and
+  only if delivered, asks the recovery port whether/when the customer
+  reacts, using its `Outcome`/`resolves_at` directly rather than the
+  router's old static `nudgeResolveDelay` constant. A zero-delay profile
+  resolves immediately rather than being forced into `PENDING`, mirroring
+  `retry()`'s existing immediate/deferred split.
+  **`Router` lost its `clock.Clock` and `nudgeResolveDelay` fields**: once
+  `resolves_at` comes from the recovery port, nothing in `Router` needed a
+  clock any more, so both were removed rather than left as dead fields.
+  **The two new adapters (`WorldSimRecovery`, `NotificationSimAdapter`,
+  `ports/grpc.go`) inject cost themselves**: World Simulator's proto
+  response carries no cost field by design, since cost is a checked-in
+  constant, not something "reality" reports back. A nudge's recovery-port
+  call costs `0` on this port; its real cost is the notification's.
+  **`NUDGE_RESOLVE_DELAY` is retired, not deleted**, in `.env.example`,
+  matching this project's existing precedent for retired config knobs.
+  **One pre-existing integration test needed a real fix, not a stub
+  update**: `TestExecuteRedeliveredPendingNudgeReplaysPromptly` used a
+  zero-value `countingRecovery{}`, harmless before this unit (the recovery
+  port was never called for a nudge) and wrong after (a nil `resolves_at`
+  on a `PENDING` outcome), since the fake now needed a real scripted
+  answer.
+  **Verified live against the real stack**: ran all three services
+  together, executed a real `NUDGE_METHOD_UPDATE` and a real `RETRY`
+  through Executor, confirmed the correct channel/cost/outcome/
+  `resolves_at` at every hop, the Redis delayed-outcome entry, and
+  `requests_total` on all three `/metrics` endpoints.
+  **`docs/PLAN.md` never had a checklist line for Unit D at all**, a gap
+  since Phase 5 was first drafted (every other lettered unit had one).
+  Added it now, ticked, rather than leaving the work permanently invisible
+  in the human-facing checklist.
+- 2026-08-30: **CI found what local verification for Unit D missed: the
+  whole `test/e2e` suite broke**, and the fix needed to be the real one,
+  not a workaround. Two independent gaps, both closed:
+  **(1) The harness never learned about the two new required Executor
+  settings and never started either simulator.** `test/e2e/harness_test.go`
+  now builds and starts `demo/world-simulator` and
+  `demo/notification-simulator` alongside the other six services.
+  `buildBinary` gained a `pkgDir` parameter, since it had hardcoded
+  `services/` for every prior caller and both new binaries live under
+  `demo/`.
+  **(2) Every e2e test seeds or submits its own record and none of them
+  ever wrote a `GROUND_TRUTH` row**, because nothing before Units C/D
+  ever needed one; World Simulator requires one to answer at all. Seeded
+  one per record across all seven affected test files, with values chosen
+  to reproduce each test's own pre-existing deterministic assumption
+  (`recovery_probability=1.0` for "always succeeds" cases, `0.0` for Unit
+  H's "this one real attempt must fail" case, a large sentinel
+  `response_delay_seconds` for the two NUDGE smoke cases, since World
+  Simulator answers `PENDING` for any nudge with a positive scaled delay
+  regardless of the roll).
+  **A real race was caught locally with `-race`, before pushing again, not
+  left for CI to find twice.** HTTP-submitted records only get their id
+  back after submission, so seeding ground truth for them races the
+  scheduler's first claim; under the default `retryDelay="1s"` (which
+  collapses to microseconds at `DEMO_TIME_SCALE=300000`, leaving only the
+  ~300ms poll interval as real buffer), `-race`'s overhead was enough to
+  lose that race once, dead-lettering a record. Fixed the same way Units
+  H/K already establish: every test using the tight default now passes
+  `"3000000s"` (~10s real) instead, confirmed clean across two full
+  `-race` runs afterward, one via the exact command CI uses.
+  **The lesson, stated plainly so it is not relearned**: verifying a unit
+  live against the running stack proves the new code path works; it does
+  not prove nothing else depended on the path being replaced. The e2e
+  suite depended on the Executor's old stub being deterministic and
+  ground-truth-free in ways neither this unit's own tests nor its live
+  verification would ever exercise, because they never ran the existing
+  test suite that did.
