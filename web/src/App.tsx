@@ -16,30 +16,61 @@ import { LiveFeed } from '@/components/LiveFeed';
 import { RecordsTable } from '@/components/RecordsTable';
 import { RecordDrawer } from '@/components/RecordDrawer';
 import { BatchSelector } from '@/components/BatchSelector';
+import { ErrorBanner } from '@/components/ErrorBanner';
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
 
 function App() {
   const [batches, setBatches] = useState<BatchSummary[]>([]);
+  const [batchesError, setBatchesError] = useState<string | null>(null);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [report, setReport] = useState<BatchReport | null>(null);
   const [records, setRecords] = useState<RecordSummary[]>([]);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [updates, setUpdates] = useState<BatchUpdate[]>([]);
   const [live, setLive] = useState(false);
   const [drawerRecordId, setDrawerRecordId] = useState<string | null>(null);
   const [drawerDetail, setDrawerDetail] = useState<RecordAuditResponse | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
+  const [drawerError, setDrawerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const loadBatches = useCallback(async () => {
+    try {
+      const list = await api.getBatches();
+      setBatches(list);
+      setBatchesError(null);
+      setActiveBatchId((prev) => prev ?? list[0]?.batch_id ?? null);
+    } catch (err) {
+      setBatchesError(errorMessage(err, 'Failed to load batches'));
+    }
+  }, []);
+
   // Load batch list on mount
   useEffect(() => {
-    api.getBatches().then((list) => {
-      setBatches(list);
-      if (list.length > 0 && !activeBatchId) {
-        setActiveBatchId(list[0].batch_id);
-      }
-    });
+    loadBatches();
+  }, [loadBatches]);
+
+  const loadBatchData = useCallback(async (batchId: string) => {
+    try {
+      const [rpt, recsResponse] = await Promise.all([
+        api.getBatchReport(batchId),
+        api.getBatchRecords(batchId),
+      ]);
+      setReport(rpt);
+      setRecords(recsResponse.records);
+      setRefreshError(null);
+    } catch (err) {
+      // Keep whatever report/records are already on screen; a transient
+      // refresh failure shouldn't blank out a dashboard that was working.
+      setRefreshError(errorMessage(err, 'Failed to refresh batch data'));
+    }
   }, []);
 
   // Subscribe to batch updates + poll for report/records
@@ -47,26 +78,18 @@ function App() {
     if (!activeBatchId) return;
 
     setUpdates([]);
-    setLive(true);
+    setRefreshError(null);
 
-    // Initial fetch
-    const loadBatchData = async () => {
-      const [rpt, recsResponse] = await Promise.all([
-        api.getBatchReport(activeBatchId),
-        api.getBatchRecords(activeBatchId),
-      ]);
-      setReport(rpt);
-      setRecords(recsResponse.records);
-    };
-    loadBatchData();
+    loadBatchData(activeBatchId);
 
-    // Subscribe to live updates
-    unsubscribeRef.current = api.subscribeToBatch(activeBatchId, (update: BatchUpdate) => {
-      setUpdates((prev) => [...prev, update]);
-    });
+    unsubscribeRef.current = api.subscribeToBatch(
+      activeBatchId,
+      (update: BatchUpdate) => setUpdates((prev) => [...prev, update]),
+      setLive,
+    );
 
     // Poll for updated report/records every 2 seconds
-    refreshTimerRef.current = setInterval(loadBatchData, 2000);
+    refreshTimerRef.current = setInterval(() => loadBatchData(activeBatchId), 2000);
 
     return () => {
       unsubscribeRef.current?.();
@@ -75,15 +98,19 @@ function App() {
       refreshTimerRef.current = null;
       setLive(false);
     };
-  }, [activeBatchId]);
+  }, [activeBatchId, loadBatchData]);
 
   const handleSubmitBatch = useCallback(async () => {
     setSubmitting(true);
+    setSubmitError(null);
     try {
       const { batch_id } = await api.submitBatch('dashboard-generated', 80);
       const list = await api.getBatches();
       setBatches(list);
+      setBatchesError(null);
       setActiveBatchId(batch_id);
+    } catch (err) {
+      setSubmitError(errorMessage(err, 'Failed to submit batch'));
     } finally {
       setSubmitting(false);
     }
@@ -93,9 +120,12 @@ function App() {
     setDrawerRecordId(id);
     setDrawerLoading(true);
     setDrawerDetail(null);
+    setDrawerError(null);
     try {
       const detail = await api.getRecordDetail(id);
       setDrawerDetail(detail);
+    } catch (err) {
+      setDrawerError(errorMessage(err, 'Failed to load record detail'));
     } finally {
       setDrawerLoading(false);
     }
@@ -118,8 +148,10 @@ function App() {
 
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span className={`w-1.5 h-1.5 rounded-full ${live ? 'bg-emerald-500 pulse-dot' : 'bg-slate-300'}`} />
-              {live ? 'Streaming' : 'Idle'}
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${live ? 'bg-emerald-500 pulse-dot' : activeBatchId ? 'bg-rose-400' : 'bg-slate-300'}`}
+              />
+              {live ? 'Streaming' : activeBatchId ? 'Disconnected' : 'Idle'}
             </span>
             <button
               onClick={handleSubmitBatch}
@@ -138,12 +170,27 @@ function App() {
       </header>
 
       <main className="max-w-[1400px] mx-auto px-6 py-6 space-y-6">
+        {submitError && (
+          <ErrorBanner message={`Submit failed: ${submitError}`} onRetry={handleSubmitBatch} retrying={submitting} />
+        )}
+
+        {batchesError && (
+          <ErrorBanner message={`Couldn't load batches: ${batchesError}`} onRetry={loadBatches} />
+        )}
+
         {/* Batch selector */}
         <BatchSelector
           batches={batches}
           activeBatchId={activeBatchId}
           onSelect={setActiveBatchId}
         />
+
+        {refreshError && (
+          <ErrorBanner
+            message={`Couldn't refresh batch data: ${refreshError}`}
+            onRetry={() => activeBatchId && loadBatchData(activeBatchId)}
+          />
+        )}
 
         {/* Metrics */}
         {report ? (
@@ -250,9 +297,12 @@ function App() {
         open={drawerRecordId !== null}
         detail={drawerDetail}
         loading={drawerLoading}
+        error={drawerError}
+        onRetry={() => drawerRecordId && handleSelectRecord(drawerRecordId)}
         onClose={() => {
           setDrawerRecordId(null);
           setDrawerDetail(null);
+          setDrawerError(null);
         }}
       />
     </div>

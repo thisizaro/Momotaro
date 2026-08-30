@@ -91,8 +91,13 @@ export const api = {
     return request<RecordAuditResponse>(`/v1/records/${record_id}/audit`);
   },
 
-  subscribeToBatch(batch_id: string, onUpdate: (update: BatchUpdate) => void): () => void {
+  subscribeToBatch(
+    batch_id: string,
+    onUpdate: (update: BatchUpdate) => void,
+    onConnectionChange?: (connected: boolean) => void,
+  ): () => void {
     if (USE_MOCK) {
+      onConnectionChange?.(true);
       return mockEngine.subscribe(batch_id, onUpdate);
     }
 
@@ -100,6 +105,10 @@ export const api = {
     // a custom header, so the API key is sent as a subprotocol instead.
     const wsUrl = `${API_BASE.replace(/^http/, 'ws')}/v1/batches/${batch_id}/live`;
     const ws = new WebSocket(wsUrl, [API_KEY]);
+
+    ws.onopen = () => onConnectionChange?.(true);
+    ws.onerror = () => onConnectionChange?.(false);
+    ws.onclose = () => onConnectionChange?.(false);
 
     ws.onmessage = (event) => {
       try {
