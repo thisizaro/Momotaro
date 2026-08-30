@@ -233,6 +233,33 @@ test that publishes a `raw.events` message for a `record_id` Postgres does
 not have and asserts it gets dead-lettered rather than crashing the
 consumer, for all four call sites, before touching the implementation.
 
+### 8. Isolate the scheduler's claim-due-work query per test, or make the affected tests tolerant of it
+
+Found 2026-08-30 (`docs/INCIDENTS.md`, same date): `decision-engine`'s
+scheduler tests -- most visibly `TestSchedulerFiresOnceWhenFakeClockPassesDueAt`
+and `TestSchedulerDeadLettersAfterExecuteRetriesExhausted` -- have failed
+twice in CI within one hour, on two unrelated PRs (one touched only
+`Makefile`/`scripts/`, the other only `docs/INCIDENTS.md`), while passing
+every time locally. Root cause, already known and accepted as a tradeoff
+(`docs/AGENTS.md` testing conventions): the scheduler's claim-due-work
+query runs system-wide, no per-test scoping, so a background scheduler
+loop from one test in the same binary can claim a record a *different*
+test just seeded before that test gets to check it. Rare locally, common
+enough on CI's more contended runner to be a recurring nuisance rather
+than a one-off.
+
+**Two possible directions, not yet chosen between**: (a) give each test's
+scheduler its own isolated view somehow (a `WHERE` clause scoped to a
+test-run marker, mirroring how Kafka topics are already isolated per
+test), or (b) accept the shared-query design as correct (it may be
+load-bearing for realistic concurrency testing elsewhere) and instead make
+the *specific* assertions in the affected tests tolerant of a record
+having already been claimed by something else, the same way other
+system-wide-query tests in this codebase already assert relative
+order/presence rather than exact state. Whoever picks this up should read
+both existing incident entries first and decide which fits before writing
+any code.
+
 ## Deliberately rejected, with the reason
 
 Kept because "we considered it and here is why not" is a better answer at a
