@@ -25,7 +25,7 @@ scope from the checklist alone.
 | A | Decision Engine gRPC server (`ReportDelayedOutcome`) | merged | nothing |
 | B | Synthetic batch generator | merged | nothing |
 | C | World Simulator (real) | merged | A |
-| D | Executor: wire real World/Notification Simulator clients | not started | C |
+| D | Executor: wire real World/Notification Simulator clients | merged | C |
 | E | Hinglish nudge composition (Classifier) | not started | A (for the caller; the Classifier-side work itself is independent) |
 | F | Reporting Service | in progress: unary RPCs merged, `StreamBatchUpdates` deferred | nothing strictly, more useful once B/C produce real data |
 | G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
@@ -649,6 +649,90 @@ wire a client to something already built — its own job is much smaller
 (log what would have been sent; nothing is really delivered, per its
 proto's own comment) but it is not yet done, and D's scope should account
 for that rather than assume it is.
+
+## Unit D: Executor wired to real World/Notification Simulator clients
+
+**Status**: merged. **Depends on**: C. **Rough size**: a full day (larger
+than "swap two stubs": also built the Notification Simulator for real,
+and restructured the nudge path).
+
+**What it is**: `services/executor/internal/ports/stub.go`'s two
+Phase 1 in-process stubs replaced with real gRPC clients dialling
+`demo/world-simulator` (Unit C) and `demo/notification-simulator`, with no
+change to `internal/server` (`docs/ARCHITECTURE.md` section 3b's whole
+point: the Executor depends on two small interfaces, never on either
+simulator by name).
+
+**A larger discovery while implementing, not scope creep**: closing this
+unit properly required two things beyond "wire two clients":
+
+1. **`demo/notification-simulator` was still a 41-line stub**, same as
+   World Simulator was before Unit C. Built for real: logs what would have
+   been sent and prices it by channel, matching `StubNotification`'s
+   existing behaviour exactly, now over a real gRPC boundary. No
+   Postgres, no Redis: this service holds no state and answers from its
+   own checked-in pricing table alone. Its channel prices are a small,
+   deliberate duplication of `services/executor/internal/ports/cost.go`'s
+   `smsCostPaise`/`whatsappCostPaise` (cannot import that private package;
+   same precedent as `scripts/batchgen`'s `ObviousBucket` and
+   `demo/world-simulator`'s `correctActionFor`).
+2. **`route.go`'s `nudge()` never called `RecoveryActionPort` at all**,
+   only `NotificationPort`. Sending and reacting are different questions:
+   `SimulateSend` answers "did the channel deliver this", but only
+   something holding a recoverability model (World Simulator, backed by
+   `GROUND_TRUTH`) can answer "does this customer, specifically, pay
+   after being asked". Without also calling `SimulateOutcome` for a
+   nudge, Unit C's entire delayed-outcome mechanism is dead code in
+   production: nothing would ever call
+   `DecisionEngine.ReportDelayedOutcome` for a nudge, and every nudge
+   would keep sitting in `NUDGED` forever, the exact problem Unit C's own
+   stated goal is to fix. `nudge()` now sends the message, and only if it
+   was actually delivered, asks the recovery port whether/when the
+   customer is expected to react, using its `resolves_at` and `Outcome`
+   directly. A zero-delay profile resolves immediately rather than being
+   forced into `PENDING`, mirroring `retry()`'s existing
+   immediate/deferred split for symmetry.
+
+**Design**:
+- `services/executor/internal/ports/grpc.go` (new): `WorldSimRecovery` and
+  `NotificationSimAdapter`, thin translators from the generated gRPC
+  client interfaces to `RecoveryActionPort`/`NotificationPort`. `CostPaise`
+  for a retry is injected here (`retryCostPaise`), not read from World
+  Simulator's response: the proto carries no cost field by design (cost is
+  a checked-in constant, not something "reality" reports back). A nudge's
+  recovery-port call costs `0` on this port; its real cost is the
+  notification's, reported separately.
+- `Router` lost its `clock.Clock` and `nudgeResolveDelay` fields entirely:
+  once `nudge()` sources `resolves_at` from the recovery port, nothing in
+  `Router` needs a clock any more. Removed rather than left unused
+  (top-level instructions: no dead fields).
+- `NUDGE_RESOLVE_DELAY` is retired, not deleted, in `.env.example`: kept,
+  unread, so an existing local `.env` does not break, matching the
+  project's own precedent for retired config (see the LLM breaker
+  section there).
+
+**Definition of done additions**: `route_test.go` rewritten for the new
+nudge behaviour (recovery port called after a successful send, not called
+after a failed one, a recovery-port error surfaces, an immediate answer
+passes through unforced) plus new coverage for both real adapters
+(`grpc_test.go`, faking the generated gRPC client interfaces directly, the
+same pattern `services/decision-engine`'s tests use to fake the Executor
+client) and the new Notification Simulator (`server_test.go`). One
+pre-existing integration test (`TestExecuteRedeliveredPendingNudgeReplaysPromptly`)
+needed updating: it used a zero-value `countingRecovery{}`, which used to
+be harmless for a nudge (the recovery port was never called) and became a
+nil `resolves_at` once it was. Adversarially verified three times: forced
+every nudge outcome to `Immediate` (never `PENDING`), caught; called the
+recovery port unconditionally rather than only after a successful send,
+caught by two tests; broke the retry-only cost injection to apply to every
+action, caught. All reverted, confirmed green. **Verified live against
+the real stack**: ran all three services (executor, world-simulator,
+notification-simulator) together, executed a real `NUDGE_METHOD_UPDATE`
+and a real `RETRY` through Executor's `Execute` RPC, confirmed the
+correct channel/cost/outcome/`resolves_at` at every hop, confirmed the
+Redis delayed-outcome entry was scheduled correctly, and confirmed
+`requests_total` appeared on all three services' `/metrics` with the
+right labels.
 
 ## Unit I: Razorpay's published error codes as the failure vocabulary
 

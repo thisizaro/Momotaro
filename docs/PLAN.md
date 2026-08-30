@@ -642,6 +642,18 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       delayed-outcome queue and its `ReportDelayedOutcome` callback into
       Decision Engine for nudge-type actions → `ARCHITECTURE.md` §6,
       `docs/PHASE5_IMPLEMENTATION.md` Unit C
+- [x] Executor: wire real World/Notification Simulator clients, replacing
+      Phase 1's in-process scripted stubs, with no change to
+      `internal/server`. Also builds `demo/notification-simulator` for
+      real (it was still a stub), and restructures the nudge path to
+      actually ask the recovery port whether/when the customer reacts,
+      not just send the message: without this, Unit C's delayed-outcome
+      mechanism is never invoked and every nudge would still sit in
+      `NUDGED` forever. **Missing from this checklist since Phase 5 was
+      first drafted** (the intro above says "8 units, A to H" but this
+      line never existed; `docs/PHASE5_IMPLEMENTATION.md`'s own unit table
+      always had a D row) → `ARCHITECTURE.md` §3b, §6,
+      `docs/PHASE5_IMPLEMENTATION.md` Unit D
 - [ ] Reporting Service: at-risk amount, gross + **net** recovered
       (after logged intervention spend), cost per rupee recovered,
       uneconomic-closed count/value shown separately from escalations,

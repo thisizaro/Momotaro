@@ -92,7 +92,9 @@ run-classifier:
 
 ## run-executor: run executor on its fixed local port
 run-executor:
-	GRPC_PORT=9192 METRICS_PORT=9193 go run ./services/executor/cmd
+	GRPC_PORT=9192 METRICS_PORT=9193 \
+	WORLD_SIMULATOR_ADDR=localhost:9202 NOTIFICATION_SIMULATOR_ADDR=localhost:9204 \
+	go run ./services/executor/cmd
 
 ## run-audit: run audit on its fixed local port
 run-audit:
@@ -117,6 +119,10 @@ run-reporting:
 run-world-simulator:
 	GRPC_PORT=9202 METRICS_PORT=9203 DECISION_ENGINE_ADDR=localhost:9196 \
 	go run ./demo/world-simulator/cmd
+
+## run-notification-simulator: run notification-simulator on its fixed local port
+run-notification-simulator:
+	GRPC_PORT=9204 METRICS_PORT=9205 go run ./demo/notification-simulator/cmd
 
 ## up: start local infra (postgres, redis, kafka, kafka ui)
 up:
@@ -174,4 +180,5 @@ docker-build:
 .PHONY: help tools proto proto-lint proto-breaking build test test-integration \
         vet fmt check up up-observability down down-clean migrate-up migrate-status \
         docker-build run-ingestion run-classifier run-executor run-audit \
-        run-decision-engine run-api-gateway run-reporting run-world-simulator
+        run-decision-engine run-api-gateway run-reporting run-world-simulator \
+        run-notification-simulator

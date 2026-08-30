@@ -25,8 +25,6 @@ import (
 	"github.com/thisizaro/Momotaro/services/executor/internal/ports"
 )
 
-const testNudgeDelay = 2 * time.Minute
-
 func dsn(t *testing.T) string {
 	t.Helper()
 	if v := os.Getenv("POSTGRES_DSN"); v != "" {
@@ -114,7 +112,7 @@ func succeedingRetry() *countingRecovery {
 func newServer(t *testing.T, pool *pgxpkg.Pool, rec ports.RecoveryActionPort, note ports.NotificationPort) *Server {
 	t.Helper()
 	clk := clock.New()
-	return New(attempt.NewStore(pool), ports.NewRouter(rec, note, clk, testNudgeDelay), clk)
+	return New(attempt.NewStore(pool), ports.NewRouter(rec, note), clk)
 }
 
 type storedAttempt struct {

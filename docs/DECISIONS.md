@@ -1418,3 +1418,48 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   ("wire real World/Notification Simulator clients") may need to build it
   for real, not only wire a client to it, tracked in `docs/BACKLOG.md` if
   D does not end up covering it on its own.
+- 2026-08-30: **Executor wired to real World/Notification Simulator
+  clients, and the nudge path restructured to actually use World
+  Simulator's answer** (Phase 5 Unit D). Closing this properly needed
+  more than swapping two stubs.
+  **`demo/notification-simulator` was still an unimplemented 41-line
+  stub**, discovered while starting this unit (flagged in Unit C's own
+  writeup beforehand). Built for real: logs what would have been sent and
+  prices it by channel, matching `StubNotification`'s existing behaviour,
+  now over a real gRPC boundary. Holds no state; no Postgres, no Redis.
+  **`route.go`'s `nudge()` never called `RecoveryActionPort` at all**,
+  only `NotificationPort` for the send. Without also calling
+  `SimulateOutcome` for a nudge, Unit C's entire delayed-outcome mechanism
+  is dead code in production: nothing would ever call
+  `DecisionEngine.ReportDelayedOutcome` for a nudge, and every nudge would
+  keep sitting in `NUDGED` forever. `nudge()` now sends the message, and
+  only if delivered, asks the recovery port whether/when the customer
+  reacts, using its `Outcome`/`resolves_at` directly rather than the
+  router's old static `nudgeResolveDelay` constant. A zero-delay profile
+  resolves immediately rather than being forced into `PENDING`, mirroring
+  `retry()`'s existing immediate/deferred split.
+  **`Router` lost its `clock.Clock` and `nudgeResolveDelay` fields**: once
+  `resolves_at` comes from the recovery port, nothing in `Router` needed a
+  clock any more, so both were removed rather than left as dead fields.
+  **The two new adapters (`WorldSimRecovery`, `NotificationSimAdapter`,
+  `ports/grpc.go`) inject cost themselves**: World Simulator's proto
+  response carries no cost field by design, since cost is a checked-in
+  constant, not something "reality" reports back. A nudge's recovery-port
+  call costs `0` on this port; its real cost is the notification's.
+  **`NUDGE_RESOLVE_DELAY` is retired, not deleted**, in `.env.example`,
+  matching this project's existing precedent for retired config knobs.
+  **One pre-existing integration test needed a real fix, not a stub
+  update**: `TestExecuteRedeliveredPendingNudgeReplaysPromptly` used a
+  zero-value `countingRecovery{}`, harmless before this unit (the recovery
+  port was never called for a nudge) and wrong after (a nil `resolves_at`
+  on a `PENDING` outcome), since the fake now needed a real scripted
+  answer.
+  **Verified live against the real stack**: ran all three services
+  together, executed a real `NUDGE_METHOD_UPDATE` and a real `RETRY`
+  through Executor, confirmed the correct channel/cost/outcome/
+  `resolves_at` at every hop, the Redis delayed-outcome entry, and
+  `requests_total` on all three `/metrics` endpoints.
+  **`docs/PLAN.md` never had a checklist line for Unit D at all**, a gap
+  since Phase 5 was first drafted (every other lettered unit had one).
+  Added it now, ticked, rather than leaving the work permanently invisible
+  in the human-facing checklist.
