@@ -39,24 +39,49 @@ type Chain struct {
 // construction, so a config mistake stops the pod instead of degrading every
 // classification silently (docs/ENGINEERING.md section 5). log must not be nil.
 func NewChain(names []string, registry map[string]Provider, cfg Config, log *slog.Logger) (*Chain, error) {
-	if len(names) == 0 {
-		return nil, fmt.Errorf("provider chain: at least one provider is required")
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
 	}
+	if err := validateChainOrder(names); err != nil {
+		return nil, err
+	}
+	rungs, err := resolveRungs(names, registry)
+	if err != nil {
+		return nil, err
+	}
+	return &Chain{rungs: rungs, cfg: cfg, log: log}, nil
+}
+
+// validateConfig checks the chain's timing budget. Shared by NewChain and
+// NewNudgeChain (nudge.go): both walk a chain under the same Config shape,
+// so a nonsensical budget must stop either at construction identically.
+func validateConfig(cfg Config) error {
 	if cfg.RungTimeout <= 0 {
-		return nil, fmt.Errorf("provider chain: rung timeout must be positive, got %s", cfg.RungTimeout)
+		return fmt.Errorf("provider chain: rung timeout must be positive, got %s", cfg.RungTimeout)
 	}
 	if cfg.Reserve < 0 {
-		return nil, fmt.Errorf("provider chain: reserve must not be negative, got %s", cfg.Reserve)
+		return fmt.Errorf("provider chain: reserve must not be negative, got %s", cfg.Reserve)
 	}
+	return nil
+}
 
-	// The terminal-rung invariant. Until Unit A this was a comment and a
-	// convention: NewChain rejected an unknown name but happily built
-	// LLM_PROVIDER_CHAIN=groq, which starts cleanly and then dead-letters
-	// every record whose classification fails, because the chain runs out of
-	// rungs and returns an error that HandleMessage retries three times before
-	// giving up (docs/PHASE3_IMPLEMENTATION.md Flaw 2). force_rules_only made
-	// it worse: it filters for a rung that need not exist, leaving nothing to
-	// call at all.
+// validateChainOrder enforces the terminal-rung invariant: the deterministic
+// fallback (named RulesName) must appear exactly once, last. Until Unit A
+// this was a comment and a convention: a chain could be built as
+// LLM_PROVIDER_CHAIN=groq, which starts cleanly and then dead-letters every
+// record whose classification fails, because the chain runs out of rungs
+// and returns an error the caller retries a bounded number of times before
+// giving up (docs/PHASE3_IMPLEMENTATION.md Flaw 2).
+//
+// Shared by NewChain and NewNudgeChain (nudge.go): a chain that cannot
+// terminate is the same failure mode regardless of which RPC it serves, and
+// both terminal rungs (the rules engine, the static Hinglish template) are
+// named RulesName for exactly this reason -- one canonical "the
+// deterministic thing that cannot fail" concept, not two.
+func validateChainOrder(names []string) error {
+	if len(names) == 0 {
+		return fmt.Errorf("provider chain: at least one provider is required")
+	}
 	rulesCount := 0
 	for _, name := range names {
 		if name == RulesName {
@@ -64,22 +89,26 @@ func NewChain(names []string, registry map[string]Provider, cfg Config, log *slo
 		}
 	}
 	if rulesCount == 0 {
-		return nil, fmt.Errorf("provider chain: %q must be in the chain, it is the only rung that cannot fail", RulesName)
+		return fmt.Errorf("provider chain: %q must be in the chain, it is the only rung that cannot fail", RulesName)
 	}
 	if rulesCount > 1 {
-		return nil, fmt.Errorf("provider chain: %q appears %d times, expected exactly once", RulesName, rulesCount)
+		return fmt.Errorf("provider chain: %q appears %d times, expected exactly once", RulesName, rulesCount)
 	}
 	if names[len(names)-1] != RulesName {
-		return nil, fmt.Errorf("provider chain: %q must be last, got %q", RulesName, names[len(names)-1])
+		return fmt.Errorf("provider chain: %q must be last, got %q", RulesName, names[len(names)-1])
 	}
+	return nil
+}
 
-	rungs := make([]Provider, 0, len(names))
+// resolveRungs looks up each name in registry, in order, rejecting a name
+// that could not survive Unit E's hop encoding ("provider:result" pairs
+// joined by ","). Generic over the rung type so NewChain and NewNudgeChain
+// (nudge.go) share this instead of each carrying their own copy: the
+// lookup-and-reject logic does not depend on what a rung's own methods do,
+// only on it being registered under a clean name.
+func resolveRungs[P any](names []string, registry map[string]P) ([]P, error) {
+	rungs := make([]P, 0, len(names))
 	for _, name := range names {
-		// Unit E encodes hops into one delimited TEXT column as
-		// "provider:result" pairs joined by ",". Provider names come from
-		// config, so rejecting the two delimiters here is cheaper and more
-		// honest than escaping them at the persistence layer, where a bad name
-		// would corrupt an audit row rather than fail a startup.
 		if strings.ContainsAny(name, ":,") {
 			return nil, fmt.Errorf("provider chain: provider name %q must not contain ':' or ','", name)
 		}
@@ -89,7 +118,7 @@ func NewChain(names []string, registry map[string]Provider, cfg Config, log *slo
 		}
 		rungs = append(rungs, p)
 	}
-	return &Chain{rungs: rungs, cfg: cfg, log: log}, nil
+	return rungs, nil
 }
 
 // Classify walks the chain in order, recording a hop for every rung actually

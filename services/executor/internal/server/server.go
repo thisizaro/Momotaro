@@ -48,9 +48,12 @@ func (s *Server) Execute(ctx context.Context, req *executorv1.ExecuteRequest) (*
 
 	log := logger.ForRecord(logger.From(ctx), req.GetRecordId(), req.GetBatchId())
 	if isNudge(req.GetActionType()) && req.GetMessage() == "" {
-		// Expected until Phase 5 composes nudge text: the Decision Engine
-		// sends no message today. Logged rather than rejected, because the
-		// gap is real but it is not this service's to fix.
+		// Should not happen since Phase 5 Unit E: the Decision Engine
+		// composes nudge text via the Classifier before every nudge-type
+		// Execute call. Logged rather than rejected, since a template
+		// fallback failing is still better caught here than by refusing to
+		// send anything at all -- but an empty message reaching this point
+		// now means something upstream is broken, not an accepted gap.
 		log.Warn("nudge has no composed message text", logger.KeyAction, req.GetActionType().String())
 	}
 
@@ -58,7 +61,7 @@ func (s *Server) Execute(ctx context.Context, req *executorv1.ExecuteRequest) (*
 	// deferred to Phase 6, is the actual guarantee (docs/ARCHITECTURE.md
 	// section 11).
 	attemptID, claimed, err := s.attempts.Claim(ctx, req.GetRecordId(), req.GetAttemptNumber(),
-		req.GetActionType(), req.GetMessage(), req.GetEvScoreAtDecision(), req.GetPRecoveryAtDecision(), s.clock.Now())
+		req.GetActionType(), req.GetMessage(), req.GetMessageSource(), req.GetEvScoreAtDecision(), req.GetPRecoveryAtDecision(), s.clock.Now())
 	if err != nil {
 		if errors.Is(err, attempt.ErrUnknownRecord) {
 			return nil, status.Errorf(codes.NotFound, "record %s does not exist", req.GetRecordId())

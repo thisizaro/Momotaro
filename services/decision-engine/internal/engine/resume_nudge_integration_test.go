@@ -29,7 +29,7 @@ func TestResumeNudgeAppliesSuccessOutcome(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -77,7 +77,7 @@ func TestResumeNudgeReSchedulesRatherThanEscalatingOnFailureOutcome(t *testing.T
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_FAILURE, "CUSTOMER_UNREACHABLE")
 	if err != nil {
@@ -131,7 +131,7 @@ func TestResumeNudgeDiscardsStaleAttemptNumber(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -173,7 +173,7 @@ func TestResumeNudgeDiscardsWhenNotInNudgedState(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, recordID, 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -192,7 +192,7 @@ func TestResumeNudgeDiscardsUnknownRecord(t *testing.T) {
 	dlqProducer, dlqTopic := testDLQ(t)
 	ctx := context.Background()
 
-	sched := NewScheduler(pool, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	applied, state, err := sched.ResumeNudge(ctx, uuid.NewString(), 1, commonv1.Outcome_OUTCOME_SUCCESS, "")
 	if err != nil {
@@ -223,7 +223,7 @@ func TestResumeNudgeConcurrentReportsApplyExactlyOnce(t *testing.T) {
 		t.Fatalf("seed attempt_count: %v", err)
 	}
 
-	sched := NewScheduler(pool, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
+	sched := NewScheduler(pool, &fakeClassifier{}, &fakeExecutor{}, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic))
 
 	const numReporters = 25
 	start := make(chan struct{})

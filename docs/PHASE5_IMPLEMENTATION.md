@@ -26,7 +26,7 @@ scope from the checklist alone.
 | B | Synthetic batch generator | merged | nothing |
 | C | World Simulator (real) | merged | A |
 | D | Executor: wire real World/Notification Simulator clients | merged | C |
-| E | Hinglish nudge composition (Classifier) | not started | A (for the caller; the Classifier-side work itself is independent) |
+| E | Hinglish nudge composition (Classifier) | merged | A (for the caller; the Classifier-side work itself is independent) |
 | F | Reporting Service | in progress: unary RPCs merged, `StreamBatchUpdates` deferred | nothing strictly, more useful once B/C produce real data |
 | G | API Gateway: report/records/audit routes + WebSocket relay | not started | F |
 | H | Dashboard: wire to real Gateway | not started | G |
@@ -779,6 +779,131 @@ worked around:
   seeded before the record is ever published, race-free by construction,
   and its second subtest calls Executor's gRPC port directly, bypassing
   the scheduler entirely.
+
+## Unit E: Hinglish nudge composition
+
+**Status**: merged. **Depends on**: A (for the Decision Engine caller; the
+Classifier-side work is independent). **Rough size**: large, closer to a
+full day than the "3 to 4 hours" other units of similar description ran —
+see "Bigger than it looked" below.
+
+**What it is**: when the chosen action is a nudge, something has to write
+the actual message the customer receives. `docs/ARCHITECTURE.md` section 5b
+already speced this in full before this unit started: a second RPC on the
+Classifier (`ComposeNudge`), reusing the same provider chain, circuit
+breakers and cost-safety switch Classify already has, with a static
+Hinglish template per bucket as the fallback that can never fail. This
+checklist item never had its own write-up section (unlike every other Unit
+D-and-later item) — it existed only as a `docs/PLAN.md` line and the
+ARCHITECTURE.md spec, discovered as a genuine gap the same way Unit D's own
+missing checklist line was.
+
+**Design, as built, and why it took longer than estimated**:
+
+1. **The provider chain and circuit breaker are mirrored, not shared.**
+   `provider.NudgeChain`/`NudgeProvider` (`nudge.go`) mirror `Chain`/
+   `Provider` exactly, reusing everything that does not depend on the
+   request/response shape: `rungCtx` (budget.go), the hop-result constants
+   and `newHop` (provider.go), `hopResultForError` and `sourceFor`
+   (chain.go), and the construction invariants (`validateConfig`/
+   `validateChainOrder`/`resolveRungs`, extracted from `NewChain` in a
+   small, behaviour-preserving refactor so both `NewChain` and
+   `NewNudgeChain` share them — proven behaviour-preserving by the existing
+   `chain_invariants_test.go` suite passing unchanged). `provider.NudgeBreaker`
+   (`nudge_breaker.go`) is a deliberate, separate mirror of `Breaker`, not a
+   shared-state wrapper: sharing one circuit per named provider between
+   Classify and ComposeNudge calls would be more correct in principle (one
+   Groq health signal, not two), but reworking the already-tested `Breaker`
+   to expose that safely was a materially larger and riskier change than
+   this unit's own scope justified. Recorded here as a real, deliberate
+   tradeoff, not an oversight.
+2. **A generic `Provider`/`vendor` split, not a second LLM client.**
+   `llm.Provider.ComposeNudge` (provider.go) reuses the same `client` (HTTP
+   transport, status-to-error mapping) and the same vendor credentials as
+   `Classify`. Only what genuinely differs is new: `vendor.nudgeRequest`
+   (groq.go/gemini.go) builds a request with NO JSON-schema constraint
+   (a nudge's answer is prose, not a structured record) — as its own request
+   type (`groqNudgeRequest`/`geminiNudgeRequest`), not `groqRequest` with the
+   schema field left unset, because Go's `omitempty` does not omit a
+   non-pointer struct field regardless of its contents; reusing `groqRequest`
+   would have silently sent an empty, invalid `response_format` object,
+   caught by `TestNudgeRequestCarriesNoResponseSchema` before it ever shipped.
+   `vendor.answer` (extracting the raw completion text) needed no change at
+   all: it already returns whatever text a rung produced, JSON or prose.
+3. **The placeholder mechanism.** The model (or the template) never writes
+   a real number. Both write the literal token `{{AMOUNT}}`
+   (`provider.AmountPlaceholder`, and a byte-for-byte duplicate
+   `llm.amountPlaceholder` — `internal/provider`'s own test file imports
+   `internal/llm`, so `llm` importing `provider` back is a real cycle,
+   caught by the compiler the first time it was tried). `provider.validateNudge`
+   rejects any rung's raw answer that contains a digit outside that one
+   placeholder occurrence (rejecting the "date-like digit next to a valid
+   placeholder" case as invented too, not just the answer with no
+   placeholder at all) before it is allowed to win. `server.go`'s handler
+   substitutes it with the record's real amount, formatted as rupees, only
+   after that validation passes.
+4. **`message_source` was a real gap found by live verification, not by any
+   test.** ARCHITECTURE.md section 5b requires the audit trail to
+   distinguish a generated message from a templated one, and
+   `intervention_attempt.message_source` already existed in the schema for
+   exactly this — but nothing populated it, because `ExecuteRequest` had no
+   field to carry it. Every unit test passed regardless, because none of
+   them checked a column nothing was writing. Found only by seeding a real
+   batch against the real running stack and reading the row back. Fixed
+   with a second, proto-only PR (#64: `ExecuteRequest.message_source`,
+   `common.v1.Source`), merged before threading it through
+   `clients.composeNudge` → `clients.execute` →
+   `attempt.Store.Claim` → the `message_source` column. The same "not done
+   in this pass" note this project applies elsewhere does not apply here:
+   this is the audit-trail requirement the unit's own spec names, so it
+   went in before the unit was called done, not deferred to a later ticket.
+5. **The caller is the Decision Engine's scheduler, its only Execute call
+   site.** `Scheduler.executeWithRetry` composes the message (and now the
+   source) fresh on every retry attempt of the SAME bounded loop
+   `executeWithRetry` already used for Execute failures, rather than
+   inventing a second failure-handling story: a transient ComposeNudge
+   blip retries with the same backoff, and three failures dead-letter the
+   record the same way three Execute failures always have.
+   `attemptNumber` doubles as the nudge's `contact_number` (the first
+   attempt on a nudge-type action is the first contact); `NewScheduler`
+   gained the Classifier client it never needed before (only to compose
+   wording, never to re-classify — the doc comment previously overstated
+   this as "does not need the Classifier" at all, corrected here).
+
+**Adversarially verified three times**: inverted the `isNudge` check in
+`executeWithRetry` (confirmed `TestSchedulerComposesNudgeMessage...` and
+`TestSchedulerDoesNotComposeNudge...` both failed for the right reason,
+reverted); forced `message_source` to `SOURCE_UNSPECIFIED` regardless of
+what ComposeNudge answered, at both the Decision Engine's forwarding call
+and the Executor's persistence call (each caught by a dedicated test,
+reverted).
+
+**Verified live against the real seven-service stack, twice**: the first
+run (before the `message_source` gap was found) confirmed the static
+template resolves correctly through World Simulator's real probability
+roll, with the real amount substituted (`"Aapne apna Rs 4999 ka order..."`
+for a ₹4,999 record). The second run, after the fix, confirmed
+`intervention_attempt.message_source = 'SOURCE_RULES_FALLBACK'` lands
+correctly even when the downstream World Simulator call itself later
+failed for an unrelated reason (missing `GROUND_TRUTH`, an artefact of the
+ad-hoc check, not a bug) — proving the message and its source are captured
+at claim time, before the side effect, exactly as designed. `/metrics`
+confirmed `nudge_fallback_total` and `ComposeNudge`'s `requests_total`
+both moved correctly.
+
+**Test-first throughout, on explicit instruction**: every new behaviour in
+this unit (`validateNudge`, `NudgeChain`, `NudgeBreaker`, the template
+provider, `Provider.ComposeNudge`, the server handler, the scheduler
+wiring, `message_source` persistence) had its test written and confirmed
+red (compile failure or a failing assertion against the not-yet-built
+behaviour) before the implementation that made it green, rather than
+tests written alongside or after.
+
+**Not done in this pass**: nudge composition costs nothing extra beyond
+the existing per-channel notification cost (no separate "generation cost"
+line item) — a live LLM call's token cost is real but small enough that
+`docs/PHASE2_IMPLEMENTATION.md`'s cost model does not price it, matching
+how Classify's own LLM calls are not separately costed either.
 
 ## Unit I: Razorpay's published error codes as the failure vocabulary
 

@@ -679,7 +679,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       frozen contract, not preserving what is there
       → `PRD.md` §1, `web/AGENTS.md`,
       `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F1/F2
-- [ ] Hinglish nudge composition: `Classifier.ComposeNudge` reusing the
+- [x] Hinglish nudge composition: `Classifier.ComposeNudge` reusing the
       existing provider chain and circuit breakers, static Hinglish
       template per bucket as fallback, output length-capped and validated
       (no model-invented amounts or dates), text stored on

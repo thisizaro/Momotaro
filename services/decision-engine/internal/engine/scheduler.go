@@ -10,6 +10,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
+	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	executorv1 "github.com/thisizaro/Momotaro/proto/gen/executor/v1"
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
@@ -47,6 +48,9 @@ type SchedulerConfig struct {
 	RetryMandateLeadTime time.Duration
 	TimeScale            float64
 	Guardrails           GuardrailConfig
+	// NudgeMaxChars bounds a composed nudge's raw length. See clients.go's
+	// field of the same name.
+	NudgeMaxChars int32
 }
 
 // Scheduler is docs/ARCHITECTURE.md section 7a's scheduler worker. Without
@@ -62,15 +66,21 @@ type Scheduler struct {
 	cfg       SchedulerConfig
 }
 
-// NewScheduler returns a Scheduler. It only needs the Executor client, not
-// the Classifier: resuming a claimed record executes the action already
-// decided at classify time, it never re-classifies. It does need the
-// economics model, because a failed attempt is re-priced in place
-// (scoreAndRoute) rather than re-classified.
-func NewScheduler(pool *pgxpkg.Pool, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, model *economics.Model, cfg SchedulerConfig) *Scheduler {
+// NewScheduler returns a Scheduler. It needs the Classifier now
+// (docs/PHASE5_IMPLEMENTATION.md Unit E), but only to compose a nudge's
+// wording, never to re-classify: resuming a claimed record executes the
+// action already decided at classify time. It does need the economics
+// model, because a failed attempt is re-priced in place (scoreAndRoute)
+// rather than re-classified.
+func NewScheduler(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, model *economics.Model, cfg SchedulerConfig) *Scheduler {
 	return &Scheduler{
-		store:     newStore(pool),
-		clients:   &clients{executor: executor, callTimeout: cfg.CallTimeout},
+		store: newStore(pool),
+		clients: &clients{
+			classifier:    classifier,
+			executor:      executor,
+			callTimeout:   cfg.CallTimeout,
+			nudgeMaxChars: cfg.NudgeMaxChars,
+		},
 		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
 		clock:     clk,
 		economics: model,
@@ -262,9 +272,13 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attemptNumber int32) (*executorv1.ExecuteResponse, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxExecuteAttempts; attempt++ {
-		resp, err := s.clients.execute(ctx, c.RecordID, c.BatchID, c.PendingAction, attemptNumber, c.AmountPaise, c.EVScoreAtDecision, c.PRecoveryAtDecision)
+		nudge, err := s.composeMessage(ctx, c, attemptNumber)
 		if err == nil {
-			return resp, nil
+			var resp *executorv1.ExecuteResponse
+			resp, err = s.clients.execute(ctx, c.RecordID, c.BatchID, c.PendingAction, attemptNumber, c.AmountPaise, c.EVScoreAtDecision, c.PRecoveryAtDecision, nudge.message, nudge.source)
+			if err == nil {
+				return resp, nil
+			}
 		}
 		lastErr = err
 		if attempt < maxExecuteAttempts {
@@ -276,4 +290,23 @@ func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attem
 		}
 	}
 	return nil, lastErr
+}
+
+// composeMessage returns the wording an Execute call for c needs, zero
+// value for a retry (a retry never sends anything a customer reads).
+// attemptNumber doubles as the nudge's contact number: each attempt on a
+// nudge-type action is one contact (docs/ARCHITECTURE.md section 7), so the
+// first attempt is the first message and a re-scheduled second attempt is
+// naturally a follow-up.
+func (s *Scheduler) composeMessage(ctx context.Context, c claimedRecord, attemptNumber int32) (composedNudge, error) {
+	if !isNudge(c.PendingAction) {
+		return composedNudge{}, nil
+	}
+	rec := &commonv1.Record{
+		Id:          c.RecordID,
+		BatchId:     c.BatchID,
+		Type:        c.Type,
+		AmountPaise: c.AmountPaise,
+	}
+	return s.clients.composeNudge(ctx, rec, c.RootCauseBucket, c.PendingAction, attemptNumber)
 }

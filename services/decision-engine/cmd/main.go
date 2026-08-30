@@ -103,6 +103,14 @@ type serviceConfig struct {
 	// operator-facing refresh cadence for a real wall clock (like a
 	// Prometheus scrape interval), not a wait the demo needs to compress.
 	KafkaLagPollInterval time.Duration
+
+	// NudgeMaxChars is NUDGE_MAX_CHARS (docs/PHASE5_IMPLEMENTATION.md Unit
+	// E): the hard character cap a composed nudge must respect
+	// (docs/ARCHITECTURE.md section 5b, "SMS-realistic"). Set here, not on
+	// the Classifier, because it is the caller's own delivery constraint
+	// (an SMS body), the same way locale and contact_number are caller-set
+	// rather than classifier config.
+	NudgeMaxChars int32
 }
 
 // guardrailsFrom builds the engine's guardrail limits from the loaded config.
@@ -146,6 +154,8 @@ func loadConfig() (serviceConfig, error) {
 		ClassifyConfidenceThreshold: l.Float("CLASSIFY_CONFIDENCE_THRESHOLD", 0.0),
 
 		KafkaLagPollInterval: l.Duration("KAFKA_LAG_POLL_INTERVAL", 30*time.Second),
+
+		NudgeMaxChars: int32(l.Int("NUDGE_MAX_CHARS", 160)),
 	}
 	if err := l.Err(); err != nil {
 		return cfg, err
@@ -303,8 +313,12 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		RetryMandateLeadTime: cfg.RetryMandateLeadTime,
 		TimeScale:            cfg.DemoTimeScale,
 		Guardrails:           guardrailsFrom(cfg),
+		NudgeMaxChars:        cfg.NudgeMaxChars,
 	}
-	scheduler := engine.NewScheduler(pool, executorv1.NewExecutorServiceClient(executorConn), dlqProducer, clock.New(), model, schedCfg)
+	scheduler := engine.NewScheduler(pool,
+		classifierv1.NewClassifierServiceClient(classifierConn),
+		executorv1.NewExecutorServiceClient(executorConn),
+		dlqProducer, clock.New(), model, schedCfg)
 
 	// The only inbound gRPC call this service answers: ReportDelayedOutcome,
 	// for an outcome that resolves after the request that started it has

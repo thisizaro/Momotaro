@@ -11,7 +11,6 @@ import (
 
 	"context"
 	"encoding/json"
-	"errors"
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 	"os"
 	"strings"
@@ -151,6 +150,15 @@ type fakeClassifier struct {
 
 	mu      sync.Mutex
 	lastReq *classifierv1.ClassifyRequest
+
+	// ComposeNudge fields, Phase 5 Unit E. nudgeResp defaults to a valid,
+	// non-empty message when unset, so every pre-existing test that happens
+	// to schedule a nudge-type action (and never cared about the composed
+	// text before this unit's wiring existed) keeps passing unchanged.
+	nudgeResp    *classifierv1.ComposeNudgeResponse
+	nudgeErr     error
+	nudgeCalls   int32
+	lastNudgeReq *classifierv1.ComposeNudgeRequest
 }
 
 func (f *fakeClassifier) Classify(ctx context.Context, in *classifierv1.ClassifyRequest, opts ...grpc.CallOption) (*classifierv1.ClassifyResponse, error) {
@@ -170,7 +178,27 @@ func (f *fakeClassifier) lastRequest() *classifierv1.ClassifyRequest {
 	return f.lastReq
 }
 func (f *fakeClassifier) ComposeNudge(ctx context.Context, in *classifierv1.ComposeNudgeRequest, opts ...grpc.CallOption) (*classifierv1.ComposeNudgeResponse, error) {
-	return nil, errors.New("not used in Phase 1")
+	atomic.AddInt32(&f.nudgeCalls, 1)
+	f.mu.Lock()
+	f.lastNudgeReq = in
+	f.mu.Unlock()
+	if f.nudgeErr != nil {
+		return nil, f.nudgeErr
+	}
+	if f.nudgeResp != nil {
+		return f.nudgeResp, nil
+	}
+	return &classifierv1.ComposeNudgeResponse{Message: "test nudge message"}, nil
+}
+
+func (f *fakeClassifier) lastNudgeRequest() *classifierv1.ComposeNudgeRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastNudgeReq
+}
+
+func (f *fakeClassifier) nudgeCallCount() int32 {
+	return atomic.LoadInt32(&f.nudgeCalls)
 }
 
 type fakeExecutor struct {

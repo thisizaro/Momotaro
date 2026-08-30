@@ -27,6 +27,13 @@ type vendor interface {
 	request(ctx context.Context, p prompt) (*http.Request, error)
 	// answer extracts the model's raw JSON answer from a successful response.
 	answer(body []byte) (string, error)
+	// nudgeRequest builds the ComposeNudge equivalent of request: the same
+	// prompt pair, the same endpoint and auth, but WITHOUT a JSON-schema
+	// constraint, since a nudge's answer is prose, not a structured record
+	// (docs/ARCHITECTURE.md section 5b). answer is reused unchanged for
+	// parsing the response envelope: it extracts raw text regardless of
+	// whether that text is JSON or Hinglish prose.
+	nudgeRequest(ctx context.Context, p prompt) (*http.Request, error)
 }
 
 // Config is one rung's settings. BaseURL exists so every test can point at an
@@ -124,4 +131,40 @@ func (p *Provider) Classify(ctx context.Context, req *classifierv1.ClassifyReque
 	// Source and Hops are set by the chain, which is the only thing that knows
 	// what was tried before this rung answered (SPEC.md section 4.6).
 	return resp, nil
+}
+
+// ComposeNudge asks the model to write a Hinglish nudge message, the
+// ComposeNudge equivalent of Classify. Reuses the same client (same
+// transport, same timeout-via-context, same status-to-error mapping) and
+// the same vendor (same credentials, same endpoint), so a Groq or Gemini
+// outage affects both calls identically rather than needing two independent
+// health stories (docs/ARCHITECTURE.md section 5b: "the Classifier already
+// owns every piece of LLM plumbing in this system").
+func (p *Provider) ComposeNudge(ctx context.Context, req *classifierv1.ComposeNudgeRequest) (*classifierv1.ComposeNudgeResponse, error) {
+	httpReq, err := p.v.nudgeRequest(ctx, buildNudgePrompt(req))
+	if err != nil {
+		return nil, fmt.Errorf("%s: build nudge request: %w", p.v.name(), err)
+	}
+
+	body, err := p.client.do(p.v.name(), httpReq)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := p.v.answer(body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", p.v.name(), err)
+	}
+
+	message, err := parseNudgeAnswer(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", p.v.name(), err)
+	}
+
+	logger.ForRecord(p.log, req.GetRecord().GetId(), req.GetRecord().GetBatchId()).Debug("model composed nudge",
+		logger.KeyProvider, p.v.name(),
+		logger.KeyBucket, req.GetBucket().String(),
+	)
+	// Source and Hops are set by the chain, same rule as Classify.
+	return &classifierv1.ComposeNudgeResponse{Message: message}, nil
 }

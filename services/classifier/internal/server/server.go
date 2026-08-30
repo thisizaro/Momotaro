@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
@@ -25,22 +26,35 @@ type chain interface {
 	Classify(ctx context.Context, req *classifierv1.ClassifyRequest) (*classifierv1.ClassifyResponse, error)
 }
 
+// nudgeChain is the ComposeNudge equivalent of chain, the subset of
+// *provider.NudgeChain's behaviour this handler needs.
+type nudgeChain interface {
+	ComposeNudge(ctx context.Context, req *classifierv1.ComposeNudgeRequest) (*classifierv1.ComposeNudgeResponse, error)
+}
+
 // Server implements classifierv1.ClassifierServiceServer.
 type Server struct {
 	classifierv1.UnimplementedClassifierServiceServer
 
-	chain    chain
-	log      *slog.Logger
-	fallback prometheus.Counter
+	chain      chain
+	nudgeChain nudgeChain
+	log        *slog.Logger
+	fallback   prometheus.Counter
+	// nudgeFallback is fallback's ComposeNudge equivalent: incremented once
+	// per call answered by the static Hinglish template rather than a live
+	// LLM rung, the nudge_fallback_total docs/PHASE5_IMPLEMENTATION.md Unit
+	// E adds alongside the existing llm_fallback_total.
+	nudgeFallback prometheus.Counter
 }
 
-// New returns a Server that answers Classify via chain. log must not be
-// nil. fallback is incremented once per call answered by the rules engine
-// rather than a live LLM rung (docs/ARCHITECTURE.md section 13's
+// New returns a Server that answers Classify via c and ComposeNudge via nc.
+// log must not be nil. fallback/nudgeFallback are incremented once per call
+// answered by the deterministic fallback (the rules engine, the static
+// template) rather than a live LLM rung (docs/ARCHITECTURE.md section 13's
 // llm_fallback_total, the numerator Alertmanager's LLM-fallback-rate alert
 // reads, docs/PHASE4_IMPLEMENTATION.md Unit D).
-func New(c chain, log *slog.Logger, fallback prometheus.Counter) *Server {
-	return &Server{chain: c, log: log, fallback: fallback}
+func New(c chain, nc nudgeChain, log *slog.Logger, fallback, nudgeFallback prometheus.Counter) *Server {
+	return &Server{chain: c, nudgeChain: nc, log: log, fallback: fallback, nudgeFallback: nudgeFallback}
 }
 
 // Classify validates the request, delegates to the provider chain, and logs
@@ -75,10 +89,72 @@ func (s *Server) Classify(ctx context.Context, req *classifierv1.ClassifyRequest
 	return resp, nil
 }
 
-// ComposeNudge is out of scope for Phase 1 (SPEC.md section 2): no caller
-// exists yet (Phase 5, ARCHITECTURE.md section 5b).
+// nudgeAmountPlaceholder MUST match provider.AmountPlaceholder
+// (provider/validate_nudge.go) byte for byte: that is the token every rung
+// (LLM or template) is required to write in place of the record's real
+// amount, and substituteAmount below is what turns it into the real figure
+// after a rung's response has already passed validation. A literal copy
+// rather than an import for the same reason llm/nudge_prompt.go carries its
+// own copy: provider's own test file (fallback_test.go) imports llm, so
+// anything importing provider here risks the same cycle nudge_prompt.go
+// hit, and server already imports provider for other reasons, so keeping
+// this one local avoids relying on which direction happens to compile today.
+const nudgeAmountPlaceholder = "{{AMOUNT}}"
+
+// ComposeNudge validates the request, delegates to the nudge-composition
+// chain, substitutes the record's real amount for the placeholder token
+// every rung is required to use, and logs the outcome
+// (docs/ARCHITECTURE.md section 5b, docs/PHASE5_IMPLEMENTATION.md Unit E).
 func (s *Server) ComposeNudge(ctx context.Context, req *classifierv1.ComposeNudgeRequest) (*classifierv1.ComposeNudgeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "ComposeNudge: not implemented until Phase 5")
+	rec := req.GetRecord()
+	if rec == nil {
+		return nil, status.Error(codes.InvalidArgument, "record is required")
+	}
+	if rec.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "record.id is required")
+	}
+
+	resp, err := s.nudgeChain.ComposeNudge(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("compose nudge for record %s: %w", rec.GetId(), err)
+	}
+
+	if resp.GetSource() == commonv1.Source_SOURCE_RULES_FALLBACK && llmWasAttempted(resp.GetHops()) {
+		s.nudgeFallback.Inc()
+	}
+
+	resp.Message = substituteAmount(resp.GetMessage(), rec.GetAmountPaise())
+
+	logger.ForRecord(s.log, rec.GetId(), rec.GetBatchId()).Info("composed nudge",
+		logger.KeyBucket, req.GetBucket().String(),
+		logger.KeyAction, req.GetActionType().String(),
+		logger.KeySource, resp.GetSource().String(),
+	)
+
+	return resp, nil
+}
+
+// substituteAmount replaces nudgeAmountPlaceholder with amountPaise
+// formatted as rupees. Called only after the chain's own validation has
+// confirmed the placeholder appears at most once and no rung wrote its own
+// digit (provider/validate_nudge.go), so this is a plain string replace,
+// not a second validation pass.
+func substituteAmount(message string, amountPaise int64) string {
+	return strings.ReplaceAll(message, nudgeAmountPlaceholder, formatRupees(amountPaise))
+}
+
+// formatRupees renders paise as a rupee amount for a customer-facing
+// message: whole rupees when there is no fractional paise (the common
+// case), two decimal places otherwise. Integer arithmetic throughout
+// (docs/ENGINEERING.md section 8: "Money is integer paise. Never a
+// float.").
+func formatRupees(amountPaise int64) string {
+	rupees := amountPaise / 100
+	paise := amountPaise % 100
+	if paise == 0 {
+		return fmt.Sprintf("Rs %d", rupees)
+	}
+	return fmt.Sprintf("Rs %d.%02d", rupees, paise)
 }
 
 // llmWasAttempted reports whether any hop names a rung other than the

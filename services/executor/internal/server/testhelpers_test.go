@@ -120,6 +120,7 @@ type storedAttempt struct {
 	CostPaise           int64
 	FailureCode         string
 	MessageText         string
+	MessageSource       string
 	ActionType          string
 	AttemptNumber       int32
 	Count               int
@@ -134,11 +135,11 @@ func loadAttempt(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID 
 	var got storedAttempt
 	err := pool.QueryRow(ctx, `
 		SELECT count(*), max(outcome), max(cost_paise), coalesce(max(failure_code), ''),
-		       coalesce(max(message_text), ''), max(action_type),
+		       coalesce(max(message_text), ''), coalesce(max(message_source), ''), max(action_type),
 		       max(ev_score_at_decision), max(p_recovery_at_decision)
 		FROM intervention_attempt WHERE record_id=$1 AND attempt_number=$2`,
 		recordID, attemptNumber,
-	).Scan(&got.Count, &got.Outcome, &got.CostPaise, &got.FailureCode, &got.MessageText, &got.ActionType,
+	).Scan(&got.Count, &got.Outcome, &got.CostPaise, &got.FailureCode, &got.MessageText, &got.MessageSource, &got.ActionType,
 		&got.EVScoreAtDecision, &got.PRecoveryAtDecision)
 	if err != nil {
 		t.Fatalf("load attempt: %v", err)
