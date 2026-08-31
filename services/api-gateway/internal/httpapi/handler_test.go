@@ -96,6 +96,39 @@ func doRequest(h http.Handler, method, path, apiKey, body string) *httptest.Resp
 	return rec
 }
 
+func TestCORSPreflightSucceedsWithoutAPIKey(t *testing.T) {
+	h := newHandler(&fakeIngestion{})
+	req := httptest.NewRequest(http.MethodOptions, "/v1/batches", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "X-API-Key, Content-Type")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (a preflight never carries X-API-Key, so this must not 401)", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got == "" {
+		t.Error("Access-Control-Allow-Headers is empty, want it to at least cover X-API-Key")
+	}
+}
+
+func TestCORSHeaderPresentOnRealResponse(t *testing.T) {
+	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "batch-1", AcceptedCount: 1}}
+	h := newHandler(fake)
+	rec := doRequest(h, http.MethodPost, "/v1/batches", testAPIKey, `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want * (a browser discards the response body without this, even on 200)", got)
+	}
+}
+
 func TestSubmitBatchRequiresAPIKey(t *testing.T) {
 	h := newHandler(&fakeIngestion{})
 	rec := doRequest(h, http.MethodPost, "/v1/batches", "", `{"records":[]}`)
