@@ -218,3 +218,13 @@ export interface BatchSummary {
 export interface ListBatchesResponse {
   batches: BatchSummary[];
 }
+
+/** Mirrors audit.v1.VerifyInvariantsResponse. Every count must be zero;
+ *  a non-zero count is a bug being surfaced, never a business outcome. */
+export interface InvariantsResponse {
+  stopping_rule_violations: number;
+  incomplete_audit_trails: number;
+  impossible_transitions: number;
+  records_checked: number;
+  examples: Record<string, unknown>;
+}

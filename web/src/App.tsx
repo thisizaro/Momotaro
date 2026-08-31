@@ -5,6 +5,7 @@ import type {
   BatchReport,
   BatchSummary,
   BatchUpdate,
+  InvariantsResponse,
   RecordAuditResponse,
   RecordSummary,
 } from '@/types';
@@ -17,10 +18,15 @@ import { RecordsTable } from '@/components/RecordsTable';
 import { RecordDrawer } from '@/components/RecordDrawer';
 import { BatchSelector } from '@/components/BatchSelector';
 import { ErrorBanner } from '@/components/ErrorBanner';
+import { BaselineComparisonCard } from '@/components/BaselineComparison';
+import { InvariantsPanel } from '@/components/InvariantsPanel';
+import { ConfusionMatrix } from '@/components/ConfusionMatrix';
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
+
+type ConnectionState = 'connecting' | 'live' | 'disconnected';
 
 function App() {
   const [batches, setBatches] = useState<BatchSummary[]>([]);
@@ -28,9 +34,10 @@ function App() {
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [report, setReport] = useState<BatchReport | null>(null);
   const [records, setRecords] = useState<RecordSummary[]>([]);
+  const [invariants, setInvariants] = useState<InvariantsResponse | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [updates, setUpdates] = useState<BatchUpdate[]>([]);
-  const [live, setLive] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [drawerRecordId, setDrawerRecordId] = useState<string | null>(null);
   const [drawerDetail, setDrawerDetail] = useState<RecordAuditResponse | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
@@ -59,12 +66,14 @@ function App() {
 
   const loadBatchData = useCallback(async (batchId: string) => {
     try {
-      const [rpt, recsResponse] = await Promise.all([
+      const [rpt, recsResponse, inv] = await Promise.all([
         api.getBatchReport(batchId),
         api.getBatchRecords(batchId),
+        api.getBatchInvariants(batchId),
       ]);
       setReport(rpt);
       setRecords(recsResponse.records);
+      setInvariants(inv);
       setRefreshError(null);
     } catch (err) {
       // Keep whatever report/records are already on screen; a transient
@@ -79,13 +88,16 @@ function App() {
 
     setUpdates([]);
     setRefreshError(null);
+    // A fresh subscribe hasn't had a chance to open yet: it's neither
+    // confirmed live nor actually disconnected, so don't flash red.
+    setConnectionState('connecting');
 
     loadBatchData(activeBatchId);
 
     unsubscribeRef.current = api.subscribeToBatch(
       activeBatchId,
       (update: BatchUpdate) => setUpdates((prev) => [...prev, update]),
-      setLive,
+      (connected) => setConnectionState(connected ? 'live' : 'disconnected'),
     );
 
     // Poll for updated report/records every 2 seconds
@@ -96,7 +108,7 @@ function App() {
       unsubscribeRef.current = null;
       if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
       refreshTimerRef.current = null;
-      setLive(false);
+      setConnectionState('connecting');
     };
   }, [activeBatchId, loadBatchData]);
 
@@ -131,6 +143,22 @@ function App() {
     }
   }, []);
 
+  const isLive = connectionState === 'live';
+  const connectionLabel = !activeBatchId
+    ? 'Idle'
+    : connectionState === 'live'
+    ? 'Streaming'
+    : connectionState === 'disconnected'
+    ? 'Disconnected'
+    : 'Connecting...';
+  const connectionDotClass = !activeBatchId
+    ? 'bg-slate-300'
+    : connectionState === 'live'
+    ? 'bg-emerald-500 pulse-dot'
+    : connectionState === 'disconnected'
+    ? 'bg-rose-400'
+    : 'bg-amber-400 pulse-dot';
+
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header */}
@@ -148,10 +176,8 @@ function App() {
 
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${live ? 'bg-emerald-500 pulse-dot' : activeBatchId ? 'bg-rose-400' : 'bg-slate-300'}`}
-              />
-              {live ? 'Streaming' : activeBatchId ? 'Disconnected' : 'Idle'}
+              <span className={`w-1.5 h-1.5 rounded-full ${connectionDotClass}`} />
+              {connectionLabel}
             </span>
             <button
               onClick={handleSubmitBatch}
@@ -197,7 +223,7 @@ function App() {
           <MetricsGrid report={report} />
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {[0, 1, 2, 3].map((i) => (
+            {[0, 1, 2, 3, 4, 5, 6].map((i) => (
               <div key={i} className="card p-5 h-[110px] animate-pulse">
                 <div className="h-3 w-20 bg-slate-100 rounded mb-3" />
                 <div className="h-7 w-24 bg-slate-100 rounded" />
@@ -236,10 +262,30 @@ function App() {
           </div>
         </div>
 
+        {/* Baseline comparison + invariants */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="card p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">Baseline Comparison</h3>
+            {report ? (
+              <BaselineComparisonCard
+                baseline={report.baseline_comparison}
+                ownNetRecoveredPaise={report.net_recovered_paise}
+              />
+            ) : (
+              <div className="h-[140px] animate-pulse bg-slate-50 rounded-lg" />
+            )}
+          </div>
+
+          <div className="card p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">System Invariants</h3>
+            <InvariantsPanel invariants={invariants} />
+          </div>
+        </div>
+
         {/* Live feed + classification accuracy */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2">
-            <LiveFeed updates={updates} live={live} />
+            <LiveFeed updates={updates} live={isLive} />
           </div>
           <div className="card p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-4">Classification Accuracy</h3>
@@ -260,6 +306,14 @@ function App() {
                     Measures how often the LLM classifier agrees with the true root cause.
                   </p>
                 </div>
+                {report.accuracy && (
+                  <div className="pt-2 border-t border-slate-100">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                      Confusion Matrix
+                    </p>
+                    <ConfusionMatrix confusion={report.accuracy.confusion} />
+                  </div>
+                )}
                 <div className="space-y-2 pt-2 border-t border-slate-100">
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-slate-500">Retry attempts</span>

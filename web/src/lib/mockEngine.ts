@@ -2,12 +2,14 @@ import type {
   AccuracyBlock,
   ActionType,
   AuditEntry,
+  BaselineComparison,
   BatchRecordsResponse,
   BatchReport,
   BatchSubmitResponse,
   BatchSummary,
   BatchUpdate,
   InterventionBreakdown,
+  InvariantsResponse,
   Outcome,
   ProviderHop,
   RecordAuditResponse,
@@ -49,6 +51,11 @@ interface InternalRecord {
   entries: AuditEntry[];
   interventions: InternalIntervention[];
   ground_truth: GroundTruth;
+  /** Whether a naive "retry 3x, nudge once, no economics" policy would have
+   *  recovered this record, decided once at creation (like ground_truth)
+   *  so baseline_comparison stays stable across repeated report polls
+   *  instead of re-rolling every 2 seconds. */
+  naive_recovered: boolean;
   processed: boolean;
   created_at: string;
 }
@@ -350,6 +357,9 @@ export class MockEngine {
   private buildRecord(id: string, batch_id: string, created_at: string): InternalRecord {
     const failure_code = pick(FAILURE_CODES);
     const ground_truth = generateGroundTruth(failure_code);
+    // A naive policy retries every record 3x and nudges every record once,
+    // so it always attempts whichever channel could recover this record.
+    const naive_recovered = ground_truth.recovers_on !== 'never' && Math.random() < ground_truth.recovery_probability;
     return {
       id,
       batch_id,
@@ -365,6 +375,7 @@ export class MockEngine {
       entries: [],
       interventions: [],
       ground_truth,
+      naive_recovered,
       processed: false,
       created_at,
     };
@@ -722,6 +733,28 @@ export class MockEngine {
       };
     }
 
+    let baseline_comparison: BaselineComparison | undefined;
+    if (batch.has_ground_truth) {
+      // A fixed naive policy: retry every record up to 3x, nudge every
+      // record once, no economics gating. naive_recovered was decided once
+      // per record at creation, so this stays stable across repeated polls.
+      const naiveRetryCost = actionCostPaise('ACTION_TYPE_RETRY') * 3;
+      const naiveNudgeCost = actionCostPaise('ACTION_TYPE_NUDGE_REMINDER');
+      const naiveSpendPerRecord = naiveRetryCost + naiveNudgeCost;
+      const naiveGrossRecoveredPaise = records
+        .filter((r) => r.naive_recovered)
+        .reduce((sum, r) => sum + r.amount_paise, 0);
+      const naiveSpendPaise = naiveSpendPerRecord * total_records;
+
+      baseline_comparison = {
+        policy_name: 'naive_retry3_nudge1',
+        gross_recovered_paise: naiveGrossRecoveredPaise,
+        intervention_spend_paise: naiveSpendPaise,
+        net_recovered_paise: naiveGrossRecoveredPaise - naiveSpendPaise,
+        note: 'Evaluated analytically against the same sealed ground truth using a fixed naive policy (retry every record up to 3x, nudge every record once, no economics). Measures this policy against our modelled world, not real money.',
+      };
+    }
+
     return {
       batch_id,
       total_records,
@@ -739,9 +772,7 @@ export class MockEngine {
       by_root_cause,
       by_intervention,
       accuracy,
-      // baseline_comparison intentionally omitted: it requires an
-      // analytical eval against a sealed ground truth (Unit K), which mock
-      // mode has no equivalent for and no component currently renders.
+      baseline_comparison,
       generated_at: nowISO(),
     };
   }
@@ -784,6 +815,22 @@ export class MockEngine {
       current_state: r.current_state,
       trail_complete: r.processed,
       entries: r.entries,
+    };
+  }
+
+  async getBatchInvariants(batch_id: string): Promise<InvariantsResponse> {
+    const batch = this.batches.get(batch_id);
+    if (!batch) throw new Error('Batch not found');
+
+    // The mock engine's state machine only ever writes transitions it
+    // itself defines, so it has nothing to violate; always-zero is the
+    // honest mock answer, same as the real system in the healthy case.
+    return {
+      stopping_rule_violations: 0,
+      incomplete_audit_trails: 0,
+      impossible_transitions: 0,
+      records_checked: batch.total_records,
+      examples: {},
     };
   }
 

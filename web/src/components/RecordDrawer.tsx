@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { X, Cpu } from 'lucide-react';
+import type { ProviderHopResult } from '@/types';
 import {
   RECORD_TYPE_LABELS,
   STATE_COLORS,
@@ -11,6 +12,26 @@ import {
 } from '@/lib/format';
 import type { RecordAuditResponse } from '@/types';
 import { ErrorBanner } from '@/components/ErrorBanner';
+
+const HOP_RESULT_STYLE: Record<ProviderHopResult, string> = {
+  ok: 'bg-emerald-50 text-emerald-700',
+  error: 'bg-rose-50 text-rose-600',
+  timeout: 'bg-amber-50 text-amber-700',
+  rate_limited: 'bg-amber-50 text-amber-700',
+  schema_invalid: 'bg-rose-50 text-rose-600',
+  circuit_open: 'bg-rose-50 text-rose-600',
+  deadline_exhausted: 'bg-amber-50 text-amber-700',
+};
+
+const HOP_RESULT_DOT: Record<ProviderHopResult, string> = {
+  ok: 'bg-emerald-500',
+  error: 'bg-rose-500',
+  timeout: 'bg-amber-500',
+  rate_limited: 'bg-amber-500',
+  schema_invalid: 'bg-rose-500',
+  circuit_open: 'bg-rose-500',
+  deadline_exhausted: 'bg-amber-500',
+};
 
 interface Props {
   /** Whether the drawer is showing. Without this the backdrop and panel
@@ -99,9 +120,15 @@ export function RecordDrawer({ open, detail, loading, error, onClose, onRetry }:
                 <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
                   Audit Trail ({detail.entries.length})
                 </h3>
-                {!detail.trail_complete && (
-                  <span className="text-xs text-amber-600">trail incomplete</span>
-                )}
+                <span
+                  className={`badge ${
+                    detail.trail_complete
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                  }`}
+                >
+                  {detail.trail_complete ? 'Trail complete' : 'Trail incomplete'}
+                </span>
               </div>
               <div className="relative pl-5">
                 <div className="absolute left-1.5 top-1 bottom-1 w-px bg-slate-200" />
@@ -119,6 +146,19 @@ export function RecordDrawer({ open, detail, loading, error, onClose, onRetry }:
                         <div className="flex items-start gap-2 bg-amber-50/50 border border-amber-100 rounded-lg p-2.5 mt-1.5">
                           <Cpu className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
                           <p className="text-xs text-slate-600 leading-relaxed">{entry.rationale}</p>
+                        </div>
+                      )}
+                      {entry.hops.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          {entry.hops.map((hop, hi) => (
+                            <span
+                              key={hi}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${HOP_RESULT_STYLE[hop.result]}`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${HOP_RESULT_DOT[hop.result]}`} />
+                              {hop.provider}: {hop.result}
+                            </span>
+                          ))}
                         </div>
                       )}
                       {entry.attempt_number > 0 && (
