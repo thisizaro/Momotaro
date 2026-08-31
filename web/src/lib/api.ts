@@ -15,7 +15,7 @@ import { mockEngine } from '@/lib/mockEngine';
 const API_KEY = import.meta.env.VITE_API_KEY ?? 'momotaro-demo-key';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
-const USE_MOCK = !API_BASE || import.meta.env.VITE_USE_MOCK === 'true';
+export const USE_MOCK = !API_BASE || import.meta.env.VITE_USE_MOCK === 'true';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

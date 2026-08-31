@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Shield, Play, RefreshCw } from 'lucide-react';
-import { api } from '@/lib/api';
+import { Shield, Play, RefreshCw, FlaskConical } from 'lucide-react';
+import { api, USE_MOCK } from '@/lib/api';
 import type {
   BatchReport,
   BatchSummary,
@@ -161,43 +161,58 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
-        <div className="max-w-[1400px] mx-auto px-6 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-slate-900 flex items-center justify-center">
-              <Shield className="w-5 h-5 text-white" />
+      {/* Header (+ mock-mode banner, kept in the same sticky container so they stick together) */}
+      <div className="sticky top-0 z-30">
+        <header className="bg-white border-b border-slate-200">
+          <div className="max-w-[1400px] mx-auto px-6 py-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-slate-900 flex items-center justify-center">
+                <Shield className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h1 className="text-base font-bold text-slate-900 tracking-tight">Momotaro</h1>
+                <p className="text-xs text-slate-400 -mt-0.5">Payment Recovery Agent</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-base font-bold text-slate-900 tracking-tight">Momotaro</h1>
-              <p className="text-xs text-slate-400 -mt-0.5">Payment Recovery Agent</p>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span className={`w-1.5 h-1.5 rounded-full ${connectionDotClass}`} />
-              {connectionLabel}
-            </span>
-            <button
-              onClick={handleSubmitBatch}
-              disabled={submitting}
-              className="btn-primary disabled:opacity-50"
-            >
-              {submitting ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Play className="w-4 h-4" />
-              )}
-              {submitting ? 'Submitting...' : 'Submit Batch'}
-            </button>
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                <span className={`w-1.5 h-1.5 rounded-full ${connectionDotClass}`} />
+                {connectionLabel}
+              </span>
+              <button
+                onClick={handleSubmitBatch}
+                disabled={submitting}
+                className="btn-primary disabled:opacity-50"
+              >
+                {submitting ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+                {submitting ? 'Generating...' : 'Generate Sample Data'}
+              </button>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
+
+        {USE_MOCK && (
+          <div className="bg-amber-400 text-amber-950">
+            <div className="max-w-[1400px] mx-auto px-6 py-1.5 flex items-center justify-center gap-1.5 text-xs font-semibold">
+              <FlaskConical className="w-3.5 h-3.5" />
+              Mock mode — sample data, not live
+            </div>
+          </div>
+        )}
+      </div>
 
       <main className="max-w-[1400px] mx-auto px-6 py-6 space-y-6">
         {submitError && (
-          <ErrorBanner message={`Submit failed: ${submitError}`} onRetry={handleSubmitBatch} retrying={submitting} />
+          <ErrorBanner
+            message={`Couldn't generate sample data: ${submitError}`}
+            onRetry={handleSubmitBatch}
+            retrying={submitting}
+          />
         )}
 
         {batchesError && (
