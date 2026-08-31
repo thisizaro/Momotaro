@@ -776,6 +776,88 @@ ordered by value per hour. Detail for each is in
       own line, the box was just never ticked
       → `docs/PHASE5_IMPLEMENTATION.md` Unit N
 
+### Demo-readiness remediation, found 2026-08-31 by running the product end to end
+
+> Detail and root causes in `docs/PHASE5_IMPLEMENTATION.md` "Demo-readiness
+> remediation", incidents in `docs/INCIDENTS.md` 2026-08-31. P and Q are
+> confirmed defects; T is deliberately blocked until P is fixed.
+
+- [x] **Unit P: stop scaling `RecoveryWindow`.** `DEMO_TIME_SCALE=300000`
+      compresses the 7-day window to 2.016s, and it is compared against real
+      wall-clock record age, so 73 of 100 records were escalated for "recovery
+      window closed" before economics ever priced them. Every other scaled
+      duration is a future wait and stays scaled
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit P
+- [x] **Unit Q: make `configs/demo.env` actually apply.** The Makefile's
+      `include .env` overrides the environment, so sourcing the profile is
+      silently discarded. Add a `PROFILE` variable, and correct the profile's
+      `LLM_PROVIDER_CHAIN` to `groq,rules` per `DECISIONS.md` 2026-08-28
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit Q
+- [x] **Unit R: `make demo-up` / `make demo-down`**, plus correct `README.md`'s
+      demo section, which currently documents a method Unit Q proves does
+      nothing → `docs/PHASE5_IMPLEMENTATION.md` Unit R
+- [ ] **Unit S: surface `decision_trace`.** Written by Unit M, populated, and
+      read by nothing: no proto, no route, no component. The EV candidate
+      ranking and guardrail refusal reasons are the "every money action
+      explainable" artifact and are currently invisible
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit S
+- [ ] **Unit T: re-measure after P, then decide on the three modelling
+      questions** (memoryless outcomes reward spam; one
+      `wrong_action_probability` for every wrong action; escalation costs
+      Rs 18 and recovers nothing). Not actionable against a batch where 73% of
+      records never reached the scorer
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit T
+
+## Phase 5.5: Demo control surface and Razorpay integration depth
+
+> Working breakdown and per-unit detail: **`docs/PHASE5_5_IMPLEMENTATION.md`**
+> (6 units, U to Z). Added 2026-08-31, after running the product end to end
+> showed that Phase 5 made the system *work* without making it *legible*.
+>
+> Two tracks that share no files: U, V, W, X (the control surface) and Z, Y
+> (Razorpay depth). U is first regardless, it is a correctness defect.
+
+- [ ] **Unit U: dead-letter unprocessable records instead of crashing.** One
+      Kafka message referencing a deleted record kills the decision-engine
+      permanently, and every restart dies on the next poisoned offset. A
+      missing record is a permanent data condition being reported as a
+      transient infrastructure error, so `ConsumeKeyed` treats it as fatal
+      instead of dead-lettering. Violates `PRD.md` §10 ("no poison record
+      stalls the pipeline"). Includes `make demo-reset` and a README warning
+      that `make test-integration` poisons a live demo stack's topic
+      → `docs/PHASE5_5_IMPLEMENTATION.md` Unit U, `docs/INCIDENTS.md` 2026-08-31
+- [ ] **Unit V: extract batchgen's generation logic into an importable
+      package.** It is `package main` today, so nothing can reuse the
+      synthetic-record model. Pure refactor, no behaviour change
+      → `docs/PHASE5_5_IMPLEMENTATION.md` Unit V
+- [ ] **Unit W: `/v1/demo/*` control API**, flag-gated behind
+      `DEMO_CONTROLS_ENABLED` and proxied through the Gateway to a demo-only
+      backend, so neither the dashboard-talks-only-to-the-Gateway rule nor the
+      only-`demo/`-writes-`GROUND_TRUTH` rule is broken. Batch seeding with
+      scenario presets, downtime control, poison injection, and World
+      Simulator state → `docs/PHASE5_5_IMPLEMENTATION.md` Unit W
+- [ ] **[FRONTEND] Unit X: the demo control panel**, replacing the "Generate
+      Sample Data" button rather than patching it. That button is Phase 0
+      leftover: two of its five failure codes no longer exist since Unit I, and
+      because it goes through the public API its batches can never carry ground
+      truth, so accuracy and the baseline comparison are both absent from the
+      most obvious control on the screen
+      → `docs/PHASE5_5_IMPLEMENTATION.md` Unit X
+- [ ] **Unit Y: payment-downtime webhooks and outage-aware retry.** Razorpay
+      publishes `payment.downtime.started`/`.updated`/`.resolved` with
+      severity, method and scheduled windows. Consume them and defer retries
+      into a known issuer outage, as a guardrail alongside TRAI and RBI. This
+      is the "bank health" capability two reviews asked for, except it is
+      Razorpay's own published signal rather than an invented one
+      → `docs/PHASE5_5_IMPLEMENTATION.md` Unit Y
+- [ ] **Unit Z: real Razorpay webhook payload, signature, and error
+      taxonomy.** Accept their actual `payment.failed` body, verify
+      `X-Razorpay-Signature` (HMAC-SHA256 over the raw body) in constant time,
+      and classify on all four error fields (`error_code`, `error_source`,
+      `error_step`, `error_reason`) rather than one. `source: bank` +
+      `step: payment_authorization` is signal a reason code alone cannot carry
+      → `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z
+
 ## Phase 6: Load testing & performance validation
 
 - [ ] `scripts/loadgen` built, synthetic mode default (no real LLM calls)

@@ -1681,3 +1681,231 @@ Also stale and worth the same pass: **`ARCHITECTURE.md` §10's ERD for
 `GROUND_TRUTH`** shows a `readable_by` column that was never created and omits
 `wrong_action_probability` and `response_delay_seconds`, both of which the
 World Simulator actually needs and Unit C will be reading.
+
+---
+
+# Demo-readiness remediation (2026-08-31)
+
+Found by actually running the product end to end for the first time: fresh
+stack, all nine services, observability, dashboard on the real Gateway, and a
+100-record seeded batch (`make batchgen COUNT=100 SEED=7`, batch
+`afb514e6-a370-454b-b371-fc60a9668966`).
+
+**What that run produced**, and it is worth stating plainly because it is the
+reason this section exists:
+
+```
+              gross        spend        net
+OURS       Rs 171,488       Rs 11   Rs 171,477
+BASELINE   Rs 487,848       Rs 79   Rs 487,769
+at risk  Rs 1,105,166   recovery rate 18.0%
+classification accuracy 90.0% over 100 records
+final states: 82 ESCALATED, 18 RECOVERED
+```
+
+A naive retry-everything policy appeared to beat the agent 2.8x. It did not.
+**73 of the 100 records were escalated by a unit bug before the economics
+layer ever priced them** (Unit P below). The Rs 11 total spend is the tell: it
+reads as efficiency and actually means the agent barely acted.
+
+Units P and Q are confirmed defects with root causes established and verified.
+Units R and S are follow-on work. Unit T is explicitly *not* actionable yet and
+says why.
+
+## Unit P: stop scaling `RecoveryWindow`
+
+**Status**: not started. **Confidence**: confirmed, root cause established.
+**Size**: small. **Blocks**: any trustworthy measurement of the agent.
+
+**Problem.** `services/decision-engine/cmd/main.go:131` applies
+`cfg.Scale(cfg.RecoveryWindow)`, dividing the 7-day window by
+`DEMO_TIME_SCALE`. At the demo profile's 300000 that is **2.016 seconds**.
+`internal/engine/guardrails.go:109` then compares it against `age`, which is
+real wall-clock time since `record.created_at`. Ordinary processing latency
+(classify, price, schedule) exceeds 2 seconds, so records are escalated for
+"recovery window closed" before they can be acted on. Measured: 73 of 100.
+
+**Why the whole class of scaling is not wrong, only this one.**
+`DEMO_TIME_SCALE` compresses *waits we schedule* (`RetryDelay`, `NudgeDelay`,
+`ContactCooldown`, `RetryMandateLeadTime`). Those are durations we choose, and
+compressing them is the entire purpose of the knob. `RecoveryWindow` is
+different in kind: it is compared against elapsed real time, which no scale
+factor can compress. Compression also amplifies real latency into logical
+time, so at scale 300000 ten real seconds of processing consumes 34 logical
+days of a 7-day window.
+
+**Proposed solution.** Remove the `cfg.Scale()` call for `RecoveryWindow`
+only. Leave every other scaled duration alone. Document at the call site why
+this one duration is exempt, because the asymmetry looks like an oversight
+otherwise and a future agent will "fix" it back.
+
+**Regression test.** A record processed under a large `DEMO_TIME_SCALE` with
+realistic latency must not be escalated for window closure. Prove it goes red
+by reinstating the scale call.
+
+**Consequence to state honestly**: unscaled, the recovery-window guardrail
+never fires during a short demo. That is correct behaviour (no receivable is
+stale after 60 seconds), but it does mean the guardrail is not demonstrable on
+stage without a real logical clock. Logged in `docs/BACKLOG.md` rather than
+solved here.
+
+## Unit Q: make `configs/demo.env` actually apply
+
+**Status**: not started. **Confidence**: confirmed, verified directly.
+**Size**: small. **Blocks**: every demo run, and anyone cloning the repo.
+
+**Problem.** The Makefile does `include .env` + `export`. GNU Make gives a
+makefile assignment precedence over the environment, so sourcing
+`configs/demo.env` into the shell is silently discarded on every `make run-*`.
+Verified: shell held `DEMO_TIME_SCALE=300000`, make passed `1`. The profile has
+never worked as documented, which is why every demo run so far has used
+real-time waits and no LLM chain.
+
+**Proposed solution.** A `PROFILE` variable, relying on a later `include`
+overriding an earlier one:
+
+```make
+ifneq (,$(wildcard ./.env))
+include .env
+endif
+ifneq (,$(PROFILE))
+include configs/$(PROFILE).env
+endif
+export
+```
+
+Then `make run-classifier PROFILE=demo` works, and `PROFILE=dev` gets the
+other checked-in profile for free.
+
+**Also fix `configs/demo.env` itself**: it sets
+`LLM_PROVIDER_CHAIN=groq,gemini,rules`, contradicting `docs/DECISIONS.md`
+2026-08-28, which measured Gemini at p50 3.01s and concluded the default must
+be `groq,rules`. The live run confirmed it, with
+`groq:circuit_open,gemini:timeout,rules:ok` appearing six times in the audit
+trail. Set the profile to `groq,rules` and note why in the file.
+
+**Verification, which is the part that was skipped when the profile was
+added**: `make --eval='__show:; @echo $(DEMO_TIME_SCALE)' __show PROFILE=demo`
+must print the profile's value, not `.env`'s.
+
+## Unit R: `make demo-up` / `make demo-down`
+
+**Status**: not started. **Size**: small. **Depends on**: Q.
+
+**Problem.** Running the product means starting nine services in nine shells,
+each needing identical configuration. One terminal with the wrong profile
+silently poisons the whole run and the result looks like a modelling problem
+rather than a setup problem, which is exactly what happened. This is also the
+first thing a judge cloning the repo would hit.
+
+**Proposed solution.** `make demo-up` brings up infra, applies migrations, and
+starts all nine services with `PROFILE=demo`, each logging to a known
+directory, in dependency order (leaves first, then decision-engine, then
+api-gateway). `make demo-down` stops them. Keep the individual `run-*` targets
+for development.
+
+**Then correct `README.md`.** Its "Running the demo" section currently tells
+you to `set -a; source configs/demo.env; set +a`, which Unit Q proves does
+nothing. That instruction was written on 2026-08-31 and was wrong when
+written.
+
+## Unit S: surface `decision_trace`
+
+**Status**: not started. **Size**: medium. **Confirmed**: the column is
+populated (124 of 359 audit rows in the test batch) and **read by nothing**.
+
+**Problem.** Unit M persisted the full EV candidate ranking plus the
+per-action guardrail refusal reasons into `audit_entry.decision_trace`
+(migration 00006). Tracing every reference in the repo: written by
+decision-engine, described in docs, and read by no service, no proto, no
+route, and no component. `web/src` contains no reference to `ev_score`,
+`candidates`, `blocked` or `guardrail` at all.
+
+So the single most convincing explainability artifact this system can produce
+exists in the database and cannot be seen. The expensive half is done.
+
+**Proposed solution.** Additive `AuditEntry` proto field, audit store reads it
+back, Gateway passes it through on `GET /v1/records/{id}/audit` (already
+specced as pending in `docs/API_GATEWAY.md`), and a drawer panel showing the
+comparison: every candidate action with its EV, and each blocked action with
+the guardrail reason that blocked it.
+
+**Why this is worth doing before anything cosmetic.** "Every money action
+explainable" is the house standard (`PRD.md` §0). Today the trail explains the
+winner. This shows the alternatives and why they lost, which is the difference
+between asserting the deterministic layer decides and showing it.
+
+## Unit T: the modelling questions, re-scoped after measurement
+
+**Status**: unblocked, and mostly answered. **Re-measured 2026-08-31 after
+Units P and Q**, identical seed, identical sealed ground truth, only the fixes
+changed:
+
+```
+               gross         spend           net
+OURS       Rs 536,449        Rs 44     Rs 536,405     (was Rs 171,477)
+BASELINE   Rs 487,848        Rs 79     Rs 487,769     (unchanged)
+
+recovery rate 51.0% (was 18.0%)    accuracy 91.0%
+final states: 51 recovered, 32 closed-uneconomic, 17 escalated
+escalation reasons: 10 classifier-recommended, 7 retry budget exhausted,
+                    0 recovery-window  (was 73)
+```
+
+The agent now recovers **more gross at roughly half the spend**, while
+separately declining to chase 32 records worth Rs 344,385. The baseline figure
+is byte-identical across both runs, which confirms the comparison is
+deterministic and that only our side moved.
+
+**So the premise of the three concerns below is gone**: the baseline does not
+beat the agent, and never did on the merits. They are now framing and polish
+questions rather than defects, and none of them justifies changing the
+simulation model days before a demo. Recorded so the reasoning is not lost:
+
+1. **The memoryless world rewards spam.** Still true, and it flatters the
+   naive baseline rather than us, so it makes our win *understated*. Correcting
+   it (correlated retries: a dead card stays dead) would widen our margin, not
+   narrow it. Worth doing only if the simulation's realism is challenged, and
+   it is a real modelling change with its own test burden.
+2. **One `wrong_action_probability` for every wrong action.** Same direction:
+   it hands the baseline free recovery on buckets where a retry physically
+   cannot work. Again flatters the baseline, again understates us.
+3. **Escalation costs 1800 paise and recovers nothing.** This one is real and
+   unaffected by the fix: on `RISK_HOLD` records the agent spends Rs 18 and
+   recovers nothing while the baseline spends Rs 1 and also recovers nothing.
+   It is defensible (human review genuinely costs money, and refusing to
+   auto-act on a risk hold is the correct call), but it needs an answer ready
+   rather than a code change.
+
+**Nothing to build here.** If any of the three is picked up later it should be
+because someone challenged the simulation's realism, not because the numbers
+demand it.
+
+---
+
+**Original framing, kept for the record:**
+
+**Status**: blocked on Unit P. **Do not act on these until the run is clean.**
+
+Three concerns were raised from analysis before the bug above was found. All
+three may be real, and none can be assessed against a batch where 73% of
+records never reached the economics layer:
+
+1. **The simulated world rewards spam.** `rollOutcome` is explicitly
+   memoryless, so every attempt is an independent fresh roll and retrying
+   converges to certainty. Real retries are strongly correlated: a dead card
+   stays dead, an empty account is still empty tomorrow.
+2. **`wrong_action_probability` is one number for every wrong action.**
+   Retrying a hard decline (should be near zero) and sending a reminder
+   instead of a method-update ask (legitimately higher) are collapsed into one
+   0.02 to 0.05 figure. This hands the naive baseline free recovery on buckets
+   where a retry cannot physically work.
+3. **Escalation costs 1800 paise and recovers nothing**, so `RISK_HOLD`
+   records make the agent look strictly worse than a policy that spams four
+   messages for 100 paise, on exactly the records where refusing to act is
+   correct.
+
+**Method**: fix Unit P, re-run the identical seed (`SEED=7`), and compare. If
+the agent wins clearly, these are documentation and framing questions. If the
+baseline still leads, they are real modelling defects and get their own units
+then, with measurements rather than arithmetic behind them.

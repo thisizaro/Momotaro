@@ -48,3 +48,6 @@ deploy/observability/prometheus.generated.yml
 # Local agent tooling. Agent definitions are local-only by choice: they are
 # tooling, not project knowledge. What was built and why lives in docs/.
 .claude/
+
+# Logs from `make demo-up` (docs/INCIDENTS.md 2026-08-31)
+.demo-logs/

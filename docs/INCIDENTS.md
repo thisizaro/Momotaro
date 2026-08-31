@@ -1486,3 +1486,176 @@ frequent enough that the underlying test-isolation gap (see root cause
 above) may be worth actually fixing rather than continuing to document
 and retry -- flagged in `docs/BACKLOG.md` for whoever picks it up, rather
 than fixed reactively in this pass.
+
+## 2026-08-31: DEMO_TIME_SCALE compressed the recovery window into nothing, escalating 73% of a batch
+
+**What happened.** A 100-record batch, seeded with `make batchgen COUNT=100
+SEED=7` against a fresh stack with `DEMO_TIME_SCALE=300000`, settled in under
+five seconds with **82 records `ESCALATED` and 18 `RECOVERED`**. Reported
+recovery was Rs 171,488 against a naive-baseline expectation of Rs 487,848,
+so the dashboard showed a blind retry-everything policy beating the agent
+2.8x. The first reading, from the dashboard alone, was that the economics
+layer was broken or the priors were badly wrong.
+
+**Root cause.** Neither. Grouping `audit_entry.reason` for escalations gave it
+immediately:
+
+```
+recovery window closed: record is 10.204043678s old, window is 2.016s   x73
+classifier recommended escalation                                       x9
+```
+
+`RECOVERY_WINDOW` is 7 days. `services/decision-engine/cmd/main.go` passes it
+through `cfg.Scale()` like every other duration, and 604800s / 300000 =
+**2.016s**. But `guardrails.go`'s check is `if age < cfg.RecoveryWindow`,
+where `age` is real wall-clock time since `record.created_at`. A record needs
+several real seconds to be classified, priced and scheduled, by which point it
+is already older than its compressed window. The guardrail then correctly
+concludes the record is too stale to spend money on, removes every action, and
+escalates.
+
+So 73 of 100 records were escalated before the economics layer ever priced
+them. The agent did not lose on expected value, it forfeited. The giveaway was
+in the report all along and easy to misread as a good result: **total spend was
+Rs 11**, which looks like impressive efficiency and actually means the agent
+barely acted at all.
+
+**The conceptual error.** `DEMO_TIME_SCALE` compresses *waits we schedule*
+(retry delays, contact cooldowns), which is correct: those are durations we
+choose, and compressing them is the entire point of a demo scale factor. It
+must not compress a window that is compared against *elapsed real time*,
+because we cannot compress the wall clock the age is measured on. Worse, the
+compression amplifies real latency into logical time: at scale 300000, ten real
+seconds of ordinary processing "spends" 34 logical days of a 7-day window.
+There is no consistent reconciliation of the two clocks without a real logical
+clock, which is a far larger change (noted in `docs/BACKLOG.md`).
+
+**Fix.** Stop scaling `RecoveryWindow`. Every other scaled duration
+(`RetryDelay`, `NudgeDelay`, `ContactCooldown`, `RetryMandateLeadTime`) is a
+future wait and stays scaled. Regression test: a record processed under a large
+`DEMO_TIME_SCALE` with realistic processing latency must not be escalated for
+window closure.
+
+**Prevention.** This is the same family as this file's 2026-08-24 entry, where
+a zero-valued `RecoveryWindow` silently escalated every record: a safety
+config whose wrong value does not crash anything, it just makes the agent
+quietly refuse to work while reporting success. Two lessons worth keeping.
+**A duration compared against wall-clock elapsed time is not the same kind of
+value as a duration we wait out, and one scale factor must not be applied to
+both.** And when a headline metric looks bad, group the audit `reason` column
+before theorising about the model: the answer was one SQL query away, and the
+initial hypothesis (bad priors, broken economics) would have cost a day.
+
+## 2026-08-31: `configs/demo.env` cannot be applied, because the Makefile overrides it
+
+**What happened.** Investigating the incident above, the documented way to run
+a demo,
+
+```bash
+set -a; source configs/demo.env; set +a
+make run-decision-engine
+```
+
+turned out to do nothing at all. Verified directly:
+
+```
+shell has:   DEMO_TIME_SCALE=300000  LLM_PROVIDER_CHAIN=groq,gemini,rules
+make passes: DEMO_TIME_SCALE=1       LLM_PROVIDER_CHAIN=rules
+```
+
+**Root cause.** The Makefile does `include .env` and `export`. In GNU Make, a
+variable assigned inside a makefile takes precedence over the same variable in
+the environment. So `.env`'s `DEMO_TIME_SCALE=1` silently beats whatever was
+sourced, on every `make run-*` target, always.
+
+This means `configs/demo.env` has never worked as documented since it was
+added, and every demo run to date has used real-time waits and no LLM chain.
+It is the reason the batch in the incident above was misconfigured, and the
+reason an earlier run appeared to show the baseline beating the agent.
+
+**Fix.** Command-line variables are the one form that outranks a makefile
+assignment, so `make run-x DEMO_TIME_SCALE=300000` works today as a
+workaround. The real fix is a `PROFILE` variable: include `.env` first, then
+`configs/$(PROFILE).env` after it, since a later include wins. Plus
+`make demo-up` / `make demo-down`, so nine services cannot be started with nine
+different configurations by hand.
+
+**Prevention.** A config mechanism nobody has executed end to end is not a
+config mechanism. This one was reasoned about, written into three documents,
+and never once run. The check is two lines and should have been part of adding
+the profile:
+
+```bash
+make --eval='__show:; @echo $(DEMO_TIME_SCALE)' __show
+```
+
+Related, worth flagging separately: `configs/demo.env` sets
+`LLM_PROVIDER_CHAIN=groq,gemini,rules`, contradicting `docs/DECISIONS.md`
+2026-08-28, which measured Gemini's latency and concluded the default chain
+must be `groq,rules`. The live run confirmed that measurement:
+`groq:circuit_open,gemini:timeout,rules:ok` appeared six times in the audit
+trail. The chain in the demo profile should match the decision.
+
+## 2026-08-31: one orphaned Kafka message permanently wedges the decision-engine
+
+**What happened.** After a clean demo run, the dashboard's "Generate Sample
+Data" button produced a batch that was accepted (`accepted_count: 2`) and then
+never processed: no `record_state` rows, no audit entries, and a report showing
+`total_records: 2` with zero in every other column. The button was not the
+problem. The decision-engine had exited 13 minutes earlier and stayed dead:
+
+```
+fatal: consume raw.events: handle raw.events[8]@6:
+       load attempt history for 10187b3b-...: no rows in result set
+```
+
+**Root cause.** The full test suite (`go test -tags='integration e2e' ./...`)
+was run while the demo stack was live. Integration tests create records,
+publish them to the real `raw.events`, and delete their rows in cleanup. Kafka
+cannot delete individual messages, so those messages outlive the rows they
+reference. The live decision-engine consumed one, `loadAttemptHistory` found no
+such record, the handler returned that as an error, and
+`kafkax.ConsumeKeyed`'s documented contract treats a non-nil handler error as
+an infrastructure failure that stops the whole loop. The process exited.
+
+**It does not recover.** Restarting produced an immediate second death on a
+different poisoned offset (`raw.events[4]@5`, record `87888af6-...`). Every
+restart consumes the next orphaned message and dies again. That is a crash
+loop, and the only way out is clearing the offsets or purging the topic.
+
+**Why the DLQ did not catch it, which is the actual defect.** The dead-letter
+path exists for exactly this and is wired into `HandleMessage`'s classify call
+and the scheduler's Execute call. It does not cover a *store* failure. A
+missing record is a permanent data condition, not a transient infrastructure
+one: retrying cannot help, because the row is never coming back. The handler
+reports it the same way it would report a dropped database connection, and
+`ConsumeKeyed` correctly treats that as fatal. So the classification of the
+error is wrong, not the consumer's contract.
+
+This directly violates `docs/PRD.md` section 10: **"No poison record stalls the
+pipeline; DLQ, never silently dropped, never counted as a business outcome."**
+A judge who submits a record and then deletes it, or any redeploy against a
+topic with history, reproduces it.
+
+**Fix (not yet applied).** Distinguish "this record does not exist" from "the
+database is unreachable" at the store boundary, and dead-letter the former
+rather than returning it as an infrastructure error. `pgx.ErrNoRows` from
+`loadAttemptHistory` (and the same class of lookup elsewhere in the handler
+path) is a poison-message signal. Regression test: publish a `raw.events`
+message for a record id that does not exist and assert the consumer
+dead-letters it, commits the offset, and keeps consuming the next message.
+
+**Prevention, two separate lessons.** First, **do not run the test suite
+against a live demo stack**; the tests share `raw.events` with it and their
+cleanup poisons it. That deserves a note in `README.md` next to
+`make test-integration`. Second, and more important: **an error type is a
+routing decision.** Every handler error that reaches `ConsumeKeyed` is being
+asserted to be transient and infrastructure-shaped. Any error that is actually
+permanent and data-shaped will stop the pipeline instead of dead-lettering, and
+this one sat undetected because nothing had previously deleted a record out
+from under an unconsumed message. Worth auditing the whole handler path for
+other permanent-but-reported-as-fatal conditions.
+
+**Related gap found while diagnosing.** `make down-clean` does remove Kafka's
+volume, so this was not stale data from an earlier session. It was generated
+live, during the run, by our own test suite.
