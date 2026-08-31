@@ -24,7 +24,7 @@ Full product reasoning in [`docs/PRD.md`](docs/PRD.md). System design in
 You need Go 1.26+ and Docker with Compose.
 
 ```bash
-cp .env.example .env     # defaults work as-is for local dev
+cp .env.example .env     # fine for tests; see "Running the demo" before running the product
 make up                  # postgres, redis, kafka, and a kafka UI on :8080
 make migrate-up          # apply the schema
 make test-integration    # build every service, run every test tier
@@ -60,6 +60,131 @@ integration nor the end-to-end tests, because both sit behind build tags. It
 will pass while testing almost nothing about the pipeline. Use
 `make test-integration` when you want the real answer. See
 [`AGENTS.md`](AGENTS.md) for the three test tiers and what each is for.
+
+## Running the demo (the whole product, with the dashboard)
+
+The commands above prove the system works. They do not *show* it. To watch a
+batch of failing payments get diagnosed, priced, acted on and recovered, with
+the dashboard live, you need the nine services running and a seeded batch.
+
+### Use `PROFILE=demo`, and do not `source` the profile
+
+`.env.example` ships with `DEMO_TIME_SCALE=1`, meaning **every wall-clock wait
+is real**. A nudge takes up to 24 real hours to come back. An
+insufficient-funds retry waits for the actual next salary window, days away.
+So a batch run that way never finishes: records sit in `NUDGED` or
+`RETRY_SCHEDULED` indefinitely, recovered totals stay near zero, and the
+baseline comparison appears to beat the agent purely because the agent was
+never allowed to finish.
+
+`configs/demo.env` fixes that, and it is applied through make's `PROFILE`
+variable:
+
+```bash
+make demo-up PROFILE=demo
+```
+
+**Sourcing the file into your shell does nothing**, even though it looks like
+it works. The Makefile's own `include .env` outranks the environment, so a
+sourced value is silently discarded on every target. That cost a full
+misdiagnosis on 2026-08-31; see `docs/INCIDENTS.md`. `PROFILE` layers the
+profile on top of `.env` with a second include, which wins. Verify any time
+with:
+
+```bash
+make --eval='__show:; @echo $(DEMO_TIME_SCALE)' __show PROFILE=demo
+```
+
+The demo profile sets `DEMO_TIME_SCALE=300000` (compressing a 31-day salary
+window to under 9 seconds), turns the live `groq,rules` chain on, and samples
+15% of records for a real model call.
+
+### Bring it up
+
+One command. It starts infrastructure, applies migrations, and runs all nine
+services in dependency order, logging each to `.demo-logs/`:
+
+```bash
+make demo-up PROFILE=demo
+make demo-down                 # stops the services, leaves infra up
+```
+
+The dashboard, in its own shell:
+
+```bash
+cd web
+npm install
+cp .env.example .env.local     # then uncomment VITE_API_BASE_URL
+npm run dev                    # http://localhost:5173
+```
+
+The individual `make run-<service> PROFILE=demo` targets still exist for
+development when you want one service in the foreground with its logs.
+
+**`VITE_API_BASE_URL=http://localhost:8090` must be set**, or the dashboard
+runs on `src/lib/mockEngine.ts`, its built-in fake backend, and shows
+convincing numbers that never touched any of the services above. The UI shows
+a banner when it is in mock mode; if you see it, that is why.
+
+### Seed a batch and watch
+
+```bash
+make batchgen                       # 100 records, hidden ground truth
+make batchgen COUNT=50 SEED=7       # reproducible
+```
+
+This writes records straight into Postgres along with a sealed `ground_truth`
+row per record, then publishes each to `raw.events` so the pipeline picks them
+up exactly as if real webhooks had arrived. It bypasses the HTTP API on
+purpose: only this tool may write the answer key, so it can never be reachable
+through a public endpoint.
+
+Then watch the dashboard fill in. Records move through diagnosis, pricing and
+execution; nudges resolve after a (compressed) delay; the report shows gross
+and net recovered, cost per rupee, what was deliberately not chased, and
+classification accuracy scored against the sealed answer key.
+
+**The dashboard's "generate batch" button is not the same thing.** It submits
+through the public API, which never writes ground truth, so a batch made that
+way has no accuracy score and no baseline comparison. For a demo, always seed
+with `make batchgen` and select that batch.
+
+### What a healthy run looks like
+
+`make batchgen COUNT=100 SEED=7` on a fresh stack, measured 2026-08-31. Use it
+to tell a working run from a misconfigured one:
+
+```
+               gross         spend           net
+OURS       Rs 536,449        Rs 44     Rs 536,405
+BASELINE   Rs 487,848        Rs 79     Rs 487,769
+
+recovery rate 51.0%     classification accuracy 91.0%
+final states: 51 recovered, 32 closed-uneconomic, 17 escalated
+```
+
+The agent recovers more than a blind retry-everything policy while spending
+roughly half as much, and separately declines to chase 32 records worth
+Rs 344,385 that no intervention could economically recover. Both figures are
+evaluated against the same sealed ground truth, and both are modelled: the
+claim is that this policy beats a blind one *in our simulated world*, not that
+it recovers real money.
+
+Two symptoms of a misconfigured run, both seen for real: a recovery rate near
+18% with most records `ESCALATED` means the profile did not apply (check
+`DEMO_TIME_SCALE`), and an accuracy score that is absent entirely means the
+batch has no ground truth, so it came from the dashboard button rather than
+`make batchgen`.
+
+### Optional: metrics
+
+```bash
+make up-observability          # Prometheus, Alertmanager, Grafana
+```
+
+On Docker Desktop with WSL2 in NAT mode, `host.docker.internal` will not reach
+your services. Pass your distro's IP instead:
+`make up-observability HOST_IP=$(hostname -I | awk '{print $1}')`.
 
 ## How a record moves
 
@@ -104,28 +229,44 @@ checklist rather than a plan of record.
 - **Phase 0, foundations**: done. Contracts, schema, shared packages, CI, and
   a walking skeleton proving one record end to end before any depth was built.
 - **Phase 1, core pipeline**: done. API Gateway, Ingestion, Decision Engine
-  (state machine, scheduler worker, dead-letter path), Classifier (rules
-  engine with the LLM provider chain stubbed), Executor (durable idempotency,
-  the two ports, scripted outcomes), Audit (trail plus a continuous invariant
-  verifier). Two end-to-end tests, one narrow and one covering the branches.
-- **Phase 2, durability, safety and economics**: next. Retry budgets, contact
+  (state machine, scheduler worker, dead-letter path), Classifier, Executor
+  (durable idempotency, the two ports), Audit (trail plus a continuous
+  invariant verifier).
+- **Phase 2, durability, safety and economics**: done. Retry budgets, contact
   caps, cooldowns, the checked-in cost model, and the expected-value scorer
-  that decides when chasing a record is not worth it.
-- **Phases 3 to 8**: the reasoning layer (real LLM providers behind the
-  existing chain), observability, demo realism (Reporting, the world
-  simulator, the dashboard), load testing, Kubernetes, and rehearsal.
+  that closes a record as `ClosedUneconomic` when chasing it is not worth it.
+  Proven by crash-safety, re-run-safety and idempotency tests.
+- **Phase 3, reasoning layer**: done. Groq wired as the primary rung with
+  guaranteed constrained decoding, Gemini built and tested but held out of the
+  default chain on measured latency, per-provider circuit breakers, and every
+  rung attempted recorded in the audit trail.
+- **Phase 4, observability**: mostly done. Prometheus metrics, Alertmanager
+  rules and Grafana dashboards. OpenTelemetry tracing is deliberately deferred,
+  see [`docs/BACKLOG.md`](docs/BACKLOG.md).
+- **Phase 5, demo realism**: nearly done. World Simulator, Reporting, the
+  Gateway's read routes and WebSocket relay, Hinglish nudge composition,
+  Razorpay's real error codes, TRAI/RBI compliance guardrails, the baseline
+  comparison, and the dashboard wired to the real Gateway.
+- **Phases 6 to 8**: load testing, Kubernetes, and demo rehearsal. Not started.
 
-Two things are worth being explicit about, since a half-built system invites
-wrong assumptions:
+Two things worth being explicit about, since they change how you read the
+numbers:
 
-- **No LLM is wired up yet.** The Classifier's provider chain exists and its
-  final rung, the deterministic rules engine, is what answers today. Every
-  classification is honestly labelled `rules_fallback` in the audit trail.
-  Real providers are Phase 3, deliberately, because provider choice depends
-  on cost and rate limits still being evaluated.
-- **The dashboard runs against its own mock**, not the backend. The endpoints
-  it needs beyond batch submission are served by the Reporting service, which
-  is Phase 5 and not yet built.
+- **The LLM is sampled, not universal.** `LLM_SAMPLE_RATE` decides per record
+  whether to spend a live model call, because free-tier rate limits do not fit
+  a 100-record batch. The sample is a deterministic hash of `record_id`, not
+  random, so re-running a batch gives identical results. Records that were not
+  sampled are honestly labelled `SOURCE_RULES_FALLBACK` in the audit trail,
+  and the provider hop list shows exactly which rungs were tried.
+- **Outcomes are simulated, deliberately, and that is the point.** There is no
+  real bank and no real customer here. `demo/world-simulator` plays both,
+  rolling each outcome against a per-record probability that
+  `scripts/batchgen` wrote in advance and sealed. The decision path provably
+  cannot read it (`test/integrity/ground_truth_isolation_test.go`). That is
+  what makes classification accuracy a *measurement* rather than a claim: we
+  can say how often the agent was right, because something wrote down the
+  right answer first. A real bank integration would look more impressive and
+  tell us nothing about whether the agent was correct.
 
 ## Working on it
 

@@ -78,9 +78,9 @@ type serviceConfig struct {
 	// too would compress it twice.
 	RetryMandateLeadTime time.Duration
 	// Guardrails: the hard limits from docs/PRD.md section 11. MaxRetries
-	// mirrors NPCI-style mandate debit limits. The two durations are scaled
-	// by DEMO_TIME_SCALE like every other wall-clock wait, because a 7 day
-	// recovery window would otherwise never close inside a demo.
+	// mirrors NPCI-style mandate debit limits. ContactCooldown is scaled by
+	// DEMO_TIME_SCALE; RecoveryWindow is deliberately not, see
+	// guardrailsFrom below for why.
 	// Paths to the checked-in economics config. Files rather than compiled-in
 	// constants so a judge can read and argue with the numbers.
 	InterventionCostsPath string
@@ -121,14 +121,35 @@ type serviceConfig struct {
 }
 
 // guardrailsFrom builds the engine's guardrail limits from the loaded config.
-// The two durations are scaled like every other wall-clock wait, or a 7 day
-// recovery window would never close inside a demo.
+//
+// ContactCooldown is scaled like every other wall-clock wait. RecoveryWindow
+// deliberately is NOT, and the asymmetry is the point rather than an
+// oversight, so please do not "fix" it back (docs/INCIDENTS.md 2026-08-31).
+//
+// DEMO_TIME_SCALE compresses durations we *wait out*: a retry delay, a contact
+// cooldown, a mandate lead time. Those are futures we choose, and compressing
+// them is the entire purpose of the knob. RecoveryWindow is a different kind
+// of value: guardrails.go compares it against a record's real elapsed age
+// (now - created_at), and no scale factor can compress the wall clock that age
+// is measured on. Scaling it therefore does not speed the demo up, it just
+// makes the window smaller than the pipeline's own processing latency.
+//
+// Worse, compression amplifies that latency into logical time. At
+// DEMO_TIME_SCALE=300000 a 7 day window becomes 2.016s, while ten ordinary
+// real seconds of classify-price-schedule "spends" 34 logical days of it. A
+// 100 record batch measured on 2026-08-31 escalated 73 records for "recovery
+// window closed" before the economics scorer ever priced them.
+//
+// Consequence, stated so it is not rediscovered as a bug: unscaled, this
+// guardrail never fires during a short demo. That is correct (no receivable is
+// stale after 60 seconds) but it does mean the window cannot be demonstrated
+// on stage without a real logical clock, which is tracked in docs/BACKLOG.md.
 func guardrailsFrom(cfg serviceConfig) engine.GuardrailConfig {
 	return engine.GuardrailConfig{
 		MaxRetries:      cfg.MaxRetries,
 		MaxContacts:     cfg.MaxContacts,
 		ContactCooldown: cfg.Scale(cfg.ContactCooldown),
-		RecoveryWindow:  cfg.Scale(cfg.RecoveryWindow),
+		RecoveryWindow:  cfg.RecoveryWindow,
 	}
 }
 

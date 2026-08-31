@@ -25,6 +25,30 @@ ifneq (,$(wildcard ./.env))
 	export
 endif
 
+# PROFILE selects a checked-in config profile from configs/, layered ON TOP of
+# .env: `make run-decision-engine PROFILE=demo`, or PROFILE=dev.
+#
+# This exists because sourcing a profile into the shell does not work and
+# silently appears to (docs/INCIDENTS.md 2026-08-31). GNU Make gives a variable
+# assigned inside a makefile precedence over the same variable in the
+# environment, so `include .env` above beat every `source configs/demo.env`,
+# on every run-* target, always. configs/demo.env had therefore never once
+# taken effect: every demo ran with real-time waits and no LLM chain.
+#
+# A second include is the fix because a later assignment wins, so values here
+# override .env while anything the profile does not mention still falls through
+# to it. Command-line variables (make run-x DEMO_TIME_SCALE=1) still outrank
+# both, which is what makes a one-off override possible.
+#
+# Verify with:  make --eval='__show:; @echo $(DEMO_TIME_SCALE)' __show PROFILE=demo
+ifneq (,$(PROFILE))
+ifeq (,$(wildcard configs/$(PROFILE).env))
+$(error PROFILE=$(PROFILE) but configs/$(PROFILE).env does not exist. Available: $(patsubst configs/%.env,%,$(wildcard configs/*.env)))
+endif
+include configs/$(PROFILE).env
+export
+endif
+
 .DEFAULT_GOAL := help
 
 ## help: list targets
@@ -125,6 +149,45 @@ run-world-simulator:
 run-notification-simulator:
 	GRPC_PORT=9204 METRICS_PORT=9205 go run ./demo/notification-simulator/cmd
 
+DEMO_LOG_DIR ?= .demo-logs
+ALL_RUNNABLE := $(SERVICES) $(DEMOS)
+
+## demo-up: infra + migrations + all 9 services in the background (PROFILE=demo)
+## Logs land in $(DEMO_LOG_DIR)/<service>.log. Stop with make demo-down.
+demo-up: up migrate-up
+	@mkdir -p $(DEMO_LOG_DIR)
+	@echo "starting 9 services, PROFILE=$(if $(PROFILE),$(PROFILE),<none, see docs/INCIDENTS.md 2026-08-31>)"
+        # Leaves first, then decision-engine (needs classifier+executor), then
+        # api-gateway (needs ingestion+reporting+audit). gRPC dialing is lazy so
+        # strict ordering is not required for correctness, only for clean logs.
+	@for s in classifier executor audit ingestion world-simulator notification-simulator reporting; do \
+		nohup $(MAKE) run-$$s PROFILE=$(PROFILE) > $(DEMO_LOG_DIR)/$$s.log 2>&1 & \
+	done
+	@$(MAKE) --no-print-directory wait-ports PORTS="9190 9192 9194 9090 9202 9204 9200"
+	@for s in decision-engine api-gateway; do \
+		nohup $(MAKE) run-$$s PROFILE=$(PROFILE) > $(DEMO_LOG_DIR)/$$s.log 2>&1 & \
+	done
+	@$(MAKE) --no-print-directory wait-ports PORTS="9196 8090"
+	@echo "all 9 up. gateway: http://localhost:8090  logs: $(DEMO_LOG_DIR)/"
+	@echo "next: make batchgen COUNT=100 SEED=7   then open web/ (npm run dev)"
+
+## demo-down: stop the 9 services started by demo-up (leaves infra running)
+demo-down:
+        # Kill by listening port rather than by name: `go run` execs the binary
+        # from a temp build path, so pgrep on the source path matches nothing.
+	@for p in 8090 9090 9190 9192 9194 9196 9200 9202 9204 \
+	          9091 9191 9193 9195 9197 9199 9201 9203 9205; do \
+		pid=$$(ss -ltnp 2>/dev/null | grep ":$$p " | grep -oP 'pid=\K[0-9]+' | head -1); \
+		[ -n "$$pid" ] && kill $$pid 2>/dev/null || true; \
+	done
+	@echo "services stopped (infra still up; make down to stop that too)"
+
+# Internal: block until every port in PORTS is listening.
+wait-ports:
+	@for p in $(PORTS); do \
+		until ss -ltn 2>/dev/null | grep -q ":$$p "; do sleep 1; done; \
+	done
+
 COUNT  ?= 100
 SOURCE ?= synthetic-demo
 SEED   ?=
@@ -193,4 +256,4 @@ docker-build:
         vet fmt check up up-observability down down-clean migrate-up migrate-status \
         docker-build run-ingestion run-classifier run-executor run-audit \
         run-decision-engine run-api-gateway run-reporting run-world-simulator \
-        run-notification-simulator batchgen
+        run-notification-simulator batchgen demo-up demo-down wait-ports

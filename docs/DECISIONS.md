@@ -1682,3 +1682,70 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   version of the live verification this unit already did by hand.
   Recorded here so the omission reads as a sequencing choice, not an
   oversight the next unit has to rediscover.
+- 2026-08-31: **`DEMO_TIME_SCALE` scales waits we schedule, never a window
+  compared against elapsed real time.** `RecoveryWindow` is now the one
+  guardrail duration deliberately left unscaled, and the asymmetry is recorded
+  here because it looks like an oversight and a future agent will otherwise
+  "fix" it back.
+  The distinction is the whole content of the decision. `RetryDelay`,
+  `NudgeDelay`, `ContactCooldown` and `RetryMandateLeadTime` are futures we
+  choose and then wait out; compressing them is the entire purpose of the
+  knob. `RecoveryWindow` is compared against `now - record.created_at`, and no
+  scale factor compresses the wall clock that age is measured on. Scaling it
+  therefore never sped anything up, it only made the window shorter than the
+  pipeline's own processing latency, and compression amplified that latency
+  into logical time: at 300000, ten real seconds of classify-price-schedule
+  "spends" 34 logical days of a 7 day window. A 100-record batch escalated 73
+  records for "recovery window closed" before the economics scorer priced any
+  of them (`docs/INCIDENTS.md` 2026-08-31).
+  **Measured effect of the fix**, same seed, same sealed ground truth, only
+  this changed: net recovered went from Rs 171,477 to Rs 536,405 against an
+  unchanged baseline of Rs 487,769, i.e. from losing to a blind
+  retry-everything policy by 2.8x to beating it, while spending Rs 44 against
+  the baseline's Rs 79 and separately declining to chase 32 records worth
+  Rs 344,385. Recovery rate 18% to 51%. The economics layer was never the
+  problem; it had not been allowed to run.
+  Consequence stated so it is not rediscovered as a bug: unscaled, this
+  guardrail never fires in a short demo. That is correct (no receivable is
+  stale after 60 seconds) but it does mean the window is not demonstrable on
+  stage without a real logical clock, which is parked in `docs/BACKLOG.md`
+  rather than solved.
+- 2026-08-31: **Config profiles are applied with make's `PROFILE` variable,
+  never by sourcing.** `make demo-up PROFILE=demo`, or
+  `make run-<service> PROFILE=demo`. Implemented as a second `include` of
+  `configs/$(PROFILE).env` after `include .env`, since a later assignment wins
+  in GNU Make; anything the profile does not mention still falls through to
+  `.env`, and a command-line variable still outranks both.
+  This reverses the usage documented when the profiles were added
+  (2026-08-28), which said to `set -a && source configs/demo.env`. That never
+  worked: a makefile assignment takes precedence over the environment, so
+  `include .env` silently discarded every sourced value on every target. The
+  profile had therefore never once taken effect, and every demo run before
+  today used real-time waits and no LLM chain. It is the reason the
+  recovery-window bug above went unnoticed and the reason an earlier run
+  appeared to show the baseline winning.
+  The lesson worth keeping, and the reason this is a decision rather than only
+  an incident: **a config mechanism nobody has executed end to end is not a
+  config mechanism.** This one was reasoned about carefully, written into
+  three documents, and never run once. The check is two lines and is now in
+  both the README and `configs/demo.env`:
+  `make --eval='__show:; @echo $(DEMO_TIME_SCALE)' __show PROFILE=demo`.
+  Also corrected while here: `configs/demo.env` set
+  `LLM_PROVIDER_CHAIN=groq,gemini,rules`, contradicting this log's own
+  2026-08-28 entry, which measured Gemini at p50 3.01s and concluded the
+  default must be `groq,rules`. The live run confirmed that measurement
+  independently (`groq:circuit_open,gemini:timeout,rules:ok` six times in the
+  audit trail, i.e. Gemini cost a full timeout and answered nothing). The
+  profile now says `groq,rules`.
+- 2026-08-31: **Added `make demo-up` / `make demo-down`.** Running the product
+  meant starting nine services in nine shells, each needing identical
+  configuration, where one terminal with the wrong profile silently poisons
+  the whole run and the result reads as a modelling problem rather than a
+  setup problem. That is not hypothetical, it is exactly what happened. It is
+  also the first thing anyone cloning the repo hits.
+  `demo-up` brings up infra, applies migrations, and starts all nine in
+  dependency order, logging each to a gitignored `.demo-logs/`. `demo-down`
+  kills **by listening port**, not by process name: `go run` execs the built
+  binary from a temp path, so `pgrep` on the source path matches nothing,
+  which defeated the first attempt at stopping the stack by hand. The
+  individual `run-<service>` targets stay, for foreground development.
