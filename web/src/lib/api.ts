@@ -5,6 +5,7 @@ import type {
   BatchSubmitResponse,
   BatchSummary,
   BatchUpdate,
+  InvariantsResponse,
   ListBatchesResponse,
   RecordAuditResponse,
   SubmitRecordType,
@@ -89,6 +90,11 @@ export const api = {
   async getRecordDetail(record_id: string): Promise<RecordAuditResponse> {
     if (USE_MOCK) return mockEngine.getRecordDetail(record_id);
     return request<RecordAuditResponse>(`/v1/records/${record_id}/audit`);
+  },
+
+  async getBatchInvariants(batch_id: string): Promise<InvariantsResponse> {
+    if (USE_MOCK) return mockEngine.getBatchInvariants(batch_id);
+    return request<InvariantsResponse>(`/v1/batches/${batch_id}/invariants`);
   },
 
   subscribeToBatch(

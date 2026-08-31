@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { TrendingUp, AlertTriangle, Clock, CheckCircle2 } from 'lucide-react';
+import { TrendingUp, AlertTriangle, Clock, CheckCircle2, Wallet, Percent, Ban } from 'lucide-react';
 import { formatCurrencyShort, formatPercent } from '@/lib/format';
 import type { BatchReport } from '@/types';
 
@@ -53,6 +53,22 @@ export function MetricsGrid({ report }: Props) {
         iconBg="bg-blue-50 text-blue-600"
       />
       <MetricCard
+        icon={Wallet}
+        label="Net Recovered"
+        value={formatCurrencyShort(report.net_recovered_paise)}
+        sublabel="after intervention spend"
+        accent="text-emerald-600"
+        iconBg="bg-emerald-50 text-emerald-600"
+      />
+      <MetricCard
+        icon={Percent}
+        label="Cost / Rupee Recovered"
+        value={`₹${report.cost_per_rupee_recovered.toFixed(3)}`}
+        sublabel={`${formatCurrencyShort(report.intervention_spend_paise)} spent total`}
+        accent="text-slate-900"
+        iconBg="bg-violet-50 text-violet-600"
+      />
+      <MetricCard
         icon={Clock}
         label="In Flight"
         value={String(report.in_flight_count)}
@@ -67,6 +83,14 @@ export function MetricsGrid({ report }: Props) {
         sublabel="need human review"
         accent="text-rose-600"
         iconBg="bg-rose-50 text-rose-600"
+      />
+      <MetricCard
+        icon={Ban}
+        label="Closed Uneconomic"
+        value={String(report.closed_uneconomic_count)}
+        sublabel={`${formatCurrencyShort(report.closed_uneconomic_paise)} deliberately not chased`}
+        accent="text-slate-600"
+        iconBg="bg-slate-100 text-slate-500"
       />
     </div>
   );
