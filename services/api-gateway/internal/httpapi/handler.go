@@ -69,7 +69,30 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/", h.withAuth(authenticated))
 	mux.HandleFunc("GET /v1/batches/{batch_id}/live", h.liveUpdates)
 
-	return h.withRateLimit(mux)
+	return h.withCORS(h.withRateLimit(mux))
+}
+
+// withCORS lets a browser call this API from a different origin, e.g. the
+// dashboard's Vite dev server on :5173 against the Gateway on :8090. This is
+// the same hackathon simplification as the API key itself (docs/ARCHITECTURE.md
+// section 17): allow any origin rather than an allowlist, since there is no
+// session or cookie to protect and the static key is the only credential.
+//
+// A CORS preflight (OPTIONS) request never carries X-API-Key -- browsers
+// refuse to put custom headers on a preflight -- so it must be answered here,
+// outside withAuth and before it, or every browser call would 401 on its
+// preflight before ever reaching the real handler.
+func (h *Handler) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "X-API-Key, Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) withRateLimit(next http.Handler) http.Handler {
