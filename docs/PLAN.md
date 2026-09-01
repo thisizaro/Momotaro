@@ -858,6 +858,19 @@ ordered by value per hour. Detail for each is in
       `step: payment_authorization` is signal a reason code alone cannot carry
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z
 
+- [ ] **Unit AA: surface `due_at` through the stack.** A record's scheduled
+      time appears nowhere: not in the Reporting proto, not in
+      `docs/API_GATEWAY.md`, not in `web/`. So cause-aware retry timing, the
+      most distinctive behaviour this system has, is made correctly, recorded
+      correctly, and shown to nobody. Additive field, existing indexed column,
+      no migration. Render as a live countdown, not a timestamp
+      → `docs/PHASE5_5_IMPLEMENTATION.md` Unit AA
+- [ ] **[FRONTEND] Unit AB: timeline view.** Pending records plotted on a time
+      axis by `due_at`, grouped by root cause, so insufficient-funds records
+      visibly cluster at the salary window while bank timeouts fire
+      immediately. Turns the scheduling policy from a claim in a doc into a
+      shape on a chart → `docs/PHASE5_5_IMPLEMENTATION.md` Unit AB
+
 ## Phase 6: Load testing & performance validation
 
 - [ ] `scripts/loadgen` built, synthetic mode default (no real LLM calls)
