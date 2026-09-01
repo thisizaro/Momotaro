@@ -37,6 +37,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
+	"github.com/thisizaro/Momotaro/internal/platform/syntheticgen"
 )
 
 func main() {
@@ -83,11 +84,11 @@ func main() {
 		log.Fatalf("create batch: %v", err)
 	}
 
-	instrumentRefs := instrumentRefPool(*count)
+	instrumentRefs := syntheticgen.InstrumentRefPool(*count)
 
 	for i := 0; i < *count; i++ {
-		rec := generateRecord(rng)
-		instrumentRef := pickInstrumentRef(rng, rec.Type, instrumentRefs)
+		rec := syntheticgen.GenerateRecord(rng)
+		instrumentRef := syntheticgen.PickInstrumentRef(rng, rec.Type, instrumentRefs)
 		recordID := uuid.NewString()
 		createdAt := time.Now()
 

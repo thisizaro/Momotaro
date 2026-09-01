@@ -826,9 +826,12 @@ ordered by value per hour. Detail for each is in
       stalls the pipeline"). Includes `make demo-reset` and a README warning
       that `make test-integration` poisons a live demo stack's topic
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit U, `docs/INCIDENTS.md` 2026-08-31
-- [ ] **Unit V: extract batchgen's generation logic into an importable
+- [x] **Unit V: extract batchgen's generation logic into an importable
       package.** It is `package main` today, so nothing can reuse the
-      synthetic-record model. Pure refactor, no behaviour change
+      synthetic-record model. Pure refactor, no behaviour change. Landed as
+      `internal/platform/syntheticgen`, same precedent as `kafkax` and
+      `hopcodec`; `scripts/batchgen` kept its CLI flags and Postgres/Kafka
+      writes and became a thin caller
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit V
 - [ ] **Unit W: `/v1/demo/*` control API**, flag-gated behind
       `DEMO_CONTROLS_ENABLED` and proxied through the Gateway to a demo-only
