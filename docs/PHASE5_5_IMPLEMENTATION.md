@@ -289,3 +289,65 @@ Where they are absent, behaviour is exactly as today.
 **Definition of done addition**: a test that a real captured Razorpay
 `payment.failed` body, verbatim from their docs, is accepted and classified
 correctly, and that a body with a wrong signature is rejected with 401.
+
+## Unit AA: surface `due_at` through the stack
+
+**Status**: not started. **Size**: small, roughly 2 hours. **Depends on**:
+nothing. **Blocks**: AB.
+
+**Problem.** A record's scheduled time is invisible. `due_at` appears nowhere
+in the Reporting proto, nowhere in `docs/API_GATEWAY.md`, and nowhere in
+`web/`. So the dashboard can tell you a record is `RETRY_SCHEDULED` but not
+that it is waiting for the 1st of the month, or that its retry is 6 seconds
+away.
+
+That matters more than a missing column usually would, because **cause-aware
+retry timing is the most distinctive behaviour this system has**, and it is
+the one no competitor observed so far attempts at all. An empty account
+retried tomorrow burns an attempt and an SMS; waiting for payday works. Right
+now that decision is made correctly, recorded correctly, and shown to nobody.
+
+**Why it is cheap.** `record_state.due_at` already exists and is already
+indexed (`migrations/00001_initial_schema.sql`). Nothing new is computed or
+stored. Four additive steps, no migration, no logic change:
+
+1. `due_at` on `reporting.v1.RecordSummary` (additive field)
+2. Add `rs.due_at` to the `SELECT` in `listBatchRecords`, which already reads
+   that table
+3. Gateway passes it through, since the route is a field-for-field mirror
+4. `docs/API_GATEWAY.md` gains the field; `web/` gains a "Due" column and a
+   line in the drawer's state section
+
+**Include the countdown.** Rendering `due_at` as a live relative countdown
+("retry in 6.4s") rather than a timestamp is most of the value: it turns a
+static field into a visible act of waiting, which is what a judge needs to
+see. At `DEMO_TIME_SCALE=300000` a worst-case salary-window wait is about 9
+real seconds, so it is genuinely watchable.
+
+**Absent `due_at` is meaningful and must not render as an error.** A record in
+a terminal state has none, and a `NUDGED` record deliberately has none (it
+waits on `ReportDelayedOutcome`, nothing polls it). Show "not scheduled" for
+the first and "awaiting customer" for the second.
+
+## Unit AB: timeline view
+
+**Status**: not started. **Size**: medium, roughly 4 hours.
+**Depends on**: AA. **[FRONTEND]**, lives entirely in `web/**`.
+
+**What it is.** A horizontal time axis with each pending record plotted at its
+`due_at`, coloured by root cause.
+
+**Why it earns its place.** It makes one screenshot do what a paragraph
+cannot: `INSUFFICIENT_FUNDS` records visibly cluster at the salary window while
+`TRANSIENT_BANK` records fire immediately and `HARD_DECLINE` records have no
+retry plotted at all. The cause-aware scheduling policy stops being a claim in
+a document and becomes a shape on a chart, in about three seconds of looking.
+
+**Design notes.** Group by bucket on the vertical axis so the clustering is the
+first thing visible. Show "now" as a moving marker so the axis reads as live.
+Terminal records are excluded, since they have nothing pending. Keep it in the
+existing hand-rolled SVG idiom, as `web/` has no chart library by design.
+
+**Deliberately not** a Gantt chart of past activity: the audit trail already
+tells that story per record. This view is about **what the agent has decided to
+do next, and when**, which nothing currently shows.
