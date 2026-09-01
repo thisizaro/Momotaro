@@ -10,6 +10,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
@@ -368,6 +369,53 @@ func TestListBatchRecordsPaginatesWithNextPageToken(t *testing.T) {
 	}
 	if second.Records[0].RecordId == first.Records[0].RecordId {
 		t.Error("page 2 returned the same first record as page 1, pagination did not advance")
+	}
+}
+
+// TestListBatchRecordsIncludesDueAt covers Unit AA: a record waiting on the
+// Decision Engine's scheduler (RETRY_SCHEDULED) must carry its due_at
+// through ListBatchRecords, and a terminal record must carry none, so the
+// dashboard can tell "retry in 6s" apart from "not scheduled" instead of
+// both rendering as an empty cell.
+func TestListBatchRecordsIncludesDueAt(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	batchID := seedBatch(ctx, t, pool)
+
+	dueAt := time.Now().Add(90 * time.Second).Truncate(time.Second).UTC()
+	scheduled := seedRecord(ctx, t, pool, batchID, 10000, "RECORD_TYPE_PAYMENT")
+	seedRecordStateWithDueAt(ctx, t, pool, scheduled, "RECORD_STATE_RETRY_SCHEDULED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1, dueAt)
+
+	recovered := seedRecord(ctx, t, pool, batchID, 10000, "RECORD_TYPE_PAYMENT")
+	seedRecordState(ctx, t, pool, recovered, "RECORD_STATE_RECOVERED", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1)
+
+	s := New(pool, NewHub())
+	resp, err := s.ListBatchRecords(ctx, &reportingv1.ListBatchRecordsRequest{BatchId: batchID})
+	if err != nil {
+		t.Fatalf("ListBatchRecords: %v", err)
+	}
+
+	var gotScheduled, gotRecovered *reportingv1.RecordSummary
+	for _, rec := range resp.Records {
+		switch rec.RecordId {
+		case scheduled:
+			gotScheduled = rec
+		case recovered:
+			gotRecovered = rec
+		}
+	}
+	if gotScheduled == nil || gotRecovered == nil {
+		t.Fatalf("did not find both seeded records in response: %+v", resp.Records)
+	}
+
+	if gotScheduled.GetDueAt() == nil {
+		t.Fatal("scheduled record: DueAt is nil, want the seeded timestamp")
+	}
+	if !gotScheduled.GetDueAt().AsTime().Equal(dueAt) {
+		t.Errorf("scheduled record: DueAt = %v, want %v", gotScheduled.GetDueAt().AsTime(), dueAt)
+	}
+	if gotRecovered.GetDueAt() != nil {
+		t.Errorf("recovered (terminal) record: DueAt = %v, want nil", gotRecovered.GetDueAt().AsTime())
 	}
 }
 

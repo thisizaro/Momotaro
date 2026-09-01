@@ -290,6 +290,68 @@ func TestListBatchRecordsProxiesQueryParamsAndResponse(t *testing.T) {
 	}
 }
 
+// TestListBatchRecordsRendersDueAtOrEmptyStringWhenAbsent covers Unit AA.
+// A record the Decision Engine's scheduler is waiting on carries its
+// due_at as an RFC3339 string (Wire conventions 4); a record with none
+// (terminal, or NUDGED waiting on the customer) still gets the field, as
+// an empty string rather than being omitted, per Wire conventions 6 ("no
+// omitempty, every documented field always rendered") and matching the
+// existing rationale/message_text precedent for "empty string, never
+// absent, when not applicable".
+func TestListBatchRecordsRendersDueAtOrEmptyStringWhenAbsent(t *testing.T) {
+	dueAt := time.Date(2026, 8, 29, 14, 30, 0, 0, time.UTC)
+	rep := &fakeReporting{recordsResp: &reportingv1.ListBatchRecordsResponse{
+		Records: []*reportingv1.RecordSummary{
+			{
+				RecordId:     "rec-scheduled",
+				CurrentState: commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED,
+				DueAt:        timestamppb.New(dueAt),
+			},
+			{
+				RecordId:     "rec-nudged",
+				CurrentState: commonv1.RecordState_RECORD_STATE_NUDGED,
+				DueAt:        nil,
+			},
+		},
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/batches/batch-1/records", nil)
+	req.Header.Set("X-API-Key", testAPIKey)
+	rr := httptest.NewRecorder()
+	newHandlerWithReporting(rep).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	records := got["records"].([]any)
+	if len(records) != 2 {
+		t.Fatalf("len(records) = %d, want 2", len(records))
+	}
+
+	scheduled := records[0].(map[string]any)
+	dueAtRaw, present := scheduled["due_at"]
+	if !present {
+		t.Fatal("scheduled record: due_at key missing, want the field always present")
+	}
+	if dueAtRaw != "2026-08-29T14:30:00Z" {
+		t.Errorf("scheduled record: due_at = %v, want 2026-08-29T14:30:00Z", dueAtRaw)
+	}
+
+	nudged := records[1].(map[string]any)
+	nudgedDueAt, present := nudged["due_at"]
+	if !present {
+		t.Fatal("nudged record: due_at key missing, want the field always present, empty string")
+	}
+	if nudgedDueAt != "" {
+		t.Errorf("nudged record: due_at = %v, want empty string for an absent due_at", nudgedDueAt)
+	}
+}
+
 func TestListBatchRecordsUnknownBatchIsNotFound(t *testing.T) {
 	rep := &fakeReporting{recordsErr: notFoundErr("batch not found")}
 	req := httptest.NewRequest(http.MethodGet, "/v1/batches/unknown/records", nil)

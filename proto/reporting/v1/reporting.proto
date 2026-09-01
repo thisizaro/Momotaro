@@ -148,6 +148,13 @@ message RecordSummary {
   common.v1.RootCauseBucket bucket = 5;
   int32 attempt_count = 6;
   int64 spend_paise = 7;
+  // When the Decision Engine's scheduler will next act on this record
+  // (docs/ARCHITECTURE.md section 7a), mirrored straight from
+  // record_state.due_at. Set only while the record is RETRY_SCHEDULED or
+  // NUDGE_SCHEDULED. Unset (nil) for every other state, including NUDGED:
+  // that state deliberately has no due_at, it waits on
+  // ReportDelayedOutcome from the customer, nothing polls it.
+  google.protobuf.Timestamp due_at = 8;
 }
 
 message ListBatchRecordsResponse {

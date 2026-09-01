@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
@@ -158,6 +159,7 @@ func (s *Server) ListBatchRecords(ctx context.Context, req *reportingv1.ListBatc
 			Bucket:       commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[r.Bucket]),
 			AttemptCount: r.AttemptCount,
 			SpendPaise:   r.SpendPaise,
+			DueAt:        dueAtTimestamp(r.DueAt),
 		}
 	}
 
@@ -190,6 +192,18 @@ func decodePageToken(token string) (int32, error) {
 
 func encodePageToken(offset int32) string {
 	return strconv.Itoa(int(offset))
+}
+
+// dueAtTimestamp converts a nullable record_state.due_at into the proto
+// wire representation: nil stays nil (proto3 message fields are naturally
+// optional), never a zero-value Timestamp, so the Gateway's "absent means
+// not scheduled" rule (docs/API_GATEWAY.md) has something unambiguous to
+// key off.
+func dueAtTimestamp(t *time.Time) *timestamppb.Timestamp {
+	if t == nil {
+		return nil
+	}
+	return timestamppb.New(*t)
 }
 
 func ratio(numerator, denominator int32) float64 {
