@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/thisizaro/Momotaro/internal/platform/hopcodec"
@@ -17,6 +18,25 @@ import (
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	"github.com/thisizaro/Momotaro/services/decision-engine/internal/economics"
 )
+
+// ErrRecordNotFound is returned by store methods when the SQL itself is the
+// evidence that a RECORD row does not exist, whether that shows up as
+// pgx.ErrNoRows on a lookup keyed by record id, or as a foreign-key
+// violation on an insert that references one. This is a permanent,
+// data-shaped condition, not an infrastructure failure (docs/INCIDENTS.md
+// 2026-08-31): the row is never coming back, so retrying cannot help, and a
+// caller in the raw.events handler path must route it to the dead-letter
+// queue instead of treating it the same as a dropped database connection.
+var ErrRecordNotFound = errors.New("record not found")
+
+// isForeignKeyViolation reports whether err is a Postgres foreign-key
+// violation (SQLSTATE 23503), the shape an INSERT into record_state takes
+// when the record it references was deleted between an earlier read in the
+// same handler call and this write.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
 
 // store is Decision Engine's only access point to RECORD_STATE and
 // AUDIT_ENTRY, the tables it owns (docs/ARCHITECTURE.md section 10a).
@@ -75,6 +95,16 @@ func (s *store) scheduleNew(ctx context.Context, log *slog.Logger, evt RawEvent,
 			VALUES ($1, $2, 0, $3, $4, $5, $6, $7, $8, $8)`,
 			evt.RecordID, final.String(), bucket.String(), nullIfUnspecified(pendingAction), dueAt, evScore, pRecovery, now,
 		); err != nil {
+			// A foreign-key violation here means the RECORD row this message
+			// pointed at was deleted between an earlier read in this same
+			// handler call (loadAttemptHistory, above) and this insert: the
+			// same permanent, data-shaped condition ErrRecordNotFound
+			// already names for that earlier read, reached through a
+			// narrower race instead (docs/INCIDENTS.md 2026-08-31, audited
+			// while fixing that entry).
+			if isForeignKeyViolation(err) {
+				return fmt.Errorf("insert record_state: %w", ErrRecordNotFound)
+			}
 			return fmt.Errorf("insert record_state: %w", err)
 		}
 		// Every step gets its own audit row, in the same transaction as the
@@ -517,6 +547,16 @@ func (s *store) loadAttemptHistory(ctx context.Context, recordID string) (attemp
 		recordID, commonv1.ActionType_ACTION_TYPE_RETRY.String(), nudges,
 	).Scan(&h.RecordCreatedAt, &h.Retries, &h.Contacts, &h.LastContactAt)
 	if err != nil {
+		// The FROM record r ... WHERE r.id = $1 above yields zero rows when
+		// recordID has no RECORD row at all (the LEFT JOIN only produces an
+		// all-NULL row when r itself matched), so QueryRow's ErrNoRows here
+		// means exactly one thing: this record does not exist. That is a
+		// poison-message signal (docs/INCIDENTS.md 2026-08-31), not a
+		// database problem, and must be classified as such rather than
+		// reported the same way a dropped connection would be.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return attemptHistory{}, fmt.Errorf("load attempt history for %s: %w", recordID, ErrRecordNotFound)
+		}
 		return attemptHistory{}, fmt.Errorf("load attempt history for %s: %w", recordID, err)
 	}
 	return h, nil

@@ -8,6 +8,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -173,6 +174,17 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 
 	history, err := e.store.loadAttemptHistory(ctx, evt.RecordID)
 	if err != nil {
+		// ErrRecordNotFound is a permanent, data-shaped condition (the
+		// record this message points at does not exist, most often because
+		// something deleted it after the message was published), not an
+		// infrastructure failure: retrying cannot help, because the row is
+		// never coming back. Anything else here (a dropped connection, a
+		// genuine query failure) stays fatal, exactly as ConsumeKeyed's
+		// contract expects (docs/INCIDENTS.md 2026-08-31).
+		if errors.Is(err, ErrRecordNotFound) {
+			log.Error("record no longer exists, dead-lettering", logger.KeyError, err.Error())
+			return e.deadLetterEvent(ctx, evt, fmt.Sprintf("record not found: %v", err))
+		}
 		return err
 	}
 
@@ -186,6 +198,15 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 	}
 
 	if err := e.store.scheduleNew(ctx, log, evt, classifyResp.GetBucket(), steps, pendingAction, classifyResp.GetRationale(), classifyResp.GetSource(), classifyResp.GetHops(), score, trace, dueAt, now); err != nil {
+		// Same classification as the loadAttemptHistory check above, for the
+		// narrower race it closes: the record existed when this handler
+		// call started but was deleted before this insert (store.go's
+		// isForeignKeyViolation), which is the same permanent, data-shaped
+		// condition, just caught later.
+		if errors.Is(err, ErrRecordNotFound) {
+			log.Error("record deleted during processing, dead-lettering", logger.KeyError, err.Error())
+			return e.deadLetterEvent(ctx, evt, fmt.Sprintf("record deleted during processing: %v", err))
+		}
 		return fmt.Errorf("schedule record %s: %w", evt.RecordID, err)
 	}
 	// Best-effort, after the transaction above has already committed:

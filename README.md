@@ -36,6 +36,15 @@ integration and end-to-end tiers: six real service binaries started as
 subprocesses, a batch posted through the public HTTP API, records driven to
 their terminal states, and the audit trail verified.
 
+**Do not run `make test-integration` against a live demo stack.** Its tests
+publish real messages to `raw.events` and delete the records they seeded in
+cleanup, so a message referencing a now-deleted record is left behind on the
+shared topic. The decision-engine's consumer dead-letters that kind of
+message rather than crashing on it (see `docs/INCIDENTS.md`), but it is
+still noise you did not intend to feed a demo run. If a stack ever does end
+up wedged on a poisoned topic, `make demo-reset` clears the decision-engine
+consumer group without a full `make down-clean`.
+
 To watch it happen:
 
 ```bash
