@@ -1709,3 +1709,75 @@ under a second look: a store method's error is a routing decision for
 everything that calls it through `ConsumeKeyed`, and every SQL statement in
 that call path has to be checked for what it does when its target row does
 not exist, not just the one the stack trace happened to name.
+
+### 2026-09-01, flaky in CI: TestSchedulerNeverDoubleClaimsTheSameRecord and TestBatchCorrectnessInvariants, UNRESOLVED, needs pickup
+
+**Status: open.** Report only, no fix or test change applied. Whoever next
+touches the Decision Engine scheduler should claim this, write the regression
+test first per `docs/ENGINEERING.md` section 1, then fix it.
+
+**What happened.** PR #87 (Unit AA, which adds a `due_at` field to Reporting's
+`RecordSummary` and passes it through the Gateway) failed the `integration`
+job on two tests it does not touch:
+
+```
+--- FAIL: TestSchedulerNeverDoubleClaimsTheSameRecord (0.19s)
+    scheduler_test.go:617: attempt_count = 0, want 1: a second tick must not
+                           reclaim a terminal record
+    scheduler_test.go:624: audit_entry rows = 0, want 2 (one claim + one
+                           outcome, not doubled by a second tick)
+--- FAIL: TestBatchCorrectnessInvariants (42.24s)  [test/e2e]
+```
+
+Re-running the identical job with no code change passed. So it is flaky, not
+broken.
+
+**Why the diff could not have caused it.** Unit AA touches
+`proto/reporting/v1`, `services/reporting`, `services/api-gateway` and `web/`.
+Both failures are in `services/decision-engine` and `test/e2e`. Unit U had
+merged just before and was the obvious suspect, so `loadAttemptHistory` was
+re-read directly: its query is `FROM record r LEFT JOIN intervention_attempt
+ia ... WHERE r.id = $1`, so a record that exists with no attempts still yields
+one all-NULL row and `pgx.ErrNoRows` genuinely means the record is absent. U's
+new `ErrRecordNotFound` classification cannot fire for a healthy new record.
+That was checked rather than assumed.
+
+**Suspected root cause, unconfirmed.** `attempt_count = 0` with **zero** audit
+rows means the seeded record was never claimed at all, rather than claimed
+twice. That is the signature this file already documents twice: the
+scheduler's `claimDue` is deliberately **system-wide**, unscoped by batch or
+record, because that is genuinely its production job (2026-08-23, "Decision
+Engine scheduler tests flaked on a shared executor call count"), and
+`go test ./...` runs packages concurrently against one shared Postgres. A
+scheduler tick belonging to another package, most plausibly `test/e2e`'s own
+subprocess-driven engine running at the same wall-clock moment, can claim this
+test's row first. The companion `test/e2e` failure in the same run is
+consistent with the two interfering with each other rather than with either
+being independently wrong.
+
+**Background rate.** `main` itself shows 1 failure in its last 12 runs, so
+this is not new to this PR and has been quietly present for a while.
+
+**Not fixed, deliberately.** Whoever picks it up should choose between:
+- scoping the assertion to the specific `record_id` the test seeded, the fix
+  already applied once for the same class of problem on 2026-08-23, and
+  checking whether `scheduler_test.go:617` and `:624` still assert on
+  something shared; or
+- giving scheduler integration tests an isolated claim domain, for example a
+  dedicated batch plus a `claimDue` variant scoped to it in tests only, which
+  is a larger change and risks testing something other than the production
+  query.
+
+The first is more likely correct and is the smaller change.
+
+**Why logged rather than fixed on sight.** A flaky test is exactly the kind of
+thing that deserves a deliberate regression test before a fix, and the catch
+rate needs measuring rather than assuming: this file's 2026-08-28 entry
+records a concurrency test that went red on demand and still only caught its
+bug 4 times in 20. Fixing this silently mid-review, on a PR that did not cause
+it, would repeat the error the 2026-08-23 entry warns about.
+
+**Operational note for now.** A red `integration` job on a PR whose diff
+cannot reach the failing package is more likely this than a regression.
+Re-run it once before investigating, and if it passes, check whether the
+failing test asserts on anything the system-wide `claimDue` can touch.
