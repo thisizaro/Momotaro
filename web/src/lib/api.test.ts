@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { collectAllRecordPages, MAX_RECORD_PAGES } from '@/lib/api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DemoControlsDisabledError, collectAllRecordPages, demoRequest, MAX_RECORD_PAGES } from '@/lib/api';
 import type { BatchRecordsResponse, RecordSummary } from '@/types';
 
 function record(id: string): RecordSummary {
@@ -93,5 +93,64 @@ describe('collectAllRecordPages', () => {
 
   it('the default cap is a real, positive bound', () => {
     expect(MAX_RECORD_PAGES).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * `/v1/demo/*` (docs/API_GATEWAY.md "Demo controls") 404s the same way any
+ * unknown path does when DEMO_CONTROLS_ENABLED is false: the whole
+ * namespace is unregistered, not "locked". The panel needs to tell that
+ * state apart from an ordinary failure so it can show "start the stack with
+ * PROFILE=demo" instead of a broken page or a generic error banner. These
+ * exercise demoRequest directly against a mocked fetch, since USE_MOCK is
+ * true in this test environment (no VITE_API_BASE_URL) and would otherwise
+ * route every api.* demo call through mockEngine instead of this function.
+ */
+describe('demoRequest', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function fakeResponse(status: number, body: unknown): Response {
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      json: async () => body,
+    } as unknown as Response;
+  }
+
+  it('throws DemoControlsDisabledError on a 404, distinct from any other failure', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(fakeResponse(404, {}));
+
+    await expect(demoRequest('/v1/demo/scenarios')).rejects.toBeInstanceOf(DemoControlsDisabledError);
+  });
+
+  it('the disabled error names the actual fix, so the panel does not need to invent copy', () => {
+    const err = new DemoControlsDisabledError();
+    expect(err.message).toContain('PROFILE=demo');
+  });
+
+  it('returns the parsed body on a 2xx response', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(fakeResponse(200, { scenarios: [] }));
+
+    const result = await demoRequest<{ scenarios: unknown[] }>('/v1/demo/scenarios');
+    expect(result).toEqual({ scenarios: [] });
+  });
+
+  it('throws a plain Error carrying the server message on a non-404 failure, not DemoControlsDisabledError', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(fakeResponse(500, { error: { code: 'INTERNAL', message: 'seed generation failed' } }));
+
+    await expect(demoRequest('/v1/demo/batches')).rejects.toThrow('seed generation failed');
+
+    try {
+      await demoRequest('/v1/demo/batches');
+      expect.fail('expected demoRequest to reject');
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(DemoControlsDisabledError);
+    }
   });
 });

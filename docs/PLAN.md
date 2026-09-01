@@ -848,12 +848,23 @@ ordered by value per hour. Detail for each is in
       database handle. Downtime control (`POST /v1/demo/downtime`) is
       explicitly deferred to Unit Y, which owns the payload shape
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit W
-- [ ] **[FRONTEND] Unit X: the demo control panel**, replacing the "Generate
+- [x] **[FRONTEND] Unit X: the demo control panel**, replacing the "Generate
       Sample Data" button rather than patching it. That button is Phase 0
       leftover: two of its five failure codes no longer exist since Unit I, and
       because it goes through the public API its batches can never carry ground
       truth, so accuracy and the baseline comparison are both absent from the
-      most obvious control on the screen
+      most obvious control on the screen. New `DemoControlPanel`, reached from
+      a Dashboard/Demo Controls tab in the header: seed a batch (scenario
+      picker populated from `GET /v1/demo/scenarios`, count, optional seed;
+      selects the new batch in the dashboard on success), World Simulator
+      state (`GET /v1/demo/world`, never surfaced anywhere before this), a
+      poison-record injector, and a plain-English explanation of the World
+      Simulator distinct from the dashboard's own mock mode. Detects a
+      disabled `DEMO_CONTROLS_ENABLED` (all four routes 404 identically) via a
+      `DemoControlsDisabledError` and shows a "start the stack with
+      PROFILE=demo" message instead of a broken panel. All four routes mocked
+      in `mockEngine.ts` per `web/AGENTS.md`, honestly labelled as browser-side
+      fabrication since only the World Simulator can write real `GROUND_TRUTH`
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit X
 - [ ] **Unit Y: payment-downtime webhooks and outage-aware retry.** Razorpay
       publishes `payment.downtime.started`/`.updated`/`.resolved` with

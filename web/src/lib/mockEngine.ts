@@ -5,9 +5,13 @@ import type {
   BaselineComparison,
   BatchRecordsResponse,
   BatchReport,
-  BatchSubmitResponse,
   BatchSummary,
   BatchUpdate,
+  DemoBatchRequest,
+  DemoBatchResponse,
+  DemoInjectPoisonResponse,
+  DemoScenario,
+  DemoWorldResponse,
   InterventionBreakdown,
   InvariantsResponse,
   Outcome,
@@ -153,6 +157,48 @@ const NUDGE_MESSAGES: Partial<Record<RootCauseBucket, string[]>> = {
   ROOT_CAUSE_BUCKET_OVERDUE: [
     'Hi! Your invoice is overdue. Please complete payment here: momotaro.link/pay',
   ],
+};
+
+/**
+ * Mirrors the four presets `GET /v1/demo/scenarios` returns on the real
+ * Gateway (docs/API_GATEWAY.md), word for word, so mock mode exercises the
+ * same "populate the picker from the server" code path the panel uses
+ * live instead of a hardcoded list going stale next to the real one.
+ */
+const DEMO_SCENARIOS: DemoScenario[] = [
+  {
+    name: 'normal',
+    description: 'The current default mix: a realistic spread across every root-cause bucket, no concentration.',
+  },
+  {
+    name: 'bank-outage',
+    description:
+      'Concentrated on one bank being unavailable (BANK_NOT_AVAILABLE), all seeded in the same short window, so per-bucket reporting shows a systemic spike instead of 80 unrelated customer problems.',
+  },
+  {
+    name: 'salary-day',
+    description:
+      'Heavy INSUFFICIENT_FUNDS, so the salary-window retry timing (wait for the 1st to 7th, not tomorrow) becomes the visible story.',
+  },
+  {
+    name: 'dead-cards',
+    description:
+      'Heavy CARD_EXPIRED and DEBIT_INSTRUMENT_BLOCKED, so the nudge-versus-retry distinction and the uneconomic close are visible: a retry cannot fix a dead instrument, only a method update can.',
+  },
+];
+
+/**
+ * What each scenario forces buildRecord's failure_code to, so a mock-seeded
+ * batch actually shows the concentration the scenario promises rather than
+ * the same uniform spread every batch gets. Not exhaustive over every code
+ * the real generator uses for these scenarios (real dead-cards also mixes
+ * in DEBIT_INSTRUMENT_BLOCKED); this only needs to demonstrate the shape,
+ * and 'normal' or an unrecognised name both fall back to the full pool.
+ */
+const SCENARIO_FAILURE_CODES: Record<string, string[]> = {
+  'bank-outage': ['bank_not_available'],
+  'salary-day': ['insufficient_funds'],
+  'dead-cards': ['card_expired'],
 };
 
 function uuid(): string {
@@ -709,24 +755,48 @@ export class MockEngine {
     );
   }
 
-  async submitBatch(source: string, count: number = 80): Promise<BatchSubmitResponse> {
+  /**
+   * Mock stand-in for `POST /v1/demo/batches`. Real seeding is done by the
+   * World Simulator, the only component allowed to write GROUND_TRUTH
+   * (docs/PRD.md 12a, ARCHITECTURE.md section 6); this is a browser-side
+   * fabrication, not that pipeline. It is honest about that in two places:
+   * this comment, and the `source` label below, which the panel's own
+   * mock-mode note also calls out rather than presenting the result as
+   * indistinguishable from a real seeded batch. `has_ground_truth` is still
+   * `true` so the report carries the accuracy/baseline blocks a real seeded
+   * batch would, which is the whole point of exercising this panel against
+   * mocks: the deleted "Generate Sample Data" button never had that.
+   */
+  async seedDemoBatch(req: DemoBatchRequest): Promise<DemoBatchResponse> {
+    const scenario = req.scenario && req.scenario.length > 0 ? req.scenario : 'normal';
+    const codes = SCENARIO_FAILURE_CODES[scenario];
+    const seed = req.seed && req.seed !== 0 ? req.seed : Math.floor(Math.random() * 1_000_000) + 1;
+
     const batch_id = uuid();
     const record_ids: string[] = [];
     const created_at = nowISO();
 
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < req.count; i++) {
       const id = uuid();
       record_ids.push(id);
-      this.records.set(id, this.buildRecord(id, batch_id, created_at));
+      const record = this.buildRecord(id, batch_id, created_at);
+      if (codes) {
+        // buildRecord already picked a ground truth from the full pool;
+        // override it so this scenario's concentration actually shows.
+        record.failure_code = pick(codes);
+        record.ground_truth = generateGroundTruth(record.failure_code);
+        record.bucket = record.ground_truth.true_bucket;
+      }
+      this.records.set(id, record);
     }
 
     this.batches.set(batch_id, {
       id: batch_id,
       created_at,
-      total_records: count,
-      source,
+      total_records: req.count,
+      source: `demo-mock-seed:${scenario}`,
       record_ids,
-      has_ground_truth: false,
+      has_ground_truth: true,
     });
 
     record_ids.forEach((id) => {
@@ -734,7 +804,53 @@ export class MockEngine {
       this.processRecord(record, batch_id);
     });
 
-    return { batch_id, accepted_count: count, rejected: {} };
+    return { batch_id, generated_count: req.count, seed };
+  }
+
+  async getDemoScenarios(): Promise<DemoScenario[]> {
+    return DEMO_SCENARIOS;
+  }
+
+  /**
+   * Mock stand-in for `GET /v1/demo/world`. The real World Simulator holds
+   * one Redis queue of delayed outcomes across every batch; here that is
+   * approximated as every record across every mock batch still waiting on
+   * a scheduled retry or nudge. `outcome` is rolled fresh on each call
+   * rather than cached, since nothing in mock mode locks it in until the
+   * timer in `executeAttempt` actually fires; it is illustrative, not a
+   * promise of what will happen.
+   */
+  async getDemoWorld(): Promise<DemoWorldResponse> {
+    const pending: DemoWorldResponse['pending'] = [];
+    for (const record of this.records.values()) {
+      if (!record.due_at) continue;
+      if (record.current_state !== 'RECORD_STATE_RETRY_SCHEDULED' && record.current_state !== 'RECORD_STATE_NUDGE_SCHEDULED') {
+        continue;
+      }
+      const impliedAction: ActionType =
+        record.current_state === 'RECORD_STATE_RETRY_SCHEDULED' ? 'ACTION_TYPE_RETRY' : nudgeActionFor(record.bucket);
+      pending.push({
+        record_id: record.id,
+        attempt_number: record.attempt_count + 1,
+        outcome: rollOutcome(record.ground_truth, impliedAction),
+        due_at: record.due_at,
+      });
+    }
+    pending.sort((a, b) => new Date(a.due_at).getTime() - new Date(b.due_at).getTime());
+    return { pending };
+  }
+
+  /**
+   * Mock stand-in for `POST /v1/demo/inject-poison`. The real route
+   * publishes a Kafka message the Decision Engine's consumer cannot look
+   * up, which is what proves the dead-letter path (Unit U) instead of a
+   * crash loop. Mock mode has no consumer to dead-letter anything against,
+   * so this only mirrors the response shape: both ids are fresh and never
+   * added to `records`/`batches`, same as the real route never writes them
+   * to Postgres.
+   */
+  async injectPoison(): Promise<DemoInjectPoisonResponse> {
+    return { record_id: uuid(), batch_id: uuid() };
   }
 
   async getBatchReport(batch_id: string): Promise<BatchReport> {

@@ -238,3 +238,49 @@ export interface InvariantsResponse {
   records_checked: number;
   examples: Record<string, unknown>;
 }
+
+// `/v1/demo/*` (docs/API_GATEWAY.md "Demo controls"). Phase 5.5 Unit W/X.
+// Every route here exists only when the Gateway runs with
+// DEMO_CONTROLS_ENABLED=true; when it does not, all four 404 identically,
+// which is what DemoControlsDisabledError (src/lib/api.ts) detects.
+
+export interface DemoScenario {
+  name: string;
+  description: string;
+}
+
+export interface DemoScenariosResponse {
+  scenarios: DemoScenario[];
+}
+
+export interface DemoBatchRequest {
+  /** One of GET /v1/demo/scenarios' names; empty/omitted defaults to "normal". */
+  scenario?: string;
+  /** Required, 1 to 1000. */
+  count: number;
+  /** Optional; 0 or omitted picks one, always echoed back in the response. */
+  seed?: number;
+}
+
+export interface DemoBatchResponse {
+  batch_id: string;
+  generated_count: number;
+  seed: number;
+}
+
+export interface DemoWorldPendingEntry {
+  record_id: string;
+  attempt_number: number;
+  /** The already-rolled answer waiting to be delivered at due_at. */
+  outcome: Outcome;
+  due_at: string;
+}
+
+export interface DemoWorldResponse {
+  pending: DemoWorldPendingEntry[];
+}
+
+export interface DemoInjectPoisonResponse {
+  record_id: string;
+  batch_id: string;
+}

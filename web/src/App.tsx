@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Shield, Play, RefreshCw, FlaskConical } from 'lucide-react';
+import { Shield, FlaskConical, LayoutDashboard, SlidersHorizontal } from 'lucide-react';
 import { api, USE_MOCK } from '@/lib/api';
 import type {
   BatchReport,
@@ -23,14 +23,17 @@ import { RecordsTruncatedBanner } from '@/components/RecordsTruncatedBanner';
 import { BaselineComparisonCard } from '@/components/BaselineComparison';
 import { InvariantsPanel } from '@/components/InvariantsPanel';
 import { ConfusionMatrix } from '@/components/ConfusionMatrix';
+import { DemoControlPanel } from '@/components/DemoControlPanel';
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
 type ConnectionState = 'connecting' | 'live' | 'disconnected';
+type View = 'dashboard' | 'demo';
 
 function App() {
+  const [view, setView] = useState<View>('dashboard');
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [batchesError, setBatchesError] = useState<string | null>(null);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
@@ -46,8 +49,6 @@ function App() {
   const [drawerDetail, setDrawerDetail] = useState<RecordAuditResponse | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [drawerError, setDrawerError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -118,20 +119,21 @@ function App() {
     };
   }, [activeBatchId, loadBatchData]);
 
-  const handleSubmitBatch = useCallback(async () => {
-    setSubmitting(true);
-    setSubmitError(null);
+  // Called by DemoControlPanel after it seeds a batch through /v1/demo/batches
+  // (Unit W), so the newly seeded batch, which carries real ground truth and
+  // therefore an accuracy score and a baseline comparison, is selected and
+  // visible immediately rather than left for the user to find in the
+  // selector themselves.
+  const handleDemoBatchSeeded = useCallback(async (batchId: string) => {
     try {
-      const { batch_id } = await api.submitBatch('dashboard-generated', 80);
       const list = await api.getBatches();
       setBatches(list);
       setBatchesError(null);
-      setActiveBatchId(batch_id);
     } catch (err) {
-      setSubmitError(errorMessage(err, 'Failed to submit batch'));
-    } finally {
-      setSubmitting(false);
+      setBatchesError(errorMessage(err, 'Failed to load batches'));
     }
+    setActiveBatchId(batchId);
+    setView('dashboard');
   }, []);
 
   const handleSelectRecord = useCallback(async (id: string) => {
@@ -186,18 +188,26 @@ function App() {
                 <span className={`w-1.5 h-1.5 rounded-full ${connectionDotClass}`} />
                 {connectionLabel}
               </span>
-              <button
-                onClick={handleSubmitBatch}
-                disabled={submitting}
-                className="btn-primary disabled:opacity-50"
-              >
-                {submitting ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Play className="w-4 h-4" />
-                )}
-                {submitting ? 'Generating...' : 'Generate Sample Data'}
-              </button>
+              <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+                <button
+                  onClick={() => setView('dashboard')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-150 ${
+                    view === 'dashboard' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <LayoutDashboard className="w-3.5 h-3.5" />
+                  Dashboard
+                </button>
+                <button
+                  onClick={() => setView('demo')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-150 ${
+                    view === 'demo' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  Demo Controls
+                </button>
+              </div>
             </div>
           </div>
         </header>
@@ -213,14 +223,10 @@ function App() {
       </div>
 
       <main className="max-w-[1400px] mx-auto px-6 py-6 space-y-6">
-        {submitError && (
-          <ErrorBanner
-            message={`Couldn't generate sample data: ${submitError}`}
-            onRetry={handleSubmitBatch}
-            retrying={submitting}
-          />
-        )}
+        {view === 'demo' && <DemoControlPanel onBatchSeeded={handleDemoBatchSeeded} />}
 
+        {view === 'dashboard' && (
+        <>
         {batchesError && (
           <ErrorBanner message={`Couldn't load batches: ${batchesError}`} onRetry={loadBatches} />
         )}
@@ -377,6 +383,8 @@ function App() {
 
         {/* Records table */}
         <RecordsTable records={records} onSelect={handleSelectRecord} />
+        </>
+        )}
       </main>
 
       {/* Record detail drawer */}
