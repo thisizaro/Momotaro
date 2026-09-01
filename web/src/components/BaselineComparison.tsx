@@ -10,7 +10,7 @@ export function BaselineComparisonCard({ baseline, ownNetRecoveredPaise }: Props
   if (!baseline) {
     return (
       <div className="flex items-center justify-center h-full text-sm text-slate-400 py-8">
-        No ground truth for this batch — baseline comparison unavailable.
+        No ground truth for this batch, baseline comparison unavailable.
       </div>
     );
   }
