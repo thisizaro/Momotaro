@@ -313,3 +313,49 @@ reviews (2026-08-29).
   measuring the priors against a world generated from a different set of
   priors. Unit K's baseline comparison gets the defensible part of this value
   without the methodological hole.
+
+## Runtime control of `DEMO_TIME_SCALE`
+
+**Status**: considered 2026-08-31, deliberately not doing. **Not a "later"
+item so much as a "this does not work" item**, recorded so nobody proposes it
+again without reading the arithmetic.
+
+**The idea**: expose demo speed as a control in the UI, so a presenter could
+slow the system down mid-demo and let judges watch a retry actually wait.
+
+**Why it is expensive.** `DEMO_TIME_SCALE` is read once at startup and baked
+into config structs passed by value. Runtime mutability needs a
+concurrency-safe config holder, every read site routed through it, and an
+endpoint, across at least the decision engine and the world simulator. Worse,
+the scale is applied at the moment `due_at` is *computed and written*, so
+records already scheduled hold absolute timestamps and would not move. Making
+them move means bulk-rewriting pending `due_at` values by a ratio, which
+destroys the meaning of "this was scheduled for the next salary window". The
+honest version needs a real logical clock, which is a large change (and is
+also what the recovery-window guardrail would need to be demonstrable in a
+compressed demo, see `docs/INCIDENTS.md` 2026-08-31).
+
+**Why it would not work even if built, which is the part that settles it.**
+The waits this system schedules span nearly five orders of magnitude:
+
+```
+at DEMO_TIME_SCALE=300000:
+  RETRY_DELAY 30s              ->  0.000s   instant
+  CONTACT_COOLDOWN 24h         ->  0.288s   a blink
+  salary window (worst ~31d)   ->  8.928s   watchable
+
+spread between the two extremes: 89,280x
+```
+
+**No single knob can make both ends watchable.** Slow it until a 30 second
+retry backoff is visible and the salary window becomes hours. Speed it up
+until the salary window is quick and the retry backoff was already instant. A
+slider would only move which one you cannot see.
+
+**What was done instead.** Phase 5.5 Units AA and AB surface `due_at` as a live
+countdown and plot pending work on a time axis. The salary window is already
+watchable at ~9 real seconds; it simply was not displayed. That delivers the
+whole demo intent for about two hours of additive, zero-risk work, and the
+retry backoff being instant is fine: nobody needs to watch an exponential
+backoff, they need to see that an empty account is deliberately left alone
+until payday.
