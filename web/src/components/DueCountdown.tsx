@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { formatDuration } from '@/lib/format';
 import type { RecordState } from '@/types';
 
 interface Props {
@@ -6,24 +7,6 @@ interface Props {
   dueAt: string;
   currentState: RecordState;
   className?: string;
-}
-
-/**
- * formatRemaining renders a countdown resolution appropriate to how far out
- * the wait is: sub-second precision only matters when the wait itself is
- * short (a demo-scaled retry a few seconds out), so it fades out once the
- * wait is long enough that a viewer is reading minutes/hours/days, not
- * counting seconds.
- */
-function formatRemaining(ms: number): string {
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes}m ${Math.floor(totalSeconds % 60)}s`;
-  const totalHours = Math.floor(totalMinutes / 60);
-  if (totalHours < 24) return `${totalHours}h ${totalMinutes % 60}m`;
-  const totalDays = Math.floor(totalHours / 24);
-  return `${totalDays}d ${totalHours % 24}h`;
 }
 
 /**
@@ -55,7 +38,7 @@ export function DueCountdown({ dueAt, currentState, className }: Props) {
   }
 
   const remainingMs = new Date(dueAt).getTime() - Date.now();
-  const label = remainingMs <= 0 ? 'due now' : `in ${formatRemaining(remainingMs)}`;
+  const label = remainingMs <= 0 ? 'due now' : `in ${formatDuration(remainingMs)}`;
 
   return (
     <span className={`font-mono tabular-nums text-slate-600 ${className ?? ''}`}>{label}</span>

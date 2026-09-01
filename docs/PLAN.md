@@ -868,7 +868,7 @@ ordered by value per hour. Detail for each is in
       correctly, and shown to nobody. Additive field, existing indexed column,
       no migration. Render as a live countdown, not a timestamp
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit AA
-- [ ] **[FRONTEND] Unit AB: timeline view.** Pending records plotted on a time
+- [x] **[FRONTEND] Unit AB: timeline view.** Pending records plotted on a time
       axis by `due_at`, grouped by root cause, so insufficient-funds records
       visibly cluster at the salary window while bank timeouts fire
       immediately. Turns the scheduling policy from a claim in a doc into a
