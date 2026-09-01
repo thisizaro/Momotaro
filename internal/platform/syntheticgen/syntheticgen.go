@@ -1,6 +1,19 @@
-// Pure generation logic: given a source of randomness, produce one
-// synthetic record's shape plus its hidden ground-truth answer key. No I/O,
-// so it is testable without Postgres (docs/ENGINEERING.md section 14).
+// Package syntheticgen is the synthetic-record model used to seed a demo
+// batch: given a source of randomness, it produces one record's visible
+// shape plus its hidden ground-truth answer key. No I/O, so it is testable
+// without Postgres (docs/ENGINEERING.md section 14).
+//
+// It lives in internal/platform for the same reason kafkax and hopcodec do:
+// this is shared infrastructure, not one service's business logic.
+// scripts/batchgen (the standalone CLI) and, from Phase 5.5 Unit W onward,
+// the World Simulator both need the exact same generation logic, and having
+// two independent copies is how they silently drift. Living here as
+// package main previously meant nothing could import it at all; moving it
+// is a pure relocation, not a redesign, so the two callers keep writing to
+// Postgres and Kafka themselves. This package produces values, it never
+// acquires a database handle or imports pgx: only the World Simulator may
+// write GROUND_TRUTH (docs/ARCHITECTURE.md section 6), and extracting the
+// generator does not extend that permission to whatever else imports it.
 //
 // docs/ARCHITECTURE.md section 6 names the design goal directly: "seeds
 // each record with a hidden ground-truth profile at creation time (e.g.
@@ -10,7 +23,7 @@
 // those two named numbers (TRANSIENT_BANK 0.80, HARD_DECLINE 0.15) and
 // extrapolates the rest on the same logic; unrecoverable is a per-record
 // override applied on top, not its own bucket.
-package main
+package syntheticgen
 
 import (
 	"math"
@@ -109,10 +122,10 @@ const unrecoverableChance = 0.06
 // measurement.
 const misleadingCodeChance = 0.12
 
-// codeFamily is one record type's pool of plausible failure codes, each
+// codeEntry is one record type's pool of plausible failure codes, each
 // tagged with the bucket a naive code->bucket lookup would assign it (the
 // same values services/classifier/internal/rules/buckets.go's own table
-// uses), so codePool can both pick a realistic code and compute what the
+// uses), so codePoolFor can both pick a realistic code and compute what the
 // "obvious" bucket would be, for misleadingCodeChance to deliberately
 // diverge from.
 type codeEntry struct {
@@ -197,11 +210,11 @@ var recordTypeWeights = []struct {
 	{commonv1.RecordType_RECORD_TYPE_INVOICE, 8},
 }
 
-// generatedRecord is one synthetic record: the shape Ingestion's own
+// GeneratedRecord is one synthetic record: the shape Ingestion's own
 // tables need (BATCH/RECORD) plus the hidden answer key
 // (GROUND_TRUTH) that only World Simulator and Reporting's accuracy
 // scorer may ever read.
-type generatedRecord struct {
+type GeneratedRecord struct {
 	Type        commonv1.RecordType
 	FailureCode string
 	AmountPaise int64
@@ -212,11 +225,11 @@ type generatedRecord struct {
 	ResponseDelaySeconds   int32
 }
 
-// generateRecord produces one record. rng is the caller's, not a package
+// GenerateRecord produces one record. rng is the caller's, not a package
 // global, so a fixed seed makes an entire batch reproducible
 // (docs/ENGINEERING.md section 2's spirit: no hidden, untestable
 // randomness).
-func generateRecord(rng *rand.Rand) generatedRecord {
+func GenerateRecord(rng *rand.Rand) GeneratedRecord {
 	recordType := pickRecordType(rng)
 	entry := pickCode(rng, recordType)
 	amount := pickAmountPaise(rng)
@@ -235,7 +248,7 @@ func generateRecord(rng *rand.Rand) generatedRecord {
 		wrongAction = recovery
 	}
 
-	return generatedRecord{
+	return GeneratedRecord{
 		Type:                   recordType,
 		FailureCode:            entry.Code,
 		AmountPaise:            amount,
@@ -331,11 +344,11 @@ func pickInRange(rng *rand.Rand, r [2]int32) int32 {
 // never NULL-wrapped).
 const instrumentRefShareChance = 0.30
 
-// instrumentRefPool returns a fixed set of synthetic instrument handles
+// InstrumentRefPool returns a fixed set of synthetic instrument handles
 // sized to roughly a tenth of the batch, so instruments that ARE reused
 // tend to actually repeat a few times each rather than each being drawn
 // once and looking unshared anyway.
-func instrumentRefPool(count int) []string {
+func InstrumentRefPool(count int) []string {
 	size := count / 10
 	if size < 1 {
 		size = 1
@@ -347,10 +360,10 @@ func instrumentRefPool(count int) []string {
 	return pool
 }
 
-// pickInstrumentRef only assigns one to PAYMENT/MANDATE records: a
+// PickInstrumentRef only assigns one to PAYMENT/MANDATE records: a
 // checkout or invoice failure isn't tied to a payment instrument in the
 // same sense, so ABANDONMENT/OVERDUE records always get "".
-func pickInstrumentRef(rng *rand.Rand, recordType commonv1.RecordType, pool []string) string {
+func PickInstrumentRef(rng *rand.Rand, recordType commonv1.RecordType, pool []string) string {
 	if recordType != commonv1.RecordType_RECORD_TYPE_PAYMENT && recordType != commonv1.RecordType_RECORD_TYPE_MANDATE {
 		return ""
 	}

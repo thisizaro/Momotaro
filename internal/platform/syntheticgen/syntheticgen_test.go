@@ -1,4 +1,4 @@
-package main
+package syntheticgen
 
 import (
 	"math/rand"
@@ -22,7 +22,7 @@ func codeIsInPool(code string, recordType commonv1.RecordType) bool {
 func TestGenerateRecordProducesValidValues(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	for i := 0; i < 2000; i++ {
-		rec := generateRecord(rng)
+		rec := GenerateRecord(rng)
 
 		if rec.Type == commonv1.RecordType_RECORD_TYPE_UNSPECIFIED {
 			t.Fatalf("record %d: Type is UNSPECIFIED", i)
@@ -55,7 +55,7 @@ func TestGenerateRecordProducesValidValues(t *testing.T) {
 func TestGenerateRecordKeepsTrueBucketWithinTypeFamily(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
 	for i := 0; i < 2000; i++ {
-		rec := generateRecord(rng)
+		rec := GenerateRecord(rng)
 		switch rec.Type {
 		case commonv1.RecordType_RECORD_TYPE_CHECKOUT:
 			if rec.TrueBucket != commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT {
@@ -78,7 +78,7 @@ func TestGenerateRecordSometimesDivergesFromTheObviousBucket(t *testing.T) {
 	const trials = 5000
 	diverged := 0
 	for i := 0; i < trials; i++ {
-		rec := generateRecord(rng)
+		rec := GenerateRecord(rng)
 		entry := findCode(rec.FailureCode, rec.Type)
 		if entry.ObviousBucket != rec.TrueBucket {
 			diverged++
@@ -105,11 +105,11 @@ func findCode(code string, recordType commonv1.RecordType) codeEntry {
 // specific demo run, or a bug report against a specific batch, depends on
 // this (docs/ENGINEERING.md section 2's no-hidden-randomness spirit).
 func TestGenerateRecordIsDeterministicForAFixedSeed(t *testing.T) {
-	gen := func(seed int64) []generatedRecord {
+	gen := func(seed int64) []GeneratedRecord {
 		rng := rand.New(rand.NewSource(seed))
-		out := make([]generatedRecord, 50)
+		out := make([]GeneratedRecord, 50)
 		for i := range out {
-			out[i] = generateRecord(rng)
+			out[i] = GenerateRecord(rng)
 		}
 		return out
 	}
@@ -125,12 +125,12 @@ func TestGenerateRecordIsDeterministicForAFixedSeed(t *testing.T) {
 
 func TestPickInstrumentRefOnlyAssignsToPaymentAndMandate(t *testing.T) {
 	rng := rand.New(rand.NewSource(4))
-	pool := instrumentRefPool(100)
+	pool := InstrumentRefPool(100)
 
 	for _, rt := range []commonv1.RecordType{commonv1.RecordType_RECORD_TYPE_CHECKOUT, commonv1.RecordType_RECORD_TYPE_INVOICE} {
 		for i := 0; i < 200; i++ {
-			if got := pickInstrumentRef(rng, rt, pool); got != "" {
-				t.Fatalf("%v: pickInstrumentRef = %q, want \"\" always", rt, got)
+			if got := PickInstrumentRef(rng, rt, pool); got != "" {
+				t.Fatalf("%v: PickInstrumentRef = %q, want \"\" always", rt, got)
 			}
 		}
 	}
@@ -138,11 +138,11 @@ func TestPickInstrumentRefOnlyAssignsToPaymentAndMandate(t *testing.T) {
 
 func TestPickInstrumentRefSometimesSharesAcrossPaymentRecords(t *testing.T) {
 	rng := rand.New(rand.NewSource(5))
-	pool := instrumentRefPool(100)
+	pool := InstrumentRefPool(100)
 
 	seen := map[string]int{}
 	for i := 0; i < 2000; i++ {
-		ref := pickInstrumentRef(rng, commonv1.RecordType_RECORD_TYPE_PAYMENT, pool)
+		ref := PickInstrumentRef(rng, commonv1.RecordType_RECORD_TYPE_PAYMENT, pool)
 		if ref != "" {
 			seen[ref]++
 		}
