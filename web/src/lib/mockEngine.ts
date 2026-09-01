@@ -247,6 +247,22 @@ function nudgeActionFor(bucket: RootCauseBucket): ActionType {
     : 'ACTION_TYPE_NUDGE_REMINDER';
 }
 
+/**
+ * Cause-aware retry timing, the behaviour Unit AB exists to make visible:
+ * a transient rail issue is retried almost immediately, but a retry against
+ * an empty account is scheduled for a simulated salary-credit window instead
+ * of burning an attempt right away. Clustering the insufficient-funds delays
+ * into a narrow late band (rather than spreading them across the whole
+ * range) is what makes them read as one shared window on the timeline
+ * instead of a handful of unrelated waits.
+ */
+function retryDelayMs(bucket: RootCauseBucket, attempt_count: number): number {
+  if (bucket === 'ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS') {
+    return 45000 + attempt_count * 4000 + Math.random() * 15000;
+  }
+  return 600 + attempt_count * 300 + Math.random() * 900;
+}
+
 function decideAction(
   bucket: RootCauseBucket,
   attempt_count: number,
@@ -271,7 +287,7 @@ function decideAction(
   if (attempt_count >= 3) {
     return { action: 'ACTION_TYPE_ESCALATE', delay: 500 };
   }
-  return { action: 'ACTION_TYPE_RETRY', delay: 600 + attempt_count * 400 };
+  return { action: 'ACTION_TYPE_RETRY', delay: retryDelayMs(bucket, attempt_count) };
 }
 
 function isRetry(action: ActionType): boolean {
@@ -506,14 +522,81 @@ export class MockEngine {
       this.records.set(id, record);
     }
 
+    const pendingCount = this.seedPendingTimelineRecords(batch_id, created_at, record_ids);
+
     this.batches.set(batch_id, {
       id: batch_id,
       created_at,
-      total_records: count,
+      total_records: count + pendingCount,
       source: 'demo-seed',
       record_ids,
       has_ground_truth: true,
     });
+  }
+
+  /**
+   * The batch above resolves every record to a terminal state synchronously,
+   * which is right for a "completed batch" but leaves nothing pending for
+   * TimelineView to plot the moment the dashboard loads. This adds a handful
+   * of records deliberately left mid-wait, at each end of the cause-aware
+   * scheduling policy described in docs/PHASE5_5_IMPLEMENTATION.md Unit AB:
+   * transient-bank retries due almost immediately, insufficient-funds
+   * retries clustered around a later simulated salary window, and (by
+   * omission) nothing for hard-decline, since a dead card gets a nudge, not
+   * a retry. Returns how many records it added, so the caller can keep
+   * total_records accurate.
+   */
+  private seedPendingTimelineRecords(batch_id: string, created_at: string, record_ids: string[]): number {
+    const now = Date.now();
+    const plan: { failure_code: string; due_at_ms: number }[] = [
+      ...Array.from({ length: 7 }, () => ({
+        failure_code: pick(['bank_not_available', 'bank_timeout']),
+        due_at_ms: now + 1500 + Math.random() * 13000,
+      })),
+      ...Array.from({ length: 8 }, () => ({
+        failure_code: 'insufficient_funds',
+        due_at_ms: now + 45000 + Math.random() * 30000,
+      })),
+    ];
+
+    for (const { failure_code, due_at_ms } of plan) {
+      const id = uuid();
+      const record = this.buildRecord(id, batch_id, created_at);
+      record.failure_code = failure_code;
+      record.ground_truth = generateGroundTruth(failure_code);
+      // Classifier noise is deliberately skipped here: these records exist
+      // to demonstrate the scheduling policy's shape, and a misclassified
+      // one landing under the wrong bucket row would blur exactly the
+      // pattern this view is for.
+      record.bucket = record.ground_truth.true_bucket;
+      record.rationale = pick(RATIONALES[record.bucket]);
+      record.classification_source = Math.random() < 0.8 ? 'SOURCE_LLM' : 'SOURCE_RULES_FALLBACK';
+      record.classification_correct = true;
+
+      this.addEntry(
+        record,
+        'RECORD_STATE_NEW',
+        'RECORD_STATE_SCORING',
+        'classified',
+        record.rationale,
+        'system',
+        { hops: classificationHops(record.classification_source) },
+      );
+      this.addEntry(
+        record,
+        'RECORD_STATE_SCORING',
+        'RECORD_STATE_RETRY_SCHEDULED',
+        'ACTION_TYPE_RETRY scheduled',
+        '',
+        'decision-engine',
+      );
+      record.due_at = new Date(due_at_ms).toISOString();
+
+      this.records.set(id, record);
+      record_ids.push(id);
+    }
+
+    return plan.length;
   }
 
   private emit(batch_id: string, update: BatchUpdate) {

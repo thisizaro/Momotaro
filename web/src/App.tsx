@@ -13,6 +13,7 @@ import { MetricsGrid } from '@/components/MetricsGrid';
 import { DonutChart } from '@/components/DonutChart';
 import { RecoveryBar } from '@/components/RecoveryBar';
 import { StateDistribution } from '@/components/StateDistribution';
+import { TimelineView } from '@/components/TimelineView';
 import { LiveFeed } from '@/components/LiveFeed';
 import { RecordsTable } from '@/components/RecordsTable';
 import { RecordDrawer } from '@/components/RecordDrawer';
@@ -275,6 +276,16 @@ function App() {
               <div className="h-[140px] animate-pulse bg-slate-50 rounded-lg" />
             )}
           </div>
+        </div>
+
+        {/* Retry timeline */}
+        <div className="card p-5">
+          <h3 className="text-sm font-semibold text-slate-700">Retry Timeline</h3>
+          {report ? (
+            <TimelineView records={records} />
+          ) : (
+            <div className="h-[280px] animate-pulse bg-slate-50 rounded-lg mt-4" />
+          )}
         </div>
 
         {/* Baseline comparison + invariants */}

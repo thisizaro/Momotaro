@@ -46,6 +46,25 @@ export function formatRelativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/**
+ * Renders a positive duration at a resolution appropriate to its size:
+ * sub-second precision only matters when the duration itself is short (a
+ * demo-scaled wait a few seconds out), so it fades out once the duration is
+ * long enough that a reader is counting minutes/hours/days, not seconds.
+ * Shared by DueCountdown (a live per-record countdown) and TimelineView (axis
+ * tick labels), so both read the same "in 6.4s" / "in 2m 3s" vocabulary.
+ */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(ms, 0) / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m ${Math.floor(totalSeconds % 60)}s`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}h ${totalMinutes % 60}m`;
+  const totalDays = Math.floor(totalHours / 24);
+  return `${totalDays}d ${totalHours % 24}h`;
+}
+
 export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
   RECORD_TYPE_PAYMENT: 'Payment',
   RECORD_TYPE_MANDATE: 'Mandate',
