@@ -1,15 +1,18 @@
 import type {
   BatchRecordsResponse,
   BatchReport,
-  BatchSubmitRecord,
-  BatchSubmitResponse,
   BatchSummary,
   BatchUpdate,
+  DemoBatchRequest,
+  DemoBatchResponse,
+  DemoInjectPoisonResponse,
+  DemoScenario,
+  DemoScenariosResponse,
+  DemoWorldResponse,
   InvariantsResponse,
   ListBatchesResponse,
   RecordAuditResponse,
   RecordSummary,
-  SubmitRecordType,
 } from '@/types';
 import { mockEngine } from '@/lib/mockEngine';
 
@@ -27,6 +30,44 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       ...(options?.headers ?? {}),
     },
   });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: { code: 'UNKNOWN', message: res.statusText } }));
+    throw new Error(body.error?.message ?? `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Thrown by `demoRequest` when a `/v1/demo/*` route comes back `404`. Per
+ * docs/API_GATEWAY.md, every one of these routes exists only when the
+ * Gateway is started with `DEMO_CONTROLS_ENABLED=true`; when it is not, they
+ * are not registered at all, so a 404 here is never "wrong URL", it means
+ * the whole namespace is off. A named error class lets the panel tell that
+ * state apart from a real failure (bad request, server error, network
+ * problem) instead of guessing from a status code or message text.
+ */
+export class DemoControlsDisabledError extends Error {
+  constructor() {
+    super('Demo controls are disabled. Start the stack with PROFILE=demo.');
+    this.name = 'DemoControlsDisabledError';
+  }
+}
+
+// Exported (like collectAllRecordPages below) so its 404-vs-other-failure
+// branching can be exercised directly against a mocked fetch, without
+// needing USE_MOCK false and a real network call.
+export async function demoRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': API_KEY,
+      ...(options?.headers ?? {}),
+    },
+  });
+  if (res.status === 404) {
+    throw new DemoControlsDisabledError();
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: { code: 'UNKNOWN', message: res.statusText } }));
     throw new Error(body.error?.message ?? `Request failed: ${res.status}`);
@@ -107,48 +148,11 @@ function recordsPath(batch_id: string, page_token: string): string {
   return `/v1/batches/${batch_id}/records?${params.toString()}`;
 }
 
-const SUBMIT_RECORD_TYPES: SubmitRecordType[] = ['PAYMENT', 'MANDATE', 'CHECKOUT', 'INVOICE'];
-const DEMO_FAILURE_CODES = [
-  'bank_not_available',
-  'insufficient_funds',
-  'card_expired',
-  'issuer_declined',
-  'risk_threshold_breached',
-];
-const DEMO_AMOUNTS_PAISE = [29900, 49900, 69900, 99900, 149900, 199900, 499900];
-
-function pick<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-/**
- * `POST /v1/batches`'s `count` form is not yet backed (see API_GATEWAY.md),
- * so an explicit records list is built client-side and sent through the
- * live `records` form instead of attempting the unsupported shape.
- */
-function generateDemoRecords(count: number): BatchSubmitRecord[] {
-  return Array.from({ length: count }, () => ({
-    type: pick(SUBMIT_RECORD_TYPES),
-    amount_paise: pick(DEMO_AMOUNTS_PAISE),
-    currency: 'INR',
-    failure_code: pick(DEMO_FAILURE_CODES),
-    instrument_ref: `demo_ref_${Math.random().toString(36).slice(2, 10)}`,
-  }));
-}
-
 export const api = {
   async getBatches(): Promise<BatchSummary[]> {
     if (USE_MOCK) return mockEngine.getBatches();
     const res = await request<ListBatchesResponse>('/v1/batches');
     return res.batches;
-  },
-
-  async submitBatch(source: string, count: number = 80): Promise<BatchSubmitResponse> {
-    if (USE_MOCK) return mockEngine.submitBatch(source, count);
-    return request<BatchSubmitResponse>('/v1/batches', {
-      method: 'POST',
-      body: JSON.stringify({ source, records: generateDemoRecords(count) }),
-    });
   },
 
   async getBatchReport(batch_id: string): Promise<BatchReport> {
@@ -206,5 +210,33 @@ export const api = {
     };
 
     return () => ws.close();
+  },
+
+  // `/v1/demo/*` (docs/API_GATEWAY.md "Demo controls"). All four go through
+  // demoRequest so a disabled Gateway namespace surfaces as
+  // DemoControlsDisabledError instead of a generic failure.
+
+  async getDemoScenarios(): Promise<DemoScenario[]> {
+    if (USE_MOCK) return mockEngine.getDemoScenarios();
+    const res = await demoRequest<DemoScenariosResponse>('/v1/demo/scenarios');
+    return res.scenarios;
+  },
+
+  async seedDemoBatch(req: DemoBatchRequest): Promise<DemoBatchResponse> {
+    if (USE_MOCK) return mockEngine.seedDemoBatch(req);
+    return demoRequest<DemoBatchResponse>('/v1/demo/batches', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  },
+
+  async getDemoWorld(): Promise<DemoWorldResponse> {
+    if (USE_MOCK) return mockEngine.getDemoWorld();
+    return demoRequest<DemoWorldResponse>('/v1/demo/world');
+  },
+
+  async injectPoison(): Promise<DemoInjectPoisonResponse> {
+    if (USE_MOCK) return mockEngine.injectPoison();
+    return demoRequest<DemoInjectPoisonResponse>('/v1/demo/inject-poison', { method: 'POST' });
   },
 };
