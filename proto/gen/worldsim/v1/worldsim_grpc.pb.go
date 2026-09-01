@@ -31,6 +31,10 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	WorldSimulatorService_SimulateOutcome_FullMethodName = "/momotaro.worldsim.v1.WorldSimulatorService/SimulateOutcome"
+	WorldSimulatorService_SeedBatch_FullMethodName       = "/momotaro.worldsim.v1.WorldSimulatorService/SeedBatch"
+	WorldSimulatorService_ListScenarios_FullMethodName   = "/momotaro.worldsim.v1.WorldSimulatorService/ListScenarios"
+	WorldSimulatorService_GetWorldState_FullMethodName   = "/momotaro.worldsim.v1.WorldSimulatorService/GetWorldState"
+	WorldSimulatorService_InjectPoison_FullMethodName    = "/momotaro.worldsim.v1.WorldSimulatorService/InjectPoison"
 )
 
 // WorldSimulatorServiceClient is the client API for WorldSimulatorService service.
@@ -39,6 +43,18 @@ const (
 type WorldSimulatorServiceClient interface {
 	// Roll the record's hidden recoverability profile for this action.
 	SimulateOutcome(ctx context.Context, in *SimulateOutcomeRequest, opts ...grpc.CallOption) (*SimulateOutcomeResponse, error)
+	// Phase 5.5 Unit W: the backend behind the API Gateway's /v1/demo/*
+	// control surface (docs/API_GATEWAY.md), gated at the Gateway by
+	// DEMO_CONTROLS_ENABLED and never called directly by anything outside the
+	// cluster (docs/ARCHITECTURE.md section 2, "dashboard talks only to the
+	// Gateway"). SeedBatch lives here rather than on the Gateway because only
+	// a demo/ component may ever write GROUND_TRUTH
+	// (docs/ARCHITECTURE.md section 6); the Gateway only proxies these four
+	// calls, it never gains a database handle.
+	SeedBatch(ctx context.Context, in *SeedBatchRequest, opts ...grpc.CallOption) (*SeedBatchResponse, error)
+	ListScenarios(ctx context.Context, in *ListScenariosRequest, opts ...grpc.CallOption) (*ListScenariosResponse, error)
+	GetWorldState(ctx context.Context, in *GetWorldStateRequest, opts ...grpc.CallOption) (*GetWorldStateResponse, error)
+	InjectPoison(ctx context.Context, in *InjectPoisonRequest, opts ...grpc.CallOption) (*InjectPoisonResponse, error)
 }
 
 type worldSimulatorServiceClient struct {
@@ -59,12 +75,64 @@ func (c *worldSimulatorServiceClient) SimulateOutcome(ctx context.Context, in *S
 	return out, nil
 }
 
+func (c *worldSimulatorServiceClient) SeedBatch(ctx context.Context, in *SeedBatchRequest, opts ...grpc.CallOption) (*SeedBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SeedBatchResponse)
+	err := c.cc.Invoke(ctx, WorldSimulatorService_SeedBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *worldSimulatorServiceClient) ListScenarios(ctx context.Context, in *ListScenariosRequest, opts ...grpc.CallOption) (*ListScenariosResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScenariosResponse)
+	err := c.cc.Invoke(ctx, WorldSimulatorService_ListScenarios_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *worldSimulatorServiceClient) GetWorldState(ctx context.Context, in *GetWorldStateRequest, opts ...grpc.CallOption) (*GetWorldStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetWorldStateResponse)
+	err := c.cc.Invoke(ctx, WorldSimulatorService_GetWorldState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *worldSimulatorServiceClient) InjectPoison(ctx context.Context, in *InjectPoisonRequest, opts ...grpc.CallOption) (*InjectPoisonResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InjectPoisonResponse)
+	err := c.cc.Invoke(ctx, WorldSimulatorService_InjectPoison_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorldSimulatorServiceServer is the server API for WorldSimulatorService service.
 // All implementations must embed UnimplementedWorldSimulatorServiceServer
 // for forward compatibility.
 type WorldSimulatorServiceServer interface {
 	// Roll the record's hidden recoverability profile for this action.
 	SimulateOutcome(context.Context, *SimulateOutcomeRequest) (*SimulateOutcomeResponse, error)
+	// Phase 5.5 Unit W: the backend behind the API Gateway's /v1/demo/*
+	// control surface (docs/API_GATEWAY.md), gated at the Gateway by
+	// DEMO_CONTROLS_ENABLED and never called directly by anything outside the
+	// cluster (docs/ARCHITECTURE.md section 2, "dashboard talks only to the
+	// Gateway"). SeedBatch lives here rather than on the Gateway because only
+	// a demo/ component may ever write GROUND_TRUTH
+	// (docs/ARCHITECTURE.md section 6); the Gateway only proxies these four
+	// calls, it never gains a database handle.
+	SeedBatch(context.Context, *SeedBatchRequest) (*SeedBatchResponse, error)
+	ListScenarios(context.Context, *ListScenariosRequest) (*ListScenariosResponse, error)
+	GetWorldState(context.Context, *GetWorldStateRequest) (*GetWorldStateResponse, error)
+	InjectPoison(context.Context, *InjectPoisonRequest) (*InjectPoisonResponse, error)
 	mustEmbedUnimplementedWorldSimulatorServiceServer()
 }
 
@@ -77,6 +145,18 @@ type UnimplementedWorldSimulatorServiceServer struct{}
 
 func (UnimplementedWorldSimulatorServiceServer) SimulateOutcome(context.Context, *SimulateOutcomeRequest) (*SimulateOutcomeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SimulateOutcome not implemented")
+}
+func (UnimplementedWorldSimulatorServiceServer) SeedBatch(context.Context, *SeedBatchRequest) (*SeedBatchResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SeedBatch not implemented")
+}
+func (UnimplementedWorldSimulatorServiceServer) ListScenarios(context.Context, *ListScenariosRequest) (*ListScenariosResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListScenarios not implemented")
+}
+func (UnimplementedWorldSimulatorServiceServer) GetWorldState(context.Context, *GetWorldStateRequest) (*GetWorldStateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetWorldState not implemented")
+}
+func (UnimplementedWorldSimulatorServiceServer) InjectPoison(context.Context, *InjectPoisonRequest) (*InjectPoisonResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InjectPoison not implemented")
 }
 func (UnimplementedWorldSimulatorServiceServer) mustEmbedUnimplementedWorldSimulatorServiceServer() {}
 func (UnimplementedWorldSimulatorServiceServer) testEmbeddedByValue()                               {}
@@ -117,6 +197,78 @@ func _WorldSimulatorService_SimulateOutcome_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorldSimulatorService_SeedBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SeedBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorldSimulatorServiceServer).SeedBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorldSimulatorService_SeedBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorldSimulatorServiceServer).SeedBatch(ctx, req.(*SeedBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorldSimulatorService_ListScenarios_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScenariosRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorldSimulatorServiceServer).ListScenarios(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorldSimulatorService_ListScenarios_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorldSimulatorServiceServer).ListScenarios(ctx, req.(*ListScenariosRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorldSimulatorService_GetWorldState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetWorldStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorldSimulatorServiceServer).GetWorldState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorldSimulatorService_GetWorldState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorldSimulatorServiceServer).GetWorldState(ctx, req.(*GetWorldStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorldSimulatorService_InjectPoison_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InjectPoisonRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorldSimulatorServiceServer).InjectPoison(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorldSimulatorService_InjectPoison_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorldSimulatorServiceServer).InjectPoison(ctx, req.(*InjectPoisonRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorldSimulatorService_ServiceDesc is the grpc.ServiceDesc for WorldSimulatorService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -127,6 +279,22 @@ var WorldSimulatorService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SimulateOutcome",
 			Handler:    _WorldSimulatorService_SimulateOutcome_Handler,
+		},
+		{
+			MethodName: "SeedBatch",
+			Handler:    _WorldSimulatorService_SeedBatch_Handler,
+		},
+		{
+			MethodName: "ListScenarios",
+			Handler:    _WorldSimulatorService_ListScenarios_Handler,
+		},
+		{
+			MethodName: "GetWorldState",
+			Handler:    _WorldSimulatorService_GetWorldState_Handler,
+		},
+		{
+			MethodName: "InjectPoison",
+			Handler:    _WorldSimulatorService_InjectPoison_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

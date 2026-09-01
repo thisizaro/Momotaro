@@ -20,6 +20,19 @@ option go_package = "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1;worldsi
 service WorldSimulatorService {
   // Roll the record's hidden recoverability profile for this action.
   rpc SimulateOutcome(SimulateOutcomeRequest) returns (SimulateOutcomeResponse);
+
+  // Phase 5.5 Unit W: the backend behind the API Gateway's /v1/demo/*
+  // control surface (docs/API_GATEWAY.md), gated at the Gateway by
+  // DEMO_CONTROLS_ENABLED and never called directly by anything outside the
+  // cluster (docs/ARCHITECTURE.md section 2, "dashboard talks only to the
+  // Gateway"). SeedBatch lives here rather than on the Gateway because only
+  // a demo/ component may ever write GROUND_TRUTH
+  // (docs/ARCHITECTURE.md section 6); the Gateway only proxies these four
+  // calls, it never gains a database handle.
+  rpc SeedBatch(SeedBatchRequest) returns (SeedBatchResponse);
+  rpc ListScenarios(ListScenariosRequest) returns (ListScenariosResponse);
+  rpc GetWorldState(GetWorldStateRequest) returns (GetWorldStateResponse);
+  rpc InjectPoison(InjectPoisonRequest) returns (InjectPoisonResponse);
 }
 
 message SimulateOutcomeRequest {
@@ -37,4 +50,65 @@ message SimulateOutcomeResponse {
   bool immediate = 2;
   google.protobuf.Timestamp resolves_at = 3;
   string failure_code = 4;
+}
+
+// SeedBatch seeds a batch of synthetic records with hidden GROUND_TRUTH,
+// exactly like scripts/batchgen, and publishes each one to raw.events so the
+// real pipeline picks it up. Backs POST /v1/demo/batches.
+message SeedBatchRequest {
+  // One of ListScenariosResponse's names (e.g. "normal", "bank-outage",
+  // "salary-day", "dead-cards"). Empty defaults to "normal".
+  string scenario = 1;
+  int32 count = 2;
+  // 0 means "pick one". Always echoed back on SeedBatchResponse, seeded or
+  // not, so the caller can reproduce the exact same batch later.
+  int64 seed = 3;
+}
+
+message SeedBatchResponse {
+  string batch_id = 1;
+  int32 generated_count = 2;
+  int64 seed = 3;
+}
+
+// ListScenarios backs GET /v1/demo/scenarios: the preset catalogue, with
+// human-readable descriptions, so a judge picking one on the dashboard knows
+// what it demonstrates before running it.
+message ListScenariosRequest {}
+
+message ScenarioPreset {
+  string name = 1;
+  string description = 2;
+}
+
+message ListScenariosResponse {
+  repeated ScenarioPreset scenarios = 1;
+}
+
+// GetWorldState backs GET /v1/demo/world: the first time this component's
+// state is visible anywhere outside its own logs. Pending is every entry
+// still sitting in the Redis delayed-outcome queue
+// (docs/ARCHITECTURE.md section 6), read-only, nothing is drained.
+message GetWorldStateRequest {}
+
+message PendingOutcome {
+  string record_id = 1;
+  int32 attempt_number = 2;
+  // The already-rolled answer, waiting to be delivered at due_at.
+  common.v1.Outcome outcome = 3;
+  google.protobuf.Timestamp due_at = 4;
+}
+
+message GetWorldStateResponse {
+  repeated PendingOutcome pending = 1;
+}
+
+// InjectPoison backs POST /v1/demo/inject-poison: publishes one raw.events
+// message for a record_id that has no RECORD row, to demonstrate the DLQ
+// path (docs/PHASE5_5_IMPLEMENTATION.md Unit U) live on the dashboard.
+message InjectPoisonRequest {}
+
+message InjectPoisonResponse {
+  string record_id = 1;
+  string batch_id = 2;
 }
