@@ -25,6 +25,7 @@ import (
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	reportingv1 "github.com/thisizaro/Momotaro/proto/gen/reporting/v1"
+	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
 	"github.com/thisizaro/Momotaro/services/api-gateway/internal/httpapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -43,6 +44,14 @@ type serviceConfig struct {
 	CallTimeout    time.Duration
 	RateLimitRPS   float64
 	RateLimitBurst int
+
+	// DemoControlsEnabled gates /v1/demo/* (docs/PHASE5_5_IMPLEMENTATION.md
+	// Unit W). Default false: demo controls are a surface that does not
+	// exist in a production deployment. WorldSimulatorAddr is only required
+	// when this is true, so a production deployment never needs to know
+	// World Simulator exists.
+	DemoControlsEnabled bool
+	WorldSimulatorAddr  string
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -61,8 +70,21 @@ func loadConfig() (serviceConfig, error) {
 		// (PRD.md section 10) with headroom for bursts.
 		RateLimitRPS:   l.Float("RATE_LIMIT_RPS", 100),
 		RateLimitBurst: l.Int("RATE_LIMIT_BURST", 200),
+
+		DemoControlsEnabled: l.Bool("DEMO_CONTROLS_ENABLED", false),
+		WorldSimulatorAddr:  l.StrDefault("WORLD_SIMULATOR_ADDR", ""),
 	}
-	return cfg, l.Err()
+	if err := l.Err(); err != nil {
+		return cfg, err
+	}
+	// Cross-field validation config.Loader cannot express on its own
+	// (docs/ENGINEERING.md section 5: fail fast, validated at startup):
+	// WORLD_SIMULATOR_ADDR is only required once demo controls are turned
+	// on, never unconditionally.
+	if cfg.DemoControlsEnabled && cfg.WorldSimulatorAddr == "" {
+		return cfg, fmt.Errorf("WORLD_SIMULATOR_ADDR is required when DEMO_CONTROLS_ENABLED=true")
+	}
+	return cfg, nil
 }
 
 func main() {
@@ -120,6 +142,22 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		reportingv1.NewReportingServiceClient(reportingConn),
 		auditv1.NewAuditServiceClient(auditConn),
 		cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
+
+	// /v1/demo/* (docs/PHASE5_5_IMPLEMENTATION.md Unit W): only dial World
+	// Simulator, and only register these routes, when the flag is on. A
+	// production deployment (the default) never opens this connection and
+	// never registers these handlers at all.
+	if cfg.DemoControlsEnabled {
+		worldSimulatorConn, err := grpc.NewClient(cfg.WorldSimulatorAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithChainUnaryInterceptor(interceptors.UnaryClientDefaultDeadline(cfg.CallTimeout)))
+		if err != nil {
+			return fmt.Errorf("dial world simulator at %s: %w", cfg.WorldSimulatorAddr, err)
+		}
+		defer worldSimulatorConn.Close()
+		handler.EnableDemoControls(worldsimv1.NewWorldSimulatorServiceClient(worldSimulatorConn))
+		log.Info("demo controls enabled", "world_simulator_addr", cfg.WorldSimulatorAddr)
+	}
 
 	// api-gateway has no inbound gRPC server to instrument (it is an HTTP
 	// edge with only outbound gRPC clients), so this exposes Go/process

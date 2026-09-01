@@ -140,6 +140,69 @@ func TestQueueDueRemovesAndReportsAMalformedMember(t *testing.T) {
 	}
 }
 
+// peekAll backs GET /v1/demo/world (docs/API_GATEWAY.md, Phase 5.5 Unit W):
+// unlike due, it must be read-only, so viewing the World Simulator's state
+// from the dashboard cannot itself deliver a pending outcome early.
+func TestPeekAllReturnsEveryEntryWithoutRemoving(t *testing.T) {
+	client := testRedis(t)
+	q := newQueue(client)
+	ctx := context.Background()
+	now := time.Now()
+
+	a := delayedOutcome{RecordID: "rec-a", AttemptNumber: 1, Outcome: commonv1.Outcome_OUTCOME_SUCCESS}
+	b := delayedOutcome{RecordID: "rec-b", AttemptNumber: 2, Outcome: commonv1.Outcome_OUTCOME_FAILURE, FailureCode: "BANK_TIMEOUT"}
+	dueA := now.Add(time.Minute)
+	dueB := now.Add(2 * time.Hour)
+	if err := q.schedule(ctx, a, dueA); err != nil {
+		t.Fatalf("schedule a: %v", err)
+	}
+	if err := q.schedule(ctx, b, dueB); err != nil {
+		t.Fatalf("schedule b: %v", err)
+	}
+
+	entries, err := q.peekAll(ctx)
+	if err != nil {
+		t.Fatalf("peekAll: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("peekAll returned %d entries, want 2: %+v", len(entries), entries)
+	}
+	byRecord := map[string]pendingEntry{}
+	for _, e := range entries {
+		byRecord[e.RecordID] = e
+	}
+	if !byRecord["rec-a"].DueAt.Equal(dueA.Truncate(time.Second)) {
+		t.Errorf("rec-a DueAt = %v, want %v", byRecord["rec-a"].DueAt, dueA)
+	}
+	if !byRecord["rec-b"].DueAt.Equal(dueB.Truncate(time.Second)) {
+		t.Errorf("rec-b DueAt = %v, want %v", byRecord["rec-b"].DueAt, dueB)
+	}
+	if byRecord["rec-b"].FailureCode != "BANK_TIMEOUT" {
+		t.Errorf("rec-b FailureCode = %q, want BANK_TIMEOUT", byRecord["rec-b"].FailureCode)
+	}
+
+	// Read-only: a second peek must still see both entries, nothing removed.
+	again, err := q.peekAll(ctx)
+	if err != nil {
+		t.Fatalf("second peekAll: %v", err)
+	}
+	if len(again) != 2 {
+		t.Fatalf("second peekAll returned %d entries, want 2 (peekAll must not remove anything)", len(again))
+	}
+}
+
+func TestPeekAllOnEmptyQueueReturnsEmptyNotError(t *testing.T) {
+	client := testRedis(t)
+	q := newQueue(client)
+	entries, err := q.peekAll(context.Background())
+	if err != nil {
+		t.Fatalf("peekAll on empty queue: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("peekAll on empty queue = %+v, want empty", entries)
+	}
+}
+
 func TestMemberRoundTripsThroughParseMember(t *testing.T) {
 	cases := []delayedOutcome{
 		{RecordID: "rec-1", AttemptNumber: 3, Outcome: commonv1.Outcome_OUTCOME_SUCCESS},

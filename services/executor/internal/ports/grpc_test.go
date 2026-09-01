@@ -10,6 +10,8 @@ import (
 	notifierv1 "github.com/thisizaro/Momotaro/proto/gen/notifier/v1"
 	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -26,6 +28,26 @@ type fakeWorldSimClient struct {
 func (f *fakeWorldSimClient) SimulateOutcome(ctx context.Context, in *worldsimv1.SimulateOutcomeRequest, opts ...grpc.CallOption) (*worldsimv1.SimulateOutcomeResponse, error) {
 	f.req = in
 	return f.resp, f.err
+}
+
+// SeedBatch, ListScenarios, GetWorldState and InjectPoison exist only to
+// satisfy worldsimv1.WorldSimulatorServiceClient (Phase 5.5 Unit W added
+// them to the shared proto). The Executor never calls any of the four; it
+// only ever calls SimulateOutcome, above.
+func (f *fakeWorldSimClient) SeedBatch(ctx context.Context, in *worldsimv1.SeedBatchRequest, opts ...grpc.CallOption) (*worldsimv1.SeedBatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used by the executor")
+}
+
+func (f *fakeWorldSimClient) ListScenarios(ctx context.Context, in *worldsimv1.ListScenariosRequest, opts ...grpc.CallOption) (*worldsimv1.ListScenariosResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used by the executor")
+}
+
+func (f *fakeWorldSimClient) GetWorldState(ctx context.Context, in *worldsimv1.GetWorldStateRequest, opts ...grpc.CallOption) (*worldsimv1.GetWorldStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used by the executor")
+}
+
+func (f *fakeWorldSimClient) InjectPoison(ctx context.Context, in *worldsimv1.InjectPoisonRequest, opts ...grpc.CallOption) (*worldsimv1.InjectPoisonResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used by the executor")
 }
 
 type fakeNotifierClient struct {

@@ -429,6 +429,100 @@ Message shape, mirrors `reporting.v1.BatchUpdate`:
 recovered nothing, so the dashboard can add it to a running total
 unconditionally without a null check.
 
+## Demo controls: `/v1/demo/*`
+
+**Phase 5.5 Unit W.** Everything below exists only when the Gateway is
+started with `DEMO_CONTROLS_ENABLED=true` (`.env.example`, default
+`false`). When it is not set, none of these routes are registered at all:
+a request to any of them returns a plain `404`, the same as any other
+unknown path, never a `401`/`403`. That is deliberate: demo controls are a
+surface that does not exist in a production deployment, not a feature that
+exists but is locked.
+
+Every route here is a thin proxy onto World Simulator's own gRPC surface
+(`proto/worldsim/v1/worldsim.proto`), the same way every other route in
+this document proxies onto Ingestion, Reporting or Audit. The Gateway
+never gains a database handle for these: batch seeding, in particular, is
+implemented on World Simulator because only a `demo/` component may ever
+write `GROUND_TRUTH` (`ARCHITECTURE.md` section 6).
+
+### `POST /v1/demo/batches`
+
+Seeds a batch of synthetic records with hidden ground truth, exactly like
+`scripts/batchgen`, and publishes each one to `raw.events` so the real
+pipeline processes it. Distinct from `POST /v1/batches`'s `count` form:
+that one deliberately carries no ground truth (the ground-truth boundary
+above); this one is the seeded, scored path.
+
+Request body:
+```json
+{ "scenario": "dead-cards", "count": 80, "seed": 42 }
+```
+`scenario` is one of `GET /v1/demo/scenarios`' names; empty defaults to
+`"normal"`. `count` is required, between 1 and 1000. `seed` is optional;
+`0` (or omitted) picks one, which is always echoed back on the response so
+the exact batch can be reproduced later.
+
+Response:
+```json
+{ "batch_id": "<uuid>", "generated_count": 80, "seed": 42 }
+```
+
+### `GET /v1/demo/scenarios`
+
+Lists the scenario presets, with a human-readable description of what each
+one makes visible.
+
+Response:
+```json
+{
+  "scenarios": [
+    { "name": "normal", "description": "The current default mix: a realistic spread across every root-cause bucket, no concentration." },
+    { "name": "bank-outage", "description": "Concentrated on one bank being unavailable (BANK_NOT_AVAILABLE), all seeded in the same short window, so per-bucket reporting shows a systemic spike instead of 80 unrelated customer problems." },
+    { "name": "salary-day", "description": "Heavy INSUFFICIENT_FUNDS, so the salary-window retry timing (wait for the 1st to 7th, not tomorrow) becomes the visible story." },
+    { "name": "dead-cards", "description": "Heavy CARD_EXPIRED and DEBIT_INSTRUMENT_BLOCKED, so the nudge-versus-retry distinction and the uneconomic close are visible: a retry cannot fix a dead instrument, only a method update can." }
+  ]
+}
+```
+Every `failure_code` a scenario forces is one of Razorpay's real, published
+codes (`services/classifier/internal/rules/buckets.go`), never an invented
+one.
+
+### `GET /v1/demo/world`
+
+The World Simulator's live state: every entry still sitting in its Redis
+delayed-outcome queue (`ARCHITECTURE.md` section 6) and when it is due.
+Read-only: viewing this never drains or delivers anything early. This is
+the first route anywhere that makes this component's state visible outside
+its own logs.
+
+Response:
+```json
+{
+  "pending": [
+    { "record_id": "<uuid>", "attempt_number": 1, "outcome": "OUTCOME_SUCCESS", "due_at": "2026-09-01T14:12:00Z" }
+  ]
+}
+```
+`outcome` is the already-rolled answer waiting to be delivered at `due_at`
+(Wire conventions 2: full enum constant name). An empty pipeline returns
+`"pending": []`, not an absent key.
+
+### `POST /v1/demo/inject-poison`
+
+Publishes one `raw.events` message for a record id that was never inserted
+anywhere, to demonstrate the dead-letter path live
+(`docs/PHASE5_5_IMPLEMENTATION.md` Unit U) without a shell. Takes no
+request body.
+
+Response:
+```json
+{ "record_id": "<uuid>", "batch_id": "<uuid>" }
+```
+Both ids are freshly generated and deliberately never written to Postgres;
+`record_id` is what the Decision Engine's consumer dead-letters within a
+few seconds of the call.
+
 ## Errors
 
 Standard shape on any non-2xx response:

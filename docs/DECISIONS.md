@@ -1774,3 +1774,32 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   boundary. Caught by the failing test written first
   (`TestListBatchRecordsRendersDueAtOrEmptyStringWhenAbsent`), not by
   inspection, which is the point of writing it first.
+- 2026-09-01: **Unit W, all four demo control RPCs land on
+  `WorldSimulatorService`, not a new proto/service.** The spec calls out
+  batch seeding specifically as needing World Simulator's
+  `GROUND_TRUTH`-write permission; `ListScenarios`, `GetWorldState` and
+  `InjectPoison` don't strictly need it (`ListScenarios` is pure static
+  data, `GetWorldState` only reads Redis, `InjectPoison` only needs a Kafka
+  producer). They went on the same service anyway rather than a fifth demo
+  component, because the spec frames the whole surface as "proxying to a
+  demo-only backend" (singular), World Simulator is that backend, and a
+  second demo service would exist solely to hold a Kafka producer for one
+  RPC. World Simulator gained a `*kafkax.Producer` for this reason; it had
+  none before.
+  Scenario presets (`normal`/`bank-outage`/`salary-day`/`dead-cards`) are an
+  override layer on top of `syntheticgen.GenerateRecord`, not a second
+  generation model: each preset calls `GenerateRecord` for the base record
+  shape (amount, instrument sharing) and then, for a configured fraction of
+  records, forces `type`/`failure_code`/bucket and re-derives the recovery
+  numbers via a new export, `syntheticgen.ProfileForBucket`, so a forced
+  record uses the exact same hidden-profile model as an unforced one. The
+  one honest gap: `bank-outage`'s "concentrated on one issuer" has no
+  `issuer`/`bank` field to concentrate on yet (`RECORD` carries no such
+  column; it arrives with Unit Z's real Razorpay payload shape), so it
+  concentrates on a single real failure code (`BANK_NOT_AVAILABLE`) instead,
+  noted in the scenario's own description string rather than left implicit.
+  The Gateway gates `/v1/demo/*` by whether `EnableDemoControls` was called
+  before `Routes()`, not by checking a flag inside each handler: `New()`'s
+  signature is unchanged (no existing test needed touching), and an
+  unregistered route 404s by construction rather than needing every handler
+  to remember to check a flag and return 404 itself.

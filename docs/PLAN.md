@@ -833,12 +833,21 @@ ordered by value per hour. Detail for each is in
       `hopcodec`; `scripts/batchgen` kept its CLI flags and Postgres/Kafka
       writes and became a thin caller
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit V
-- [ ] **Unit W: `/v1/demo/*` control API**, flag-gated behind
-      `DEMO_CONTROLS_ENABLED` and proxied through the Gateway to a demo-only
-      backend, so neither the dashboard-talks-only-to-the-Gateway rule nor the
-      only-`demo/`-writes-`GROUND_TRUTH` rule is broken. Batch seeding with
-      scenario presets, downtime control, poison injection, and World
-      Simulator state → `docs/PHASE5_5_IMPLEMENTATION.md` Unit W
+- [x] **Unit W: `/v1/demo/*` control API**, flag-gated behind
+      `DEMO_CONTROLS_ENABLED` (default false, routes not registered at all
+      when off, a 404 rather than a 403) and proxied through the Gateway to
+      World Simulator, so neither the dashboard-talks-only-to-the-Gateway
+      rule nor the only-`demo/`-writes-`GROUND_TRUTH` rule is broken.
+      `POST /v1/demo/batches` (scenario presets `normal`/`bank-outage`/
+      `salary-day`/`dead-cards`, each a distribution over
+      `internal/platform/syntheticgen`, using only real Razorpay failure
+      codes), `GET /v1/demo/scenarios`, `GET /v1/demo/world`, and
+      `POST /v1/demo/inject-poison`. Batch seeding is implemented on World
+      Simulator, not the Gateway, since only a `demo/` component may write
+      `GROUND_TRUTH`; the Gateway only proxies over gRPC and gained no
+      database handle. Downtime control (`POST /v1/demo/downtime`) is
+      explicitly deferred to Unit Y, which owns the payload shape
+      → `docs/PHASE5_5_IMPLEMENTATION.md` Unit W
 - [ ] **[FRONTEND] Unit X: the demo control panel**, replacing the "Generate
       Sample Data" button rather than patching it. That button is Phase 0
       leftover: two of its five failure codes no longer exist since Unit I, and

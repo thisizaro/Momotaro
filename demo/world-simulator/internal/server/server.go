@@ -12,6 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
+	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
@@ -33,17 +34,29 @@ type Server struct {
 	// hours-long response delay the same way it compresses everything
 	// else (docs/ARCHITECTURE.md section 17).
 	scale func(time.Duration) time.Duration
+
+	// producer/rawEventsTopic back Phase 5.5 Unit W's demo control RPCs
+	// (SeedBatch, InjectPoison), which publish onto raw.events exactly the
+	// way scripts/batchgen and Ingestion do. Both may be nil/empty in a
+	// test that only exercises SimulateOutcome; SeedBatch and InjectPoison
+	// are the only callers that touch them.
+	producer       *kafkax.Producer
+	rawEventsTopic string
 }
 
-// New returns a Server. redisClient backs the delayed-outcome queue;
-// scale is normally config.Common.Scale.
-func New(pool *pgxpkg.Pool, redisClient *redis.Client, clk clock.Clock, scale func(time.Duration) time.Duration) *Server {
+// New returns a Server. redisClient backs the delayed-outcome queue; scale
+// is normally config.Common.Scale. producer/rawEventsTopic back SeedBatch
+// and InjectPoison (Phase 5.5 Unit W); pass nil/"" when only SimulateOutcome
+// is needed, e.g. in a test.
+func New(pool *pgxpkg.Pool, redisClient *redis.Client, clk clock.Clock, scale func(time.Duration) time.Duration, producer *kafkax.Producer, rawEventsTopic string) *Server {
 	return &Server{
-		store: newStore(pool),
-		queue: newQueue(redisClient),
-		rng:   realRand{},
-		clock: clk,
-		scale: scale,
+		store:          newStore(pool),
+		queue:          newQueue(redisClient),
+		rng:            realRand{},
+		clock:          clk,
+		scale:          scale,
+		producer:       producer,
+		rawEventsTopic: rawEventsTopic,
 	}
 }
 

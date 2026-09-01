@@ -25,6 +25,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/clock"
 	"github.com/thisizaro/Momotaro/internal/platform/config"
 	"github.com/thisizaro/Momotaro/internal/platform/interceptors"
+	"github.com/thisizaro/Momotaro/internal/platform/kafkax"
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	"github.com/thisizaro/Momotaro/internal/platform/metrics"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
@@ -36,6 +37,12 @@ import (
 )
 
 const serviceName = "world-simulator"
+
+// defaultRawEventsTopic mirrors services/ingestion/cmd/main.go's own
+// default: SeedBatch and InjectPoison (Phase 5.5 Unit W) publish onto the
+// same topic Ingestion does, so the Decision Engine cannot tell a
+// demo-seeded record from a normally-ingested one.
+const defaultRawEventsTopic = "raw.events"
 
 // serviceConfig adds this service's own settings to the shared ones.
 type serviceConfig struct {
@@ -52,6 +59,11 @@ type serviceConfig struct {
 	// services/decision-engine's own SchedulerConfig.PollInterval, which
 	// is likewise unscaled).
 	PollInterval time.Duration
+	// RawEventsTopic backs SeedBatch and InjectPoison (Phase 5.5 Unit W):
+	// both publish onto raw.events exactly the way Ingestion does.
+	// Overridable for the same reason services/ingestion/cmd/main.go's own
+	// RAW_EVENTS_TOPIC is: an isolated scratch topic in a test.
+	RawEventsTopic string
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -61,6 +73,7 @@ func loadConfig() (serviceConfig, error) {
 		DecisionEngineAddr: l.Str("DECISION_ENGINE_ADDR"),
 		CallTimeout:        l.Duration("CALL_TIMEOUT", 5*time.Second),
 		PollInterval:       l.Duration("WORLDSIM_POLL_INTERVAL", time.Second),
+		RawEventsTopic:     l.StrDefault("RAW_EVENTS_TOPIC", defaultRawEventsTopic),
 	}
 	return cfg, l.Err()
 }
@@ -117,8 +130,16 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	defer decisionEngineConn.Close()
 	decisionEngineClient := decisionenginev1.NewDecisionEngineServiceClient(decisionEngineConn)
 
+	// Backs SeedBatch and InjectPoison (Phase 5.5 Unit W): both publish onto
+	// raw.events exactly the way Ingestion does.
+	rawEventsProducer, err := kafkax.NewProducer(cfg.KafkaBrokers)
+	if err != nil {
+		return fmt.Errorf("connect to kafka: %w", err)
+	}
+	defer rawEventsProducer.Close()
+
 	clk := clock.New()
-	worldSimServer := server.New(pool, redisClient, clk, cfg.Common.Scale)
+	worldSimServer := server.New(pool, redisClient, clk, cfg.Common.Scale, rawEventsProducer, cfg.RawEventsTopic)
 	poller := server.NewPoller(redisClient, decisionEngineClient, clk, cfg.PollInterval, cfg.CallTimeout, log)
 
 	m := metrics.New()
