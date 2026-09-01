@@ -8,6 +8,7 @@ import type {
   InvariantsResponse,
   ListBatchesResponse,
   RecordAuditResponse,
+  RecordSummary,
   SubmitRecordType,
 } from '@/types';
 import { mockEngine } from '@/lib/mockEngine';
@@ -31,6 +32,79 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(body.error?.message ?? `Request failed: ${res.status}`);
   }
   return res.json();
+}
+
+/**
+ * `GET /v1/batches/{id}/records` paginates (docs/API_GATEWAY.md); its
+ * default page is small (20 on the live Gateway), so a batch of any real
+ * size needs several requests. Requesting a larger page here cuts the
+ * number of round trips. docs/API_GATEWAY.md documents `page_size` as an
+ * optional param but does not publish the Gateway's own maximum, so this
+ * is a conservative value rather than a documented ceiling; it has been
+ * checked against the live Gateway and comes back unclamped.
+ */
+export const RECORDS_PAGE_SIZE = 100;
+
+/**
+ * Guards against unbounded fetching for a batch too large to page through
+ * reasonably. At RECORDS_PAGE_SIZE that is up to 5,000 records before
+ * collectAllRecordPages stops and reports `truncated: true` instead of
+ * either hanging or silently dropping the rest, which is the bug this
+ * whole fetch loop exists to fix.
+ */
+export const MAX_RECORD_PAGES = 50;
+
+export interface FetchAllRecordsResult {
+  records: RecordSummary[];
+  totalCount: number;
+  truncated: boolean;
+}
+
+/**
+ * Fetches every page of a paginated records response by following
+ * `next_page_token` until the server sends back an empty one, meaning
+ * there is no more (docs/API_GATEWAY.md). `fetchPage` is injected so this
+ * loop can be exercised with a fake multi-page responder in tests, rather
+ * than only through a real network call or the mock engine.
+ *
+ * Bounded by `maxPages`: an unbounded caller could otherwise hang or make
+ * an unreasonable number of requests against a very large batch. Hitting
+ * the cap is reported via `truncated`, not swallowed, so callers can tell
+ * the user rather than silently showing a partial list as if it were
+ * everything, which is exactly the bug being fixed here.
+ */
+export async function collectAllRecordPages(
+  fetchPage: (pageToken: string) => Promise<BatchRecordsResponse>,
+  maxPages: number = MAX_RECORD_PAGES,
+): Promise<FetchAllRecordsResult> {
+  const records: RecordSummary[] = [];
+  let pageToken = '';
+  let totalCount = 0;
+  let truncated = false;
+  let pagesFetched = 0;
+
+  for (;;) {
+    const page = await fetchPage(pageToken);
+    records.push(...page.records);
+    totalCount = page.total_count;
+    pagesFetched++;
+
+    if (!page.next_page_token) break;
+
+    if (pagesFetched >= maxPages) {
+      truncated = true;
+      break;
+    }
+    pageToken = page.next_page_token;
+  }
+
+  return { records, totalCount, truncated };
+}
+
+function recordsPath(batch_id: string, page_token: string): string {
+  const params = new URLSearchParams({ page_size: String(RECORDS_PAGE_SIZE) });
+  if (page_token) params.set('page_token', page_token);
+  return `/v1/batches/${batch_id}/records?${params.toString()}`;
 }
 
 const SUBMIT_RECORD_TYPES: SubmitRecordType[] = ['PAYMENT', 'MANDATE', 'CHECKOUT', 'INVOICE'];
@@ -82,9 +156,15 @@ export const api = {
     return request<BatchReport>(`/v1/batches/${batch_id}/report`);
   },
 
-  async getBatchRecords(batch_id: string): Promise<BatchRecordsResponse> {
-    if (USE_MOCK) return mockEngine.getBatchRecords(batch_id);
-    return request<BatchRecordsResponse>(`/v1/batches/${batch_id}/records`);
+  async getBatchRecords(batch_id: string): Promise<FetchAllRecordsResult> {
+    if (USE_MOCK) {
+      return collectAllRecordPages((pageToken) =>
+        mockEngine.getBatchRecords(batch_id, RECORDS_PAGE_SIZE, pageToken),
+      );
+    }
+    return collectAllRecordPages((pageToken) =>
+      request<BatchRecordsResponse>(recordsPath(batch_id, pageToken)),
+    );
   },
 
   async getRecordDetail(record_id: string): Promise<RecordAuditResponse> {

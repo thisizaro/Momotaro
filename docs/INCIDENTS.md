@@ -1781,3 +1781,64 @@ it, would repeat the error the 2026-08-23 entry warns about.
 cannot reach the failing package is more likely this than a regression.
 Re-run it once before investigating, and if it passes, check whether the
 failing test asserts on anything the system-wide `claimDue` can touch.
+
+### 2026-09-01, dashboard silently rendered 20 of 100 records
+**What happened:** Against a real 100-record batch on a live Gateway,
+`GET /v1/batches/{batch_id}/records` returned `records: 20`,
+`total_count: 100`, `next_page_token: "20"`, exactly as documented
+(`docs/API_GATEWAY.md`). `web/src/lib/api.ts`'s `getBatchRecords` sent no
+`page_size` and never looked at `next_page_token`, so the dashboard rendered
+only the first page and stopped. Confirmed against the live stack: the true
+state distribution for the seeded 100-record batch was 51 recovered / 35
+closed-uneconomic / 14 escalated, but the truncated first page showed 9 / 10
+/ 1, a badly distorted picture, not just a smaller one.
+
+**Blast radius.** `StateDistribution`, `TimelineView`, and `RecordsTable`
+in `web/src/App.tsx` all share the one `records` array `getBatchRecords`
+returned, so all three drew conclusions from a fifth of the batch. The
+metric tiles directly above them come from `GET .../report`, which does
+cover the full batch, so the state-distribution chart and the retry
+timeline actively contradicted the tiles right above them on screen. This
+was not a missing feature, it was two adjacent panels asserting different
+totals for the same batch.
+
+**Root cause.** No `page_size` on the request, and `next_page_token` was
+read off the response but never fed back into a follow-up request. A
+single-page client against a paginating server.
+
+**Why the mock hid it.** `mockEngine.ts`'s `getBatchRecords` returned every
+record for a batch in one response with `next_page_token` hardcoded to
+`''`, regardless of how many records existed. Every dashboard dev cycle and
+every prior review of this code ran against a mock that could not have
+exposed a pagination bug even if the client were completely broken, which
+it was. The bug only existed on the multi-page path, and mock mode had no
+multi-page path.
+
+**Fix.** `getBatchRecords` now requests `page_size=100` (docs/API_GATEWAY.md
+documents `page_size` as optional but does not publish the Gateway's own
+maximum, so this is a conservative, live-verified value, not a documented
+ceiling) and follows `next_page_token` in a loop
+(`collectAllRecordPages`) until the Gateway returns an empty token, capped
+at 50 pages (5,000 records) so a very large batch cannot hang the dashboard
+or trigger an unbounded number of requests. Hitting the cap sets
+`truncated: true` on the result instead of silently stopping again; `App.tsx`
+renders `RecordsTruncatedBanner` when that happens, stating how many of how
+many records loaded, so a partial view is never presented as a complete
+one. `mockEngine.ts`'s `getBatchRecords` now paginates for real (offset-style
+`page_token`, default page size 20 to match the Gateway's own default),
+so mock mode exercises the identical fetch-and-follow code path `api.ts`
+uses against the live Gateway.
+
+**Prevention.** Added `web/src/lib/api.test.ts` (fetch-and-follow loop
+against a fake multi-page responder: asserts every record arrives, the
+token sequence is correct, and the loop terminates and reports
+`truncated` at the page cap instead of looping forever) and
+`web/src/lib/mockEngine.test.ts` (asserts the mock itself now spans
+multiple pages for its seeded batch, with no duplicate records across
+pages). Both were run red against the pre-fix code first. The general
+lesson: a mock that returns a paginated endpoint's entire result set in one
+response, no matter how many records exist, is not a stand-in for that
+endpoint, it is a stand-in for a different, unpaginated one, and it will
+certify a client that is broken against the real contract. Any mock for a
+paginated endpoint needs its own default page size and its own
+`next_page_token`, not an escape hatch that returns everything at once.

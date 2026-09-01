@@ -19,6 +19,7 @@ import { RecordsTable } from '@/components/RecordsTable';
 import { RecordDrawer } from '@/components/RecordDrawer';
 import { BatchSelector } from '@/components/BatchSelector';
 import { ErrorBanner } from '@/components/ErrorBanner';
+import { RecordsTruncatedBanner } from '@/components/RecordsTruncatedBanner';
 import { BaselineComparisonCard } from '@/components/BaselineComparison';
 import { InvariantsPanel } from '@/components/InvariantsPanel';
 import { ConfusionMatrix } from '@/components/ConfusionMatrix';
@@ -35,6 +36,8 @@ function App() {
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [report, setReport] = useState<BatchReport | null>(null);
   const [records, setRecords] = useState<RecordSummary[]>([]);
+  const [recordsTotalCount, setRecordsTotalCount] = useState(0);
+  const [recordsTruncated, setRecordsTruncated] = useState(false);
   const [invariants, setInvariants] = useState<InvariantsResponse | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [updates, setUpdates] = useState<BatchUpdate[]>([]);
@@ -67,13 +70,15 @@ function App() {
 
   const loadBatchData = useCallback(async (batchId: string) => {
     try {
-      const [rpt, recsResponse, inv] = await Promise.all([
+      const [rpt, recsResult, inv] = await Promise.all([
         api.getBatchReport(batchId),
         api.getBatchRecords(batchId),
         api.getBatchInvariants(batchId),
       ]);
       setReport(rpt);
-      setRecords(recsResponse.records);
+      setRecords(recsResult.records);
+      setRecordsTotalCount(recsResult.totalCount);
+      setRecordsTruncated(recsResult.truncated);
       setInvariants(inv);
       setRefreshError(null);
     } catch (err) {
@@ -233,6 +238,8 @@ function App() {
             onRetry={() => activeBatchId && loadBatchData(activeBatchId)}
           />
         )}
+
+        {recordsTruncated && <RecordsTruncatedBanner loaded={records.length} total={recordsTotalCount} />}
 
         {/* Metrics */}
         {report ? (
