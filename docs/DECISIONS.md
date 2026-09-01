@@ -1749,3 +1749,28 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   binary from a temp path, so `pgrep` on the source path matches nothing,
   which defeated the first attempt at stopping the stack by hand. The
   individual `run-<service>` targets stay, for foreground development.
+- 2026-09-01: **Unit AA, absent `due_at` on the wire is an empty string, not
+  a null or an omitted key.** `record_state.due_at` is nullable in Postgres
+  and set only while a record is `RECORD_STATE_RETRY_SCHEDULED` or
+  `RECORD_STATE_NUDGE_SCHEDULED`; every other state, including
+  `RECORD_STATE_NUDGED`, has none. `docs/API_GATEWAY.md`'s own wire
+  conventions rule out both other options: convention 6 forbids `omitempty`
+  on a documented field, and no field on this contract is ever rendered as
+  JSON `null`. An empty string is also not a new convention, it is the one
+  already used for `rationale` and `message_text` on the audit trail
+  ("empty strings, never omitted, when not applicable"), so `due_at` follows
+  existing precedent rather than adding a fourth representation of absence
+  to the contract.
+  A real bug turned up while wiring the Gateway side of this: the existing
+  `formatTimestamp(ts interface{ AsTime() time.Time })` helper cannot detect
+  a nil `*timestamppb.Timestamp` passed through that interface parameter (a
+  nil concrete pointer boxed into an interface is not `== nil`), and
+  `Timestamp.AsTime()`'s own getters are nil-safe, so the result silently
+  came out as `"1970-01-01T00:00:00Z"` instead of `""`. `formatTimestamp` had
+  never actually been exercised with a genuinely absent timestamp before
+  (`GeneratedAt` and `CreatedAt` are always populated in practice). Fixed
+  with a second helper, `formatOptionalTimestamp`, that takes the concrete
+  `*timestamppb.Timestamp` so the nil check runs before the interface
+  boundary. Caught by the failing test written first
+  (`TestListBatchRecordsRendersDueAtOrEmptyStringWhenAbsent`), not by
+  inspection, which is the point of writing it first.

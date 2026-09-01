@@ -12,6 +12,7 @@ import {
 } from '@/lib/format';
 import type { RecordAuditResponse } from '@/types';
 import { ErrorBanner } from '@/components/ErrorBanner';
+import { DueCountdown } from '@/components/DueCountdown';
 
 const HOP_RESULT_STYLE: Record<ProviderHopResult, string> = {
   ok: 'bg-emerald-50 text-emerald-700',
@@ -42,9 +43,17 @@ interface Props {
   error?: string | null;
   onClose: () => void;
   onRetry?: () => void;
+  /**
+   * Comes from the matching RecordSummary in the records table, not from
+   * `detail`: due_at lives on reporting.v1.RecordSummary
+   * (GET /v1/batches/{batch_id}/records), not on the audit trail this
+   * drawer otherwise renders (GET /v1/records/{record_id}/audit). Empty
+   * string, same absent-value convention as everywhere else on the wire.
+   */
+  dueAt?: string;
 }
 
-export function RecordDrawer({ open, detail, loading, error, onClose, onRetry }: Props) {
+export function RecordDrawer({ open, detail, loading, error, onClose, onRetry, dueAt }: Props) {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -111,6 +120,9 @@ export function RecordDrawer({ open, detail, loading, error, onClose, onRetry }:
                 <span className={`badge mt-1.5 ${STATE_COLORS[detail.current_state]}`}>
                   {STATE_LABELS[detail.current_state]}
                 </span>
+                <p className="text-xs text-slate-400 mt-1.5">
+                  Due: <DueCountdown dueAt={dueAt ?? ''} currentState={detail.current_state} />
+                </p>
               </div>
             </div>
 

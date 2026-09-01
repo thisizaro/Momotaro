@@ -11,6 +11,7 @@ import (
 	reportingv1 "github.com/thisizaro/Momotaro/proto/gen/reporting/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Wire structs for GET /v1/batches/{batch_id}/report, hand-written per
@@ -78,6 +79,23 @@ type baselineComparisonJSON struct {
 // formatTimestamp renders a google.protobuf.Timestamp as RFC3339
 // (docs/API_GATEWAY.md wire convention 4), e.g. "2026-08-29T14:03:11Z".
 func formatTimestamp(ts interface{ AsTime() time.Time }) string {
+	if ts == nil {
+		return ""
+	}
+	return ts.AsTime().UTC().Format(time.RFC3339)
+}
+
+// formatOptionalTimestamp renders due_at: empty string when genuinely
+// unset. Deliberately takes the concrete *timestamppb.Timestamp rather
+// than formatTimestamp's interface parameter: a nil *timestamppb.Timestamp
+// boxed into that interface is not == nil (the interface still carries the
+// pointer's type), so formatTimestamp's nil check never fires and
+// Timestamp.AsTime()'s own nil-safe getters silently return the Unix
+// epoch instead of "not scheduled". due_at is the one field on this
+// response that is genuinely, meaningfully absent rather than always
+// populated, so it needs its own nil check ahead of the interface
+// boundary.
+func formatOptionalTimestamp(ts *timestamppb.Timestamp) string {
 	if ts == nil {
 		return ""
 	}
@@ -176,6 +194,14 @@ type recordSummaryJSON struct {
 	Bucket       string `json:"bucket"`
 	AttemptCount int32  `json:"attempt_count"`
 	SpendPaise   int64  `json:"spend_paise"`
+	// RFC3339 (Wire conventions 4) when the Decision Engine's scheduler is
+	// waiting on this record (RETRY_SCHEDULED or NUDGE_SCHEDULED), empty
+	// string otherwise, always present (Wire conventions 6: no
+	// omitempty). Never omitted: a terminal record and a NUDGED record
+	// (waiting on the customer, not the scheduler) both have none, and
+	// docs/API_GATEWAY.md documents empty string as that absence, the same
+	// convention already used for rationale/message_text.
+	DueAt string `json:"due_at"`
 }
 
 type listBatchRecordsResponse struct {
@@ -219,6 +245,7 @@ func (h *Handler) listBatchRecords(w http.ResponseWriter, r *http.Request) {
 			Bucket:       rec.GetBucket().String(),
 			AttemptCount: rec.GetAttemptCount(),
 			SpendPaise:   rec.GetSpendPaise(),
+			DueAt:        formatOptionalTimestamp(rec.GetDueAt()),
 		}
 	}
 	writeJSON(w, http.StatusOK, listBatchRecordsResponse{

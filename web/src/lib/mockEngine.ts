@@ -58,6 +58,13 @@ interface InternalRecord {
   naive_recovered: boolean;
   processed: boolean;
   created_at: string;
+  /**
+   * RFC3339 while a scheduled timer (RETRY_SCHEDULED/NUDGE_SCHEDULED) is
+   * pending, '' otherwise, mirroring due_at's real wire representation
+   * (docs/API_GATEWAY.md) so the mock engine exercises the same countdown
+   * UI the real backend drives.
+   */
+  due_at: string;
 }
 
 interface InternalBatch {
@@ -378,6 +385,7 @@ export class MockEngine {
       naive_recovered,
       processed: false,
       created_at,
+      due_at: '',
     };
   }
 
@@ -557,6 +565,7 @@ export class MockEngine {
         }
 
         const scheduledState = scheduledStateFor(action);
+        record.due_at = new Date(Date.now() + delay).toISOString();
         this.addEntry(record, from, scheduledState, `${action} scheduled`, '', 'decision-engine');
         this.emit(batch_id, { record_id: record.id, from_state: from, to_state: scheduledState, ts: nowISO(), recovered_delta_paise: 0 });
         this.timers.set(record.id, setTimeout(() => this.executeAttempt(record, batch_id, action), delay));
@@ -572,6 +581,10 @@ export class MockEngine {
     if (record.processed) return;
 
     const scheduledState = record.current_state;
+    // The scheduler's wait is over now that the attempt is executing;
+    // RETRYING/NUDGED never carry a due_at (see the InternalRecord field
+    // comment and docs/API_GATEWAY.md).
+    record.due_at = '';
     record.attempt_count++;
     const cost_paise = actionCostPaise(action);
     const message_text = isNudge(action) ? pick(NUDGE_MESSAGES[record.bucket] ?? ['']) : '';
@@ -792,6 +805,7 @@ export class MockEngine {
         bucket: r.bucket,
         attempt_count: r.attempt_count,
         spend_paise: r.interventions.reduce((sum, iv) => sum + iv.cost_paise, 0),
+        due_at: r.due_at,
       }));
 
     return { records, next_page_token: '', total_count: records.length };

@@ -12,6 +12,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"time"
 
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
@@ -298,6 +299,12 @@ type recordListRow struct {
 	Bucket       string
 	AttemptCount int32
 	SpendPaise   int64
+	// DueAt is nil whenever record_state.due_at is NULL: a terminal
+	// record, a record mid-processing, or a NUDGED record deliberately
+	// left unscheduled (it waits on ReportDelayedOutcome, nothing polls
+	// it). Only RETRY_SCHEDULED and NUDGE_SCHEDULED ever carry a value
+	// (docs/ARCHITECTURE.md section 7a).
+	DueAt *time.Time
 }
 
 // listRecords returns one page of records for batchID, oldest-created
@@ -314,7 +321,8 @@ func (s *store) listRecords(ctx context.Context, batchID string, stateFilter, bu
 			COALESCE(rs.current_state, 'RECORD_STATE_UNSPECIFIED'),
 			COALESCE(rs.root_cause_bucket, ''),
 			COALESCE(rs.attempt_count, 0),
-			COALESCE((SELECT SUM(ia.cost_paise) FROM intervention_attempt ia WHERE ia.record_id = r.id), 0)
+			COALESCE((SELECT SUM(ia.cost_paise) FROM intervention_attempt ia WHERE ia.record_id = r.id), 0),
+			rs.due_at
 		FROM record r
 		LEFT JOIN record_state rs ON rs.record_id = r.id
 		WHERE r.batch_id = $1
@@ -331,7 +339,7 @@ func (s *store) listRecords(ctx context.Context, batchID string, stateFilter, bu
 	var result []recordListRow
 	for rows.Next() {
 		var rec recordListRow
-		if err := rows.Scan(&rec.RecordID, &rec.Type, &rec.AmountPaise, &rec.CurrentState, &rec.Bucket, &rec.AttemptCount, &rec.SpendPaise); err != nil {
+		if err := rows.Scan(&rec.RecordID, &rec.Type, &rec.AmountPaise, &rec.CurrentState, &rec.Bucket, &rec.AttemptCount, &rec.SpendPaise, &rec.DueAt); err != nil {
 			return nil, 0, fmt.Errorf("scan record row: %w", err)
 		}
 		result = append(result, rec)

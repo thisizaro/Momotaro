@@ -861,7 +861,7 @@ ordered by value per hour. Detail for each is in
       `step: payment_authorization` is signal a reason code alone cannot carry
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z
 
-- [ ] **Unit AA: surface `due_at` through the stack.** A record's scheduled
+- [x] **Unit AA: surface `due_at` through the stack.** A record's scheduled
       time appears nowhere: not in the Reporting proto, not in
       `docs/API_GATEWAY.md`, not in `web/`. So cause-aware retry timing, the
       most distinctive behaviour this system has, is made correctly, recorded

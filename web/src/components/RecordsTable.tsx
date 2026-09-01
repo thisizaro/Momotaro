@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronRight, Filter } from 'lucide-react';
 import { BUCKET_COLORS, BUCKET_LABELS, RECORD_TYPE_LABELS, STATE_COLORS, STATE_LABELS, formatCurrency } from '@/lib/format';
+import { DueCountdown } from '@/components/DueCountdown';
 import type { RecordSummary, RootCauseBucket } from '@/types';
 
 interface Props {
@@ -75,6 +76,7 @@ export function RecordsTable({ records, onSelect }: Props) {
               <th className="text-right text-xs font-medium text-slate-400 uppercase tracking-wide px-3 py-2.5">Amount</th>
               <th className="text-left text-xs font-medium text-slate-400 uppercase tracking-wide px-3 py-2.5">Root Cause</th>
               <th className="text-left text-xs font-medium text-slate-400 uppercase tracking-wide px-3 py-2.5">State</th>
+              <th className="text-left text-xs font-medium text-slate-400 uppercase tracking-wide px-3 py-2.5">Due</th>
               <th className="w-8 px-3 py-2.5"></th>
             </tr>
           </thead>
@@ -104,6 +106,9 @@ export function RecordsTable({ records, onSelect }: Props) {
                   <span className={`badge ${STATE_COLORS[r.current_state]}`}>
                     {STATE_LABELS[r.current_state]}
                   </span>
+                </td>
+                <td className="px-3 py-2.5">
+                  <DueCountdown dueAt={r.due_at} currentState={r.current_state} className="text-xs" />
                 </td>
                 <td className="px-3 py-2.5">
                   <ChevronRight className="w-4 h-4 text-slate-300" />

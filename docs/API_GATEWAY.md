@@ -281,7 +281,8 @@ Response:
       "current_state": "RECORD_STATE_NUDGED",
       "bucket": "ROOT_CAUSE_BUCKET_TRANSIENT_BANK",
       "attempt_count": 2,
-      "spend_paise": 50
+      "spend_paise": 50,
+      "due_at": ""
     }
   ],
   "next_page_token": "",
@@ -289,6 +290,27 @@ Response:
 }
 ```
 An empty `next_page_token` means this is the last page.
+
+`due_at` mirrors `record_state.due_at` (`migrations/00001_initial_schema.sql`), which
+is when the Decision Engine's scheduler worker will next act on this record
+(`docs/ARCHITECTURE.md` section 7a). Set only while `current_state` is
+`RECORD_STATE_RETRY_SCHEDULED` or `RECORD_STATE_NUDGE_SCHEDULED`.
+
+**Absent `due_at` is an empty string, never omitted, never null.** Wire
+convention 6 rules out `omitempty` for a documented field, and convention 4
+already reserves timestamp fields for RFC3339 strings, so an empty string is
+the representation that stays inside both rules rather than adding a third
+(a nullable field, or a boolean sibling flag). This is also the existing
+precedent on this same response shape: `rationale` and `message_text` on the
+audit trail are empty strings, never omitted, when not applicable. The
+example above is a `RECORD_STATE_NUDGED` record on purpose: that state
+deliberately has no `due_at`, since it is parked waiting for
+`ReportDelayedOutcome` from the customer and nothing polls it, distinct from
+a record in a terminal state, which also has no `due_at` because there is
+nothing left to schedule. The dashboard tells these apart by
+`current_state`, not by `due_at` alone: `RECORD_STATE_NUDGED` with an empty
+`due_at` renders "awaiting customer", any other state with an empty
+`due_at` renders "not scheduled".
 
 ### `GET /v1/records/{record_id}/audit`
 

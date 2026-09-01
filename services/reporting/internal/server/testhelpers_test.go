@@ -75,6 +75,20 @@ func seedRecordState(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recor
 	}
 }
 
+// seedRecordStateWithDueAt inserts a RECORD_STATE row for recordID with an
+// explicit due_at, for Unit AA's due_at surfacing tests. Kept separate from
+// seedRecordState (rather than adding a nullable parameter there and
+// touching every existing call site) since only these tests care about
+// due_at.
+func seedRecordStateWithDueAt(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID, state, bucket string, attemptCount int, dueAt time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO record_state (record_id, current_state, root_cause_bucket, attempt_count, due_at) VALUES ($1, $2, $3, $4, $5)`,
+		recordID, state, bucket, attemptCount, dueAt); err != nil {
+		t.Fatalf("seed record_state with due_at: %v", err)
+	}
+}
+
 // seedAttempt inserts one INTERVENTION_ATTEMPT row for recordID.
 func seedAttempt(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID string, attemptNumber int, actionType, outcome string, costPaise int64) {
 	t.Helper()

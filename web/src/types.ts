@@ -134,6 +134,16 @@ export interface RecordSummary {
   bucket: RootCauseBucket;
   attempt_count: number;
   spend_paise: number;
+  /**
+   * RFC3339 when the Decision Engine's scheduler is waiting on this record
+   * (RETRY_SCHEDULED or NUDGE_SCHEDULED), empty string otherwise, always
+   * present (never omitted, never null; docs/API_GATEWAY.md). A
+   * RECORD_STATE_NUDGED record deliberately has none, it waits on the
+   * customer, not the scheduler; a terminal record has none because there
+   * is nothing left to schedule. Tell those two apart by current_state,
+   * not by due_at alone.
+   */
+  due_at: string;
 }
 
 export interface BatchRecordsResponse {

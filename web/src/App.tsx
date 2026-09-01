@@ -367,6 +367,11 @@ function App() {
         detail={drawerDetail}
         loading={drawerLoading}
         error={drawerError}
+        // due_at lives on RecordSummary (the records table's own data),
+        // not on the audit response the drawer otherwise renders, so it
+        // is looked up from what's already on screen rather than fetched
+        // again.
+        dueAt={records.find((r) => r.record_id === drawerRecordId)?.due_at}
         onRetry={() => drawerRecordId && handleSelectRecord(drawerRecordId)}
         onClose={() => {
           setDrawerRecordId(null);
