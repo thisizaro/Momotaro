@@ -182,6 +182,21 @@ demo-down:
 	done
 	@echo "services stopped (infra still up; make down to stop that too)"
 
+## demo-reset: clear the decision-engine consumer group so a wedged stack
+## recovers without a full down-clean (docs/INCIDENTS.md 2026-08-31).
+## Safe to run any time the decision-engine is stopped or has crashed: it
+## touches Kafka's group offsets only, never Postgres. On next start,
+## decision-engine re-reads raw.events from the beginning of the topic, but
+## HandleMessage's redelivery check (record_state already exists) skips
+## every record it already finished, and a message pointing at a record
+## that no longer exists is now dead-lettered instead of wedging the loop
+## again, which is the whole point of Unit U.
+demo-reset:
+	docker compose exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+		--bootstrap-server localhost:29092 --delete \
+		--group $(if $(RAW_EVENTS_CONSUMER_GROUP),$(RAW_EVENTS_CONSUMER_GROUP),decision-engine)
+	@echo "consumer group cleared. restart decision-engine (make run-decision-engine or make demo-up) to resume."
+
 # Internal: block until every port in PORTS is listening.
 wait-ports:
 	@for p in $(PORTS); do \
@@ -256,4 +271,4 @@ docker-build:
         vet fmt check up up-observability down down-clean migrate-up migrate-status \
         docker-build run-ingestion run-classifier run-executor run-audit \
         run-decision-engine run-api-gateway run-reporting run-world-simulator \
-        run-notification-simulator batchgen demo-up demo-down wait-ports
+        run-notification-simulator batchgen demo-up demo-down demo-reset wait-ports

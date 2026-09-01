@@ -817,7 +817,7 @@ ordered by value per hour. Detail for each is in
 > Two tracks that share no files: U, V, W, X (the control surface) and Z, Y
 > (Razorpay depth). U is first regardless, it is a correctness defect.
 
-- [ ] **Unit U: dead-letter unprocessable records instead of crashing.** One
+- [x] **Unit U: dead-letter unprocessable records instead of crashing.** One
       Kafka message referencing a deleted record kills the decision-engine
       permanently, and every restart dies on the next poisoned offset. A
       missing record is a permanent data condition being reported as a

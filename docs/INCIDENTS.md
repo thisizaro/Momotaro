@@ -1637,13 +1637,21 @@ pipeline; DLQ, never silently dropped, never counted as a business outcome."**
 A judge who submits a record and then deletes it, or any redeploy against a
 topic with history, reproduces it.
 
-**Fix (not yet applied).** Distinguish "this record does not exist" from "the
+**Fix (applied, Unit U).** Distinguish "this record does not exist" from "the
 database is unreachable" at the store boundary, and dead-letter the former
-rather than returning it as an infrastructure error. `pgx.ErrNoRows` from
-`loadAttemptHistory` (and the same class of lookup elsewhere in the handler
-path) is a poison-message signal. Regression test: publish a `raw.events`
-message for a record id that does not exist and assert the consumer
-dead-letters it, commits the offset, and keeps consuming the next message.
+rather than returning it as an infrastructure error. `loadAttemptHistory` now
+classifies `pgx.ErrNoRows` as `store.ErrRecordNotFound`, and `HandleMessage`
+routes that to the existing dead-letter path with a clear reason instead of
+returning it to `ConsumeKeyed`. Regression test:
+`TestConsumeKeyedDeadLettersMissingRecordAndKeepsGoing`
+(`services/decision-engine/internal/engine/poison_record_integration_test.go`)
+runs the real `ConsumeKeyed` loop, publishes a message for a record id that
+does not exist followed by a normal one, and asserts the poison message is
+dead-lettered, its offset is committed (a fresh consumer in the same group
+sees nothing outstanding), and the loop goes on to schedule the second
+record. Verified against the old behaviour: reverting the classification
+change makes this test fail (it never receives the dead letter, because the
+consumer already died), confirming the test actually catches the bug.
 
 **Prevention, two separate lessons.** First, **do not run the test suite
 against a live demo stack**; the tests share `raw.events` with it and their
@@ -1659,3 +1667,45 @@ other permanent-but-reported-as-fatal conditions.
 **Related gap found while diagnosing.** `make down-clean` does remove Kafka's
 volume, so this was not stale data from an earlier session. It was generated
 live, during the run, by our own test suite.
+
+## 2026-09-01: auditing Unit U's fix found a second, narrower window onto the same bug
+
+**What happened.** While auditing the rest of `HandleMessage`'s path per the
+entry above ("worth auditing the whole handler path for other
+permanent-but-reported-as-fatal conditions"), `recordStateExists`,
+`loadAttemptRows` and `loadInstrumentHistory` all turned out fine:
+`recordStateExists` uses `SELECT EXISTS(...)`, which always returns exactly
+one row, and the other two use `pool.Query`, which returns an empty result
+set with no error rather than `pgx.ErrNoRows` (that error is specific to
+`QueryRow`). But `store.scheduleNew`'s `INSERT INTO record_state` was still
+exposed: `record_state.record_id` is `REFERENCES record(id)`, so if the
+`RECORD` row is deleted after `loadAttemptHistory` succeeds but before this
+insert runs, later in the same `HandleMessage` call (there is a full
+`Classify` RPC round trip in between), the insert fails with a Postgres
+foreign-key violation. That error was being wrapped and returned exactly the
+same way as any other database error, which `ConsumeKeyed` still treats as
+fatal.
+
+**Why this is the same bug, not a new one.** It is the identical permanent,
+data-shaped condition ("this record does not exist") reached through a
+narrower timing window instead of already being true when the message is
+first read. Realistic exposure: an integration test's cleanup deleting a
+record concurrently with a live decision-engine processing the very message
+that record produced, which is precisely the scenario the entry above
+already describes for the read side.
+
+**Fix.** `store.go` gained `isForeignKeyViolation`, checking for Postgres
+SQLSTATE `23503` via `pgconn.PgError`, and `scheduleNew`'s insert now maps
+that to the same `store.ErrRecordNotFound` sentinel `loadAttemptHistory`
+uses, so `HandleMessage` dead-letters it through the identical path.
+Regression test: `TestScheduleNewReturnsErrRecordNotFoundWhenRecordMissing`
+(`services/decision-engine/internal/engine/record_not_found_integration_test.go`)
+calls `scheduleNew` directly against a record id with no `RECORD` row and
+asserts the foreign-key violation comes back wrapped in
+`ErrRecordNotFound`, not as a bare error.
+
+**Prevention.** Same lesson as the entry above, restated because it held up
+under a second look: a store method's error is a routing decision for
+everything that calls it through `ConsumeKeyed`, and every SQL statement in
+that call path has to be checked for what it does when its target row does
+not exist, not just the one the stack trace happened to name.
