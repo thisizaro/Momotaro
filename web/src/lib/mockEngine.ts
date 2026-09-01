@@ -873,11 +873,20 @@ export class MockEngine {
     };
   }
 
-  async getBatchRecords(batch_id: string): Promise<BatchRecordsResponse> {
+  /**
+   * Paginates like the real Gateway (docs/API_GATEWAY.md): `page_token` is
+   * the opaque offset from a previous response's `next_page_token`, and an
+   * empty `next_page_token` on the way out means this was the last page.
+   * This exists so mock mode exercises the exact fetch-and-follow code path
+   * `api.ts` uses against the live Gateway, rather than handing back every
+   * record in one response and hiding a pagination bug the way the old
+   * single-page mock did (see docs/INCIDENTS.md).
+   */
+  async getBatchRecords(batch_id: string, page_size?: number, page_token?: string): Promise<BatchRecordsResponse> {
     const batch = this.batches.get(batch_id);
     if (!batch) throw new Error('Batch not found');
 
-    const records: RecordSummary[] = batch.record_ids
+    const all: RecordSummary[] = batch.record_ids
       .map((id) => this.records.get(id)!)
       .filter(Boolean)
       .map((r) => ({
@@ -891,7 +900,15 @@ export class MockEngine {
         due_at: r.due_at,
       }));
 
-    return { records, next_page_token: '', total_count: records.length };
+    // Mirrors the Gateway's own default (docs/API_GATEWAY.md: page_size is
+    // optional).
+    const size = page_size && page_size > 0 ? page_size : 20;
+    const offset = page_token ? parseInt(page_token, 10) || 0 : 0;
+    const page = all.slice(offset, offset + size);
+    const nextOffset = offset + page.length;
+    const next_page_token = nextOffset < all.length ? String(nextOffset) : '';
+
+    return { records: page, next_page_token, total_count: all.length };
   }
 
   async getRecordDetail(record_id: string): Promise<RecordAuditResponse> {
