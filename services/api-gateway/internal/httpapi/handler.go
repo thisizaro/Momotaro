@@ -15,6 +15,7 @@ import (
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	reportingv1 "github.com/thisizaro/Momotaro/proto/gen/reporting/v1"
+	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -27,6 +28,13 @@ type Handler struct {
 	apiKey      string
 	callTimeout time.Duration
 	limiter     *rate.Limiter // nil means rate limiting is disabled
+
+	// worldsim backs /v1/demo/* (demo.go). nil unless EnableDemoControls was
+	// called, which cmd/main.go only does when DEMO_CONTROLS_ENABLED is
+	// true. Routes() uses this nil-ness to decide whether those routes
+	// exist at all (docs/PHASE5_5_IMPLEMENTATION.md Unit W: a disabled
+	// deployment must 404 on them, not merely refuse them).
+	worldsim worldsimv1.WorldSimulatorServiceClient
 }
 
 // New returns a Handler. apiKey is the static shared key every request must
@@ -64,6 +72,19 @@ func (h *Handler) Routes() http.Handler {
 	authenticated.HandleFunc("GET /v1/records/{record_id}/audit", h.getRecordAudit)
 	authenticated.HandleFunc("GET /v1/batches/{batch_id}/invariants", h.verifyInvariantsForBatch)
 	authenticated.HandleFunc("GET /v1/invariants", h.verifyInvariantsSystemWide)
+
+	// /v1/demo/* only exists when EnableDemoControls was called
+	// (cmd/main.go, gated on DEMO_CONTROLS_ENABLED). Registering it
+	// conditionally, rather than always registering and checking the flag
+	// inside each handler, is what makes a disabled deployment 404 on these
+	// routes instead of 403: the surface is structurally absent, not merely
+	// locked (docs/PHASE5_5_IMPLEMENTATION.md Unit W).
+	if h.worldsim != nil {
+		authenticated.HandleFunc("POST /v1/demo/batches", h.seedDemoBatch)
+		authenticated.HandleFunc("GET /v1/demo/scenarios", h.listDemoScenarios)
+		authenticated.HandleFunc("GET /v1/demo/world", h.getDemoWorldState)
+		authenticated.HandleFunc("POST /v1/demo/inject-poison", h.injectDemoPoison)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/", h.withAuth(authenticated))

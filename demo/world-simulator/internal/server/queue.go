@@ -66,6 +66,14 @@ type queue struct {
 	client *redis.Client
 }
 
+// pendingEntry is one queue member with its due time attached, the shape
+// GetWorldState (Phase 5.5 Unit W, docs/API_GATEWAY.md GET /v1/demo/world)
+// returns.
+type pendingEntry struct {
+	delayedOutcome
+	DueAt time.Time
+}
+
 func newQueue(client *redis.Client) *queue {
 	return &queue{client: client}
 }
@@ -117,4 +125,32 @@ func (q *queue) due(ctx context.Context, now time.Time) (delivered []delayedOutc
 		}
 	}
 	return delivered, malformed, nil
+}
+
+// peekAll returns every entry currently queued, with its due time, without
+// removing anything. Unlike due, this backs a read: GetWorldState
+// (docs/API_GATEWAY.md GET /v1/demo/world) must not deliver a pending
+// outcome early merely because someone looked at the dashboard. A malformed
+// member (should not happen; see member/parseMember) is skipped rather than
+// failing the whole read, same tolerance as due -- the caller has no logger
+// here either (docs/ENGINEERING.md section 14).
+func (q *queue) peekAll(ctx context.Context) ([]pendingEntry, error) {
+	zs, err := q.client.ZRangeWithScores(ctx, delayedOutcomesKey, 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("peek delayed outcomes: %w", err)
+	}
+
+	entries := make([]pendingEntry, 0, len(zs))
+	for _, z := range zs {
+		member, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		d, perr := parseMember(member)
+		if perr != nil {
+			continue
+		}
+		entries = append(entries, pendingEntry{delayedOutcome: d, DueAt: time.Unix(int64(z.Score), 0)})
+	}
+	return entries, nil
 }

@@ -4,18 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 )
 
-// store is World Simulator's only access point to Postgres: a read-only
-// join of RECORD (for the original failure_code, reused on a failed retry
-// as "the same underlying reason struck again" rather than inventing a new
+// store is World Simulator's access point to Postgres: a read-only join of
+// RECORD (for the original failure_code, reused on a failed retry as "the
+// same underlying reason struck again" rather than inventing a new
 // per-attempt code model GROUND_TRUTH does not carry) and GROUND_TRUTH
-// itself. This is one of exactly two services ever permitted to read
-// GROUND_TRUTH (proto/worldsim/v1/worldsim.proto package comment); it
-// writes neither table.
+// itself for loadRecordProfile, plus, since Phase 5.5 Unit W, the write
+// side of BATCH/RECORD/GROUND_TRUTH for SeedBatch below. This is one of
+// exactly two services ever permitted to touch GROUND_TRUTH at all
+// (proto/worldsim/v1/worldsim.proto package comment,
+// docs/ARCHITECTURE.md section 6: "only World Simulator and the
+// Reporting Service's accuracy scorer"), and the only one ever permitted
+// to write it. scripts/batchgen writes the exact same three tables the
+// exact same way; SeedBatch exists so the API Gateway's demo control
+// surface can trigger that without ever gaining a database handle itself
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit W).
 type store struct {
 	pool *pgxpkg.Pool
 }
@@ -55,4 +63,54 @@ func (s *store) loadRecordProfile(ctx context.Context, recordID string) (recordP
 	}
 	rp.Profile.TrueBucket = commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[trueBucket])
 	return rp, nil
+}
+
+// insertBatch creates a BATCH row and returns its id to the caller (SeedBatch
+// generates the id itself, same as scripts/batchgen).
+func (s *store) insertBatch(ctx context.Context, batchID, source string, totalRecords int32) error {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO batch (id, source, total_records) VALUES ($1, $2, $3)`,
+		batchID, source, totalRecords,
+	); err != nil {
+		return fmt.Errorf("insert batch %s: %w", batchID, err)
+	}
+	return nil
+}
+
+// seedRecord is one generated record's full write payload: the RECORD row
+// and its GROUND_TRUTH row, inserted together by insertSeedRecord.
+type seedRecord struct {
+	RecordID      string
+	BatchID       string
+	Type          string
+	AmountPaise   int64
+	FailureCode   string
+	InstrumentRef string
+	CreatedAt     time.Time
+
+	TrueBucket             string
+	RecoveryProbability    float64
+	WrongActionProbability float64
+	ResponseDelaySeconds   int32
+}
+
+// insertSeedRecord writes r's RECORD row and its GROUND_TRUTH row, mirroring
+// scripts/batchgen/main.go's own two inserts exactly (same columns, same
+// literal 'INR' currency) so a scenario-seeded batch is indistinguishable
+// on disk from one seeded by the CLI.
+func (s *store) insertSeedRecord(ctx context.Context, r seedRecord) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO record (id, batch_id, type, amount_paise, currency, failure_code, instrument_ref, created_at)
+		VALUES ($1, $2, $3, $4, 'INR', $5, $6, $7)`,
+		r.RecordID, r.BatchID, r.Type, r.AmountPaise, r.FailureCode, r.InstrumentRef, r.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("insert record %s: %w", r.RecordID, err)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
+		VALUES ($1, $2, $3, $4, $5)`,
+		r.RecordID, r.TrueBucket, r.RecoveryProbability, r.WrongActionProbability, r.ResponseDelaySeconds,
+	); err != nil {
+		return fmt.Errorf("insert ground_truth %s: %w", r.RecordID, err)
+	}
+	return nil
 }

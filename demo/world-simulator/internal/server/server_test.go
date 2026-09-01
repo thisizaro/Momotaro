@@ -27,7 +27,7 @@ func TestSimulateOutcomeRetrySuccessIsImmediate(t *testing.T) {
 	ctx := context.Background()
 	recordID := seedRecordWithGroundTruth(ctx, t, pool, "BANK_TIMEOUT", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 0.80, 0.05, 300)
 
-	s := New(pool, redisClient, clock.New(), noScale)
+	s := New(pool, redisClient, clock.New(), noScale, nil, "")
 	s.rng = fixedRand(0.10) // < 0.80, correct action (RETRY), succeeds
 
 	resp, err := s.SimulateOutcome(ctx, &worldsimv1.SimulateOutcomeRequest{
@@ -53,7 +53,7 @@ func TestSimulateOutcomeRetryFailureCarriesTheRecordsOriginalFailureCode(t *test
 	ctx := context.Background()
 	recordID := seedRecordWithGroundTruth(ctx, t, pool, "BANK_TIMEOUT", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 0.80, 0.05, 300)
 
-	s := New(pool, redisClient, clock.New(), noScale)
+	s := New(pool, redisClient, clock.New(), noScale, nil, "")
 	s.rng = fixedRand(0.90) // >= 0.80, correct action, fails
 
 	resp, err := s.SimulateOutcome(ctx, &worldsimv1.SimulateOutcomeRequest{
@@ -81,7 +81,7 @@ func TestSimulateOutcomeWrongActionUsesWrongActionProbability(t *testing.T) {
 	// RETRY here is the wrong action.
 	recordID := seedRecordWithGroundTruth(ctx, t, pool, "CARD_EXPIRED", "ROOT_CAUSE_BUCKET_HARD_DECLINE", 0.80, 0.05, 300)
 
-	s := New(pool, redisClient, clock.New(), noScale)
+	s := New(pool, redisClient, clock.New(), noScale, nil, "")
 	s.rng = fixedRand(0.10) // would succeed against RecoveryProbability 0.80, must not against WrongActionProbability 0.05
 
 	resp, err := s.SimulateOutcome(ctx, &worldsimv1.SimulateOutcomeRequest{
@@ -103,7 +103,7 @@ func TestSimulateOutcomeNudgeIsPendingAndSchedulesTheDelayedOutcome(t *testing.T
 
 	start := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	fake := clock.NewFake(start)
-	s := New(pool, redisClient, fake, noScale)
+	s := New(pool, redisClient, fake, noScale, nil, "")
 	s.rng = fixedRand(0.10) // < 0.15 RecoveryProbability, correct action, succeeds
 
 	resp, err := s.SimulateOutcome(ctx, &worldsimv1.SimulateOutcomeRequest{
@@ -145,7 +145,7 @@ func TestSimulateOutcomeNudgeWithZeroDelayResolvesImmediately(t *testing.T) {
 	ctx := context.Background()
 	recordID := seedRecordWithGroundTruth(ctx, t, pool, "PAYMENT_RISK_CHECK_FAILED", "ROOT_CAUSE_BUCKET_HARD_DECLINE", 0.15, 0.02, 0)
 
-	s := New(pool, redisClient, clock.New(), noScale)
+	s := New(pool, redisClient, clock.New(), noScale, nil, "")
 	s.rng = fixedRand(0.01)
 
 	// NUDGE_METHOD_UPDATE, not ESCALATE: isNudge must actually be true here
@@ -177,7 +177,7 @@ func TestSimulateOutcomeScalesTheResponseDelay(t *testing.T) {
 	start := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	fake := clock.NewFake(start)
 	half := func(d time.Duration) time.Duration { return d / 2 }
-	s := New(pool, redisClient, fake, half)
+	s := New(pool, redisClient, fake, half, nil, "")
 	s.rng = fixedRand(0.10)
 
 	resp, err := s.SimulateOutcome(ctx, &worldsimv1.SimulateOutcomeRequest{
@@ -195,7 +195,7 @@ func TestSimulateOutcomeScalesTheResponseDelay(t *testing.T) {
 func TestSimulateOutcomeUnknownRecordNotFound(t *testing.T) {
 	pool := testPool(t)
 	redisClient := testRedis(t)
-	s := New(pool, redisClient, clock.New(), noScale)
+	s := New(pool, redisClient, clock.New(), noScale, nil, "")
 
 	_, err := s.SimulateOutcome(context.Background(), &worldsimv1.SimulateOutcomeRequest{
 		RecordId: uuid.NewString(), ActionType: commonv1.ActionType_ACTION_TYPE_RETRY,
@@ -208,7 +208,7 @@ func TestSimulateOutcomeUnknownRecordNotFound(t *testing.T) {
 func TestSimulateOutcomeMissingRecordID(t *testing.T) {
 	pool := testPool(t)
 	redisClient := testRedis(t)
-	s := New(pool, redisClient, clock.New(), noScale)
+	s := New(pool, redisClient, clock.New(), noScale, nil, "")
 
 	_, err := s.SimulateOutcome(context.Background(), &worldsimv1.SimulateOutcomeRequest{})
 	if status.Code(err) != codes.InvalidArgument {

@@ -161,3 +161,32 @@ func TestPickInstrumentRefSometimesSharesAcrossPaymentRecords(t *testing.T) {
 		t.Error("no instrument_ref was reused across records; the pool exists specifically so instrument_history has real repeats to reason about")
 	}
 }
+
+// ProfileForBucket is exported for demo/world-simulator's scenario presets
+// (Phase 5.5 Unit W), which need to force a record into a specific bucket
+// rather than letting the natural code-pool draw decide it, while using the
+// exact same recovery numbers this package's own default distribution
+// uses, so a scenario batch is not a second, drifting copy of this model.
+func TestProfileForBucketMatchesGenerateRecordsOwnNumbers(t *testing.T) {
+	// ARCHITECTURE.md section 6's own two worked examples, verbatim.
+	got := ProfileForBucket(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK)
+	if got.RecoveryProbability != 0.80 {
+		t.Errorf("TRANSIENT_BANK RecoveryProbability = %v, want 0.80", got.RecoveryProbability)
+	}
+	got = ProfileForBucket(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_HARD_DECLINE)
+	if got.RecoveryProbability != 0.15 {
+		t.Errorf("HARD_DECLINE RecoveryProbability = %v, want 0.15", got.RecoveryProbability)
+	}
+	if got.ResponseDelayRange[0] <= 0 || got.ResponseDelayRange[1] <= got.ResponseDelayRange[0] {
+		t.Errorf("HARD_DECLINE ResponseDelayRange = %v, want a real positive range", got.ResponseDelayRange)
+	}
+}
+
+func TestProfileForBucketUnknownFallsBackRatherThanPanicking(t *testing.T) {
+	// profileFor's own documented fallback (bucketProfiles[0]) for a bucket
+	// not in the table; ProfileForBucket must not panic or zero out.
+	got := ProfileForBucket(commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_UNSPECIFIED)
+	if got.RecoveryProbability == 0 {
+		t.Error("ProfileForBucket(UNSPECIFIED) returned a zero-value profile, want the documented fallback")
+	}
+}

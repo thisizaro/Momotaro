@@ -325,6 +325,31 @@ func profileFor(bucket commonv1.RootCauseBucket) bucketProfile {
 	return bucketProfiles[0]
 }
 
+// BucketProfile is the exported view of a root-cause bucket's hidden
+// recovery model, for a caller that needs to force a record into a
+// specific bucket rather than letting the natural code-pool draw in
+// GenerateRecord decide it.
+type BucketProfile struct {
+	RecoveryProbability    float64
+	WrongActionProbability float64
+	ResponseDelayRange     [2]int32
+}
+
+// ProfileForBucket returns bucket's hidden recovery model. Exported for
+// demo/world-simulator's scenario presets (docs/PHASE5_5_IMPLEMENTATION.md
+// Unit W): a scenario like "salary-day" concentrates records into one
+// bucket deliberately, and it must use the exact same recovery numbers this
+// package's own default distribution uses rather than a second, drifting
+// copy of them.
+func ProfileForBucket(bucket commonv1.RootCauseBucket) BucketProfile {
+	p := profileFor(bucket)
+	return BucketProfile{
+		RecoveryProbability:    p.RecoveryProbability,
+		WrongActionProbability: p.WrongActionProbability,
+		ResponseDelayRange:     p.ResponseDelayRange,
+	}
+}
+
 func pickInRange(rng *rand.Rand, r [2]int32) int32 {
 	if r[1] <= r[0] {
 		return r[0]
