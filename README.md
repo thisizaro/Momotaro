@@ -172,9 +172,27 @@ recovery rate 51.0%     classification accuracy 91.0%
 final states: 51 recovered, 32 closed-uneconomic, 17 escalated
 ```
 
+**Expect the agent's own figures to vary run to run, and the baseline's not
+to.** The World Simulator rolls each outcome against the sealed ground truth
+with an unseeded RNG, so the same `SEED=7` batch produces the same records and
+the same answer key but different dice. A second run of exactly the batch
+above gave 43% recovery and Rs 586,240 net: fewer records recovered, but
+higher-value ones among them, and correspondingly more closed as uneconomic
+once their early retries failed and re-scoring found nothing worth doing. That
+is roughly 1.6 sigma on a hundred Bernoulli trials, not a regression.
+
+Three numbers are deterministic and **should match exactly** on any healthy
+run of `SEED=7`. If one of these moves, something really did change:
+
+| Deterministic | Value |
+|---|---|
+| baseline gross / spend / net | Rs 487,848 / Rs 79 / Rs 487,769 |
+| classification accuracy | 91.0% |
+| recovery-window escalations | 0 |
+
 The agent recovers more than a blind retry-everything policy while spending
-roughly half as much, and separately declines to chase 32 records worth
-Rs 344,385 that no intervention could economically recover. Both figures are
+roughly half as much, and separately declines to chase records that no
+intervention could economically recover. Both figures are
 evaluated against the same sealed ground truth, and both are modelled: the
 claim is that this policy beats a blind one *in our simulated world*, not that
 it recovers real money.
