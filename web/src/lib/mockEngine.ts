@@ -115,14 +115,14 @@ const FAILURE_TO_BUCKET: Record<string, RootCauseBucket> = {
 
 const RATIONALES: Record<RootCauseBucket, string[]> = {
   ROOT_CAUSE_BUCKET_TRANSIENT_BANK: [
-    'Bank timeout occurred during the transaction. This is a transient rail issue — retrying with a short backoff.',
+    'Bank timeout occurred during the transaction. This is a transient rail issue, so retrying with a short backoff.',
     'Rail congestion on the payment network. The failure is not customer-side; a retry in the next window should succeed.',
   ],
   ROOT_CAUSE_BUCKET_INSUFFICIENT_FUNDS: [
     'Insufficient funds detected, but the instrument is valid. Scheduling a retry for the next salary-credit window when balance is likely replenished.',
   ],
   ROOT_CAUSE_BUCKET_HARD_DECLINE: [
-    'The card is expired. No retry can succeed — the customer must update their payment method. Sending a nudge with a method-update link.',
+    'The card is expired. No retry can succeed, the customer must update their payment method. Sending a nudge with a method-update link.',
     'Hard decline from the issuer. The instrument is no longer usable. Nudging the customer to update their payment method.',
   ],
   ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED: [
@@ -350,7 +350,7 @@ export class MockEngine {
   // Appends one audit entry and advances current_state. Non-classification
   // transitions reuse the record's last-known classification `source` since
   // AuditEntry.source is documented as the closed LLM/rules/template
-  // vocabulary with no "system"/"executor" member for mechanical steps —
+  // vocabulary with no "system"/"executor" member for mechanical steps,
   // see the ambiguity callout in the PR summary.
   private addEntry(
     record: InternalRecord,

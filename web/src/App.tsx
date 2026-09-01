@@ -201,7 +201,7 @@ function App() {
           <div className="bg-amber-400 text-amber-950">
             <div className="max-w-[1400px] mx-auto px-6 py-1.5 flex items-center justify-center gap-1.5 text-xs font-semibold">
               <FlaskConical className="w-3.5 h-3.5" />
-              Mock mode — sample data, not live
+              Mock mode, sample data, not live
             </div>
           </div>
         )}
