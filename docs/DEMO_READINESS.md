@@ -19,7 +19,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 |---|---|---|---|---|
 | **P0** | | **Demo-breaking or embarrassing** | **~10h** | |
 | 1 | AC | Nudge messages are written to a column nothing reads | 2h | **done** #100 |
-| 2 | AD | Seed the World Simulator | 2h | **done** #99 |
+| 2 | AD | Seed the World Simulator | 2h | **partial** #99, #104 |
 | 3 | AE | LLM messages leak internal vocabulary | 2h | **done** #98 |
 | 4 | AF | Empty states: infinite skeletons when no batch | 3h | **done** #101 |
 | 5 | AG | "Disconnected" badge on a healthy system | 1h | **done** #101 |
@@ -86,7 +86,45 @@ Whoever picks it up should say which and why.
 
 ### Unit AD: seed the World Simulator
 
-**Resolved 2026-09-02 (#99).** Every roll now derives from
+**Partially resolved 2026-09-02 (#99, then #104). Read this before
+claiming the demo is reproducible.**
+
+What IS reproducible now, measured on a live stack by seeding the same seed
+twice and comparing all 100 records by ordinal position:
+
+| Layer | Diffs across two same-seed runs |
+|---|---|
+| Amounts, failure codes | 0 |
+| Hidden ground truth (recovery probability, delay, true bucket) | 0 |
+| EV score and p at decision | 0 |
+| Classification (root cause bucket) | 3 |
+| Final record state | 9 |
+
+Generation, the sealed answer key and the economics are exactly reproducible.
+Two sources of variance remain, and **neither is the seed**:
+
+1. **Wall-clock guardrails under time compression (8 of the 9 state diffs).**
+   `schedule.go` enforces TRAI TCCCPR 2018's contact-hour window,
+   `[10:00, 21:00)` IST, against the real clock. At `DEMO_TIME_SCALE=300000`
+   one real second is about 3.5 simulated days, so a few hundred
+   milliseconds of ordinary scheduler jitter moves simulated time across
+   the window boundary and flips whether a nudge is a permitted action at
+   all. Captured directly in the audit trail: two runs produced a
+   byte-identical first decision (`nudge EV 369793 paise, p=0.0900`), both
+   nudged, both failed, and then one re-scored to
+   `no permitted action has positive expected value` while the other
+   re-scored to `nudge EV 143787 paise, p=0.0350` and went on to recover.
+   Same maths, different permitted set.
+2. **Live LLM sampling (the 3 bucket diffs).** `LLM_SAMPLE_RATE=0.15` sends
+   a subset of records to Groq, whose answers and rate-limit behaviour vary
+   run to run.
+
+Neither is a defect introduced by #99 or #104; both are consequences of
+design choices made earlier and on purpose. What is now false is any claim
+that one seed reproduces a run end to end. See `docs/INCIDENTS.md`
+2026-09-02 for how this was missed twice.
+
+**What #99 and #104 did fix.** Every roll now derives from
 `hash(seed, record_id, attempt_number)` rather than a shared sequential
 stream. A mutex-guarded shared generator was rejected because it stays
 nondeterministic where it matters: which record consumes which draw depends
@@ -95,6 +133,13 @@ outcomes and hand them to different records. Per-record derivation is the
 only form of seeding that survives concurrency, and there is a test that
 rolls the same records from ten goroutines twice and asserts identical
 per-record results. Unseeded remains the default.
+
+#99 alone did not work: it keyed the draw off `record_id`, which is a fresh
+`uuid.NewString()` every run, so the deterministic function was never fed the
+same inputs twice. #104 replaced that key with a `roll_key` stored on
+`GROUND_TRUTH` and derived from `(seed, ordinal index)`, which is the part
+that actually repeats. Record ids stay random, because two batches seeded
+alike would otherwise collide on that table's primary key.
 
 `scripts/batchgen` is seeded, so records, amounts, failure codes and the sealed
 answer key reproduce byte for byte. **The World Simulator's outcome rolls are

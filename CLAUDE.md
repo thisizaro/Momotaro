@@ -100,20 +100,26 @@ somewhere, point `LD_LIBRARY_PATH` at the extracted
 
 ## Facts worth not rediscovering
 
-- **Run-to-run variance is fixed as of #99 (Unit AD)**, but only when a seed
-  is supplied through `POST /v1/demo/batches`. Unseeded is still the default
-  and still varies: gross recovered swung Rs 349k to Rs 594k on identical
-  input before this, and one run lost to the naive baseline. Always seed for
-  anything you intend to compare or demo.
+- **A seed does NOT reproduce a run end to end.** #99 and #104 made
+  generation, the sealed answer key and the economics exactly reproducible
+  (measured: 0 diffs on amounts, ground truth, and EV at decision across two
+  same-seed runs). Two sources of variance remain and neither is the seed:
+  the TRAI contact-hour guardrail in `schedule.go` is evaluated against the
+  real clock while `DEMO_TIME_SCALE=300000` makes one real second about 3.5
+  simulated days, so sub-second jitter flips whether a nudge is permitted;
+  and `LLM_SAMPLE_RATE=0.15` sends a subset to a live model. Measured 9 of
+  100 records ending in a different state. Do not promise a reproducible
+  number on stage. `docs/DEMO_READINESS.md` Unit AD has the full table.
 - **Three figures are deterministic** and should match exactly on `SEED=7`:
   baseline net Rs 487,769, classification accuracy around 91%, and zero
   recovery-window escalations. A move in one of those is a real signal.
 - **`in_flight_count == 0` means "not started" as well as "finished"**, because
   a record with no `record_state` row counts in neither. Do not use it alone as
   a completion signal. `docs/INCIDENTS.md` 2026-09-01.
-- **`web/` has no CI.** No typecheck, build, or tests, ever. A job is committed
-  on branch `ci/frontend-checks` but pushing it needs
-  `gh auth refresh -h github.com -s workflow` from the user.
+- **`web/` now has CI as of #103**: lint, typecheck, test and build, pinned
+  to node 24 because the lockfile is npm 11's and node 20's npm 10 rejects
+  it. Before #103 it had none since Phase 0, which is how the records
+  pagination bug and the dead live socket both shipped.
 - **A scheduler flake** blocks PRs intermittently on tests the diff cannot
   reach. Logged open in `docs/INCIDENTS.md` 2026-09-01. Re-run once before
   investigating, but do not let re-running become reflexive.

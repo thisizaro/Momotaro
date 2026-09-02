@@ -1950,3 +1950,76 @@ cleanup.
   is committed on branch `ci/frontend-checks` and needs
   `gh auth refresh -h github.com -s workflow` to push. Until then every
   frontend change is verified by hand and nothing catches the next one.
+
+## 2026-09-02: Unit AD shipped twice and still did not deliver reproducibility
+
+**What was claimed.** That seeding a batch makes a run reproducible, so the
+same seed gives the same recovered total.
+
+**What was true after the first fix (#99).** Nothing measurable had changed.
+The roll derived from `hash(seed, record_id, attempt_number)`, which is a
+deterministic function, but `record_id` is `uuid.NewString()` at generation
+time, fresh every run regardless of seed. The function was never fed the same
+inputs twice. Two same-seed runs still differed by Rs 153,632.
+
+**How it passed review and CI.** The unit tests asserted that `seededRand`
+returns the same output for the same inputs. That is true, and it is not the
+claim. Nobody tested the claim actually being made, which is that two runs
+with one seed produce the same result. The reviewer (me) checked the
+concurrency design closely, because that was the hard part and it was
+correct, and did not ask whether the inputs were stable. It surfaced only
+because the user asked to verify by hand on a live stack.
+
+**Second fix (#104).** Added `GROUND_TRUTH.roll_key`, derived from
+`(seed, ordinal index in batch)` and written by both `SeedBatch` and
+`scripts/batchgen`. `SimulateOutcome` keys the roll off that. Record ids stay
+random uuids deliberately: making them deterministic would collide on the
+primary key when the same seed is used twice, which had already happened
+twice on the live stack. Proven red first: 7 of 25 ordinal positions diverged
+under an identical seed before the change.
+
+**What is still not reproducible, measured on a live stack.** Two same-seed
+runs, all 100 records compared by ordinal:
+
+```
+amounts, failure codes                      0 diffs
+hidden ground truth (p, delay, true bucket) 0 diffs
+EV score and p at decision                  0 diffs
+classification (root cause bucket)          3 diffs
+final record state                          9 diffs
+```
+
+Of the 97 records that classified identically, 8 still ended differently. The
+audit trail shows the mechanism exactly: two runs produced a byte-identical
+first decision (`nudge EV 369793 paise, p=0.0900`), both nudged, both failed,
+and then one re-scored to `no permitted action has positive expected value`
+while the other re-scored to `nudge EV 143787 paise, p=0.0350` and recovered.
+The economics did not differ. The **set of permitted actions** did.
+
+**Root cause of the residual variance.** `schedule.go` enforces TRAI TCCCPR
+2018's contact-hour window, `[10:00, 21:00)` IST, against the real clock,
+while `DEMO_TIME_SCALE=300000` makes one real second about 3.5 simulated
+days. A few hundred milliseconds of ordinary scheduler jitter therefore moves
+simulated time across the window boundary and changes whether a nudge is a
+permitted action. The remaining 3 diffs are live LLM sampling at
+`LLM_SAMPLE_RATE=0.15`.
+
+Neither is a defect introduced by #99 or #104. Both are consequences of
+earlier deliberate choices: enforce a real regulatory window, and compress
+time hard enough to finish a multi-day recovery cycle in seconds. Those two
+choices are in tension, and nothing had previously forced the tension into
+the open.
+
+**Lessons.**
+
+- **Test the claim, not the function.** A test that a pure function is pure
+  will always pass and can never fail the way the system fails. Write the
+  test at the level the promise is made: two runs, one seed, same total.
+- **Verify a headline claim on the real system before recording it as done.**
+  Both a subagent and a reviewer signed this off on green CI. One live run
+  disproved it in about five minutes.
+- **Compressed time is a correctness surface, not a demo convenience.** This
+  is the second incident caused by `DEMO_TIME_SCALE` interacting with a
+  wall-clock comparison, after the RecoveryWindow escalation on 2026-08-31.
+  Any guardrail compared against a real clock needs to be audited against the
+  scale factor, not just the ones that failed loudly.

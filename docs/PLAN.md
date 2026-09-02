@@ -909,9 +909,12 @@ ordered by value per hour. Detail for each is in
       messages written to a column nothing reads (134 composed messages
       unreachable through the API), fixed by writing `message_text` onto the
       outcome audit entry in the same transaction (#100); AD seed the World
-      Simulator, fixed by deriving every roll from
-      `hash(seed, record_id, attempt_number)` rather than a shared stream,
-      which is the only form of seeding that survives concurrency (#99);
+      Simulator, **partially fixed** (#99, then #104): rolls now derive from
+      a `roll_key` stored on GROUND_TRUTH rather than a random uuid, and
+      generation, ground truth and economics reproduce exactly, but the TRAI
+      contact-hour guardrail on a 300000x-compressed clock plus live LLM
+      sampling still move 9 records in 100. A seed does not reproduce a run
+      end to end, see `docs/DEMO_READINESS.md` Unit AD;
       AE LLM messages leak internal enum names into customer copy, fixed with
       a validator built from the generated proto enum maps, not just a prompt
       instruction (#98); AF infinite skeleton loaders when no batch exists,
