@@ -42,7 +42,17 @@ export const TERMINAL_RECORD_STATES: readonly RecordState[] = [
 
 export type Outcome = 'OUTCOME_SUCCESS' | 'OUTCOME_FAILURE' | 'OUTCOME_PENDING';
 
-export type Source = 'SOURCE_LLM' | 'SOURCE_RULES_FALLBACK' | 'SOURCE_TEMPLATE_FALLBACK';
+/**
+ * `docs/API_GATEWAY.md` documents 3 named values, since those are the ones
+ * a composed message actually carries. `common.v1.Source`'s zero value,
+ * `SOURCE_UNSPECIFIED`, is real on the wire too: `audit.go`'s
+ * `e.GetSource().String()` renders it on every entry that never set a
+ * source (most state-transition entries have no composed message at all),
+ * which is most of a trail. Left out of the type before this, so the drawer
+ * had no honest way to treat it as anything but one of the three composed
+ * sources. Frontend-only correction, no backend or wire change.
+ */
+export type Source = 'SOURCE_LLM' | 'SOURCE_RULES_FALLBACK' | 'SOURCE_TEMPLATE_FALLBACK' | 'SOURCE_UNSPECIFIED';
 
 /** Closed set of strings (not a proto enum) per Wire conventions / Closed vocabularies. */
 export type ProviderHopResult =

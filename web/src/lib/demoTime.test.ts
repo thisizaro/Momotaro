@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEMO_TIME_SCALE, formatSimulatedElapsed, simulatedElapsedMs } from '@/lib/demoTime';
+import { DEMO_TIME_SCALE, formatSimulatedElapsed, formatSimulatedGap, simulatedElapsedMs } from '@/lib/demoTime';
 
 // The compression direction matters and is easy to get backwards: a SMALL
 // amount of real time represents a LARGE amount of simulated time (the
@@ -49,5 +49,54 @@ describe('demoTime', () => {
 
   it('formats zero real elapsed time as the start of the window', () => {
     expect(formatSimulatedElapsed(0)).toBe('0 min into the 7-day recovery window');
+  });
+});
+
+// formatSimulatedGap is the RecordDrawer audit trail's "how far apart were
+// these two entries" figure, the genuinely useful number when reading a
+// trail (docs/DEMO_READINESS.md Unit AN). It shares simulatedElapsedMs's
+// arithmetic with formatSimulatedElapsed above, so the multiplication
+// direction and DEMO_TIME_SCALE source are already covered by those cases;
+// what is different here is a plain duration ("8 days"), not a position
+// framed against the recovery window ("day 8 of the 7-day recovery
+// window"), since a gap between two entries is not itself a point in the
+// window. Every case is hand-checkable against DEMO_TIME_SCALE=300000.
+describe('formatSimulatedGap', () => {
+  it('formats a sub-minute real gap in minutes, matching formatSimulatedElapsed at the same input', () => {
+    // 1ms real * 300000 = 300,000ms simulated = 5 min exactly.
+    expect(formatSimulatedGap(1)).toBe('5 min');
+  });
+
+  it('formats zero real gap as zero minutes', () => {
+    expect(formatSimulatedGap(0)).toBe('0 min');
+  });
+
+  it('formats a real gap under a simulated day in whole hours, singular at exactly one', () => {
+    // 12ms real * 300000 = 3,600,000ms simulated = exactly 1 hour.
+    expect(formatSimulatedGap(12)).toBe('1 hour');
+  });
+
+  it('pluralizes hours above one', () => {
+    // 20ms real * 300000 = 6,000,000ms simulated = exactly 100 minutes = 1.667h, rounds to 2 hours.
+    expect(formatSimulatedGap(20)).toBe('2 hours');
+  });
+
+  it('formats a real gap at or beyond a simulated day in days, one decimal under ten', () => {
+    // 1 real second * 300000 = 300,000s simulated = 3.4722... days.
+    expect(formatSimulatedGap(1000)).toBe('3.5 days');
+  });
+
+  it('drops the decimal once the simulated day count reaches double digits', () => {
+    // 3 real seconds * 300000 = 900,000s simulated = 10.41... days.
+    expect(formatSimulatedGap(3000)).toBe('10 days');
+  });
+
+  it('uses the singular "day" only when the gap rounds to exactly one', () => {
+    // 288ms real * 300000 = 86,400,000ms simulated = exactly 1.0 day.
+    expect(formatSimulatedGap(288)).toBe('1 day');
+  });
+
+  it('clamps a negative real gap to zero rather than going negative', () => {
+    expect(formatSimulatedGap(-500)).toBe('0 min');
   });
 });

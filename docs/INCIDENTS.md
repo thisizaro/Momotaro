@@ -2096,3 +2096,36 @@ reporting green is the 2026-08-23 incident above.
   every package is the underlying problem; serialising two packages is a
   targeted fix, not a general one. A database per package is the durable
   answer and is parked in `docs/BACKLOG.md`.
+
+## 2026-09-02: frontend `Source` type was missing the value most audit entries actually carry
+
+Found while redesigning the record drawer (Unit AN). The task description
+that started this work already named the symptom: "almost every entry ends
+with `system · source: SOURCE_UNSPECIFIED`, repeated a dozen times." That
+value should not have been renderable at all: `web/src/types.ts`'s `Source`
+type listed only `SOURCE_LLM`, `SOURCE_RULES_FALLBACK`,
+`SOURCE_TEMPLATE_FALLBACK`, the 3 values `docs/API_GATEWAY.md` documents,
+because those are the only ones a *composed message* carries. But `source`
+is set on every audit entry, not just ones with a message, and
+`common.v1.Source`'s zero value, `SOURCE_UNSPECIFIED`, is real: Go's
+`e.GetSource().String()` in `api-gateway/internal/httpapi/audit.go` renders
+it for any entry that never set a source at all, which is most state
+transitions in a trail. The frontend type quietly assumed a narrower wire
+contract than the one actually in effect, and nothing caught it because
+nothing compared the two: the drawer just rendered whatever string arrived,
+typed or not, and TypeScript has no way to check a `string` value against a
+union it was never told to include.
+
+**Fix**: widened `Source` to the real 4-value enum. Frontend-only, no
+backend or proto change; `docs/API_GATEWAY.md` (frozen, read-only) was left
+alone since it correctly documents the 3 values a message carries, it was
+the frontend type that silently narrowed further than that. Full reasoning
+in `docs/DECISIONS.md` 2026-09-02.
+
+**Lesson.** A closed-vocabulary TS type copied from a doc's list of "the
+interesting values" rather than the wire enum's actual full set will
+silently mistype the boring/default one, and a UI that stringifies whatever
+arrives without checking against its own type will not surface the gap.
+Worth checking, next time a frontend union looks copied from a table in a
+doc: does the doc's table claim to be the complete value set, or just the
+complete set of one particular sub-case?

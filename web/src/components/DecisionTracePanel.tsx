@@ -96,7 +96,7 @@ export function DecisionTracePanel({ trace, atRiskPaise }: Props) {
           <p className="text-[10px] font-semibold text-rose-700 tracking-wide mb-1">Blocked by guardrails</p>
           <ul className="space-y-1">
             {blockedEntries.map(([action, reason]) => (
-              <li key={action} className="grid grid-cols-[minmax(0,7rem)_1fr] gap-2 text-xs">
+              <li key={action} className="grid grid-cols-[minmax(0,11rem)_1fr] gap-2 text-xs">
                 <span className="text-slate-600 font-medium truncate">{actionLabel(action)}</span>
                 <span className="text-slate-500 break-words">{reason}</span>
               </li>
