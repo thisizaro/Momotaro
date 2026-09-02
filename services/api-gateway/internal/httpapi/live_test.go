@@ -42,9 +42,10 @@ func (f *fakeStreamClient) Recv() (*reportingv1.StreamBatchUpdatesResponse, erro
 	return nil, io.EOF
 }
 
-func newLiveTestServer(t *testing.T, rep *fakeReporting) *httptest.Server {
+func newLiveTestServer(t *testing.T, rep *fakeReporting, allowedOrigins []string) *httptest.Server {
 	t.Helper()
 	h := New(&fakeIngestion{}, rep, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0)
+	h.SetWSAllowedOrigins(allowedOrigins)
 	srv := httptest.NewServer(h.Routes())
 	t.Cleanup(srv.Close)
 	return srv
@@ -64,7 +65,7 @@ func TestLiveUpdatesRelaysMessagesInDocumentedShape(t *testing.T) {
 			RecoveredDeltaPaise: 50000,
 		}},
 	}}}
-	srv := newLiveTestServer(t, rep)
+	srv := newLiveTestServer(t, rep, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -104,7 +105,7 @@ func TestLiveUpdatesRecoveredDeltaZeroIsPresentNotOmitted(t *testing.T) {
 			Ts:        timestamppb.New(time.Now()),
 		}},
 	}}}
-	srv := newLiveTestServer(t, rep)
+	srv := newLiveTestServer(t, rep, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -127,7 +128,7 @@ func TestLiveUpdatesRecoveredDeltaZeroIsPresentNotOmitted(t *testing.T) {
 
 func TestLiveUpdatesClosesNormallyWhenUpstreamStreamEnds(t *testing.T) {
 	rep := &fakeReporting{streamResp: &fakeStreamClient{}} // Recv returns io.EOF immediately
-	srv := newLiveTestServer(t, rep)
+	srv := newLiveTestServer(t, rep, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -147,7 +148,7 @@ func TestLiveUpdatesClosesNormallyWhenUpstreamStreamEnds(t *testing.T) {
 
 func TestLiveUpdatesMissingSubprotocolIsUnauthorized(t *testing.T) {
 	rep := &fakeReporting{}
-	srv := newLiveTestServer(t, rep)
+	srv := newLiveTestServer(t, rep, nil)
 
 	resp, err := http.Get(srv.URL + "/v1/batches/batch-1/live")
 	if err != nil {
@@ -168,7 +169,7 @@ func TestLiveUpdatesMissingSubprotocolIsUnauthorized(t *testing.T) {
 
 func TestLiveUpdatesWrongSubprotocolIsUnauthorized(t *testing.T) {
 	rep := &fakeReporting{}
-	srv := newLiveTestServer(t, rep)
+	srv := newLiveTestServer(t, rep, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -183,9 +184,82 @@ func TestLiveUpdatesWrongSubprotocolIsUnauthorized(t *testing.T) {
 	}
 }
 
+// The three tests below cover the WS_ALLOWED_ORIGINS gap that produced a
+// 403 on every real browser connection: the dashboard's Vite dev server
+// (http://localhost:5173) is a different origin than the Gateway
+// (http://localhost:8090), and coder/websocket refuses cross-origin
+// handshakes unless OriginPatterns explicitly allows them.
+
+func TestLiveUpdatesCrossOriginRejectedByDefault(t *testing.T) {
+	rep := &fakeReporting{}
+	srv := newLiveTestServer(t, rep, nil) // no origins configured: today's default
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(ctx, wsURL(srv.URL)+"/v1/batches/batch-1/live", &websocket.DialOptions{
+		Subprotocols: []string{testAPIKey},
+		HTTPHeader:   http.Header{"Origin": []string{"http://localhost:5173"}},
+	})
+	if err == nil {
+		t.Fatal("dial succeeded, want a rejected cross-origin handshake")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		var got int
+		if resp != nil {
+			got = resp.StatusCode
+		}
+		t.Errorf("status = %d, want 403", got)
+	}
+}
+
+func TestLiveUpdatesCrossOriginSucceedsWhenConfigured(t *testing.T) {
+	rep := &fakeReporting{streamResp: &fakeStreamClient{}} // Recv returns io.EOF immediately
+	srv := newLiveTestServer(t, rep, []string{"http://localhost:5173"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL(srv.URL)+"/v1/batches/batch-1/live", &websocket.DialOptions{
+		Subprotocols: []string{testAPIKey},
+		HTTPHeader:   http.Header{"Origin": []string{"http://localhost:5173"}},
+	})
+	if err != nil {
+		t.Fatalf("dial: %v, want the configured origin to be accepted", err)
+	}
+	defer conn.CloseNow()
+
+	_, _, err = conn.Read(ctx)
+	if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+		t.Errorf("close status = %v (err %v), want StatusNormalClosure", websocket.CloseStatus(err), err)
+	}
+}
+
+func TestLiveUpdatesOriginNotInAllowlistIsStillRejected(t *testing.T) {
+	rep := &fakeReporting{}
+	// Only localhost:5173 is allowed, so a different, unlisted origin must
+	// still be refused: the allowance is a list, not a blanket allow-all.
+	srv := newLiveTestServer(t, rep, []string{"http://localhost:5173"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(ctx, wsURL(srv.URL)+"/v1/batches/batch-1/live", &websocket.DialOptions{
+		Subprotocols: []string{testAPIKey},
+		HTTPHeader:   http.Header{"Origin": []string{"http://evil.example.com"}},
+	})
+	if err == nil {
+		t.Fatal("dial succeeded, want a rejected handshake from an unlisted origin")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		var got int
+		if resp != nil {
+			got = resp.StatusCode
+		}
+		t.Errorf("status = %d, want 403", got)
+	}
+}
+
 func TestLiveUpdatesReportingUnavailableClosesWithInternalError(t *testing.T) {
 	rep := &fakeReporting{streamErr: errors.New("reporting down")}
-	srv := newLiveTestServer(t, rep)
+	srv := newLiveTestServer(t, rep, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

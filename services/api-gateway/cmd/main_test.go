@@ -61,3 +61,35 @@ func TestLoadConfigDoesNotRequireWorldSimulatorAddrWhenDisabled(t *testing.T) {
 		t.Fatalf("loadConfig with demo controls left at their default (disabled): %v", err)
 	}
 }
+
+// WS_ALLOWED_ORIGINS must default to nil: an operator who sets nothing gets
+// the live WebSocket route's original same-origin-only behaviour, not a
+// permissive Gateway (docs/DEMO_READINESS.md, the live-socket 403).
+func TestLoadConfigWSAllowedOriginsDefaultsToNil(t *testing.T) {
+	validEnv(t)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.WSAllowedOrigins != nil {
+		t.Errorf("WSAllowedOrigins = %v, want nil", cfg.WSAllowedOrigins)
+	}
+}
+
+func TestLoadConfigWSAllowedOriginsParsesCSV(t *testing.T) {
+	validEnv(t)
+	t.Setenv("WS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	want := []string{"http://localhost:5173", "http://localhost:4173"}
+	if len(cfg.WSAllowedOrigins) != len(want) {
+		t.Fatalf("WSAllowedOrigins = %v, want %v", cfg.WSAllowedOrigins, want)
+	}
+	for i := range want {
+		if cfg.WSAllowedOrigins[i] != want[i] {
+			t.Errorf("WSAllowedOrigins = %v, want %v", cfg.WSAllowedOrigins, want)
+		}
+	}
+}

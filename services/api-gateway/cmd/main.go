@@ -52,6 +52,16 @@ type serviceConfig struct {
 	// World Simulator exists.
 	DemoControlsEnabled bool
 	WorldSimulatorAddr  string
+
+	// WSAllowedOrigins extends the live WebSocket route
+	// (GET /v1/batches/{batch_id}/live) past same-origin, which is all
+	// github.com/coder/websocket accepts by default. Unset (nil) keeps that
+	// default exactly as is: an operator who sets nothing gets today's
+	// behaviour, not a permissive Gateway. Needed in any setup where the
+	// dashboard is served from a different origin than the Gateway, which
+	// is every non-production run: the Vite dev server on :5173 against the
+	// Gateway on :8090 (docs/DEMO_READINESS.md, the live-socket 403).
+	WSAllowedOrigins []string
 }
 
 func loadConfig() (serviceConfig, error) {
@@ -73,6 +83,8 @@ func loadConfig() (serviceConfig, error) {
 
 		DemoControlsEnabled: l.Bool("DEMO_CONTROLS_ENABLED", false),
 		WorldSimulatorAddr:  l.StrDefault("WORLD_SIMULATOR_ADDR", ""),
+
+		WSAllowedOrigins: l.CSVDefault("WS_ALLOWED_ORIGINS"),
 	}
 	if err := l.Err(); err != nil {
 		return cfg, err
@@ -142,6 +154,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		reportingv1.NewReportingServiceClient(reportingConn),
 		auditv1.NewAuditServiceClient(auditConn),
 		cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
+	handler.SetWSAllowedOrigins(cfg.WSAllowedOrigins)
 
 	// /v1/demo/* (docs/PHASE5_5_IMPLEMENTATION.md Unit W): only dial World
 	// Simulator, and only register these routes, when the flag is on. A

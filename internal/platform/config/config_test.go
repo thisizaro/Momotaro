@@ -145,6 +145,66 @@ func TestCSVAllSeparatorsIsAnError(t *testing.T) {
 	}
 }
 
+// CSVDefault is the optional counterpart to CSV: unset must stay silent
+// and produce nil, since callers use nil to mean "not configured, keep the
+// safe default" (services/api-gateway's WS_ALLOWED_ORIGINS is the first
+// caller: unset must leave the WebSocket route exactly as restrictive as
+// it is today).
+func TestCSVDefaultUnsetReturnsNil(t *testing.T) {
+	l := NewLoader()
+	got := l.CSVDefault("WS_ALLOWED_ORIGINS")
+	if err := l.Err(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestCSVDefaultParsing(t *testing.T) {
+	tests := []struct {
+		name, raw string
+		want      []string
+	}{
+		{"single", "http://localhost:5173", []string{"http://localhost:5173"}},
+		{"multiple", "http://a,http://b", []string{"http://a", "http://b"}},
+		{"padded and trailing comma", " http://a , http://b ,", []string{"http://a", "http://b"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WS_ALLOWED_ORIGINS", tc.raw)
+			l := NewLoader()
+			got := l.CSVDefault("WS_ALLOWED_ORIGINS")
+			if err := l.Err(); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Unlike CSV, an all-separator value is not an error: it degrades to an
+// empty (non-nil) list rather than failing startup, since this variable is
+// optional and never required to carry a value.
+func TestCSVDefaultAllSeparatorsIsEmptyNotError(t *testing.T) {
+	t.Setenv("WS_ALLOWED_ORIGINS", ",,,")
+	l := NewLoader()
+	got := l.CSVDefault("WS_ALLOWED_ORIGINS")
+	if err := l.Err(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want empty", got)
+	}
+}
+
 func TestScale(t *testing.T) {
 	tests := []struct {
 		name  string

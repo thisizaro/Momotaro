@@ -35,6 +35,30 @@ type Handler struct {
 	// exist at all (docs/PHASE5_5_IMPLEMENTATION.md Unit W: a disabled
 	// deployment must 404 on them, not merely refuse them).
 	worldsim worldsimv1.WorldSimulatorServiceClient
+
+	// wsAllowedOrigins lists extra origins the live WebSocket route
+	// (live.go) accepts beyond same-origin, set via SetWSAllowedOrigins.
+	// Nil (the zero value, and the default with WS_ALLOWED_ORIGINS unset)
+	// means only same-origin requests are accepted, exactly
+	// coder/websocket's own default, so an operator who does nothing gets
+	// today's behaviour, not a permissive Gateway.
+	wsAllowedOrigins []string
+}
+
+// SetWSAllowedOrigins configures which cross-origin WebSocket handshakes
+// liveUpdates accepts, in addition to same-origin ones which are always
+// allowed. Call it before Routes(). Passing nil or an empty slice restores
+// the default: same-origin only, matching the API Gateway's behaviour
+// before WS_ALLOWED_ORIGINS existed.
+//
+// Each entry is a host pattern for github.com/coder/websocket's
+// AcceptOptions.OriginPatterns: matched case-insensitively with path.Match,
+// against the request Origin's host, or against "scheme://host" if the
+// pattern itself contains "://". cmd/main.go sets this from
+// WS_ALLOWED_ORIGINS, a comma-separated list, e.g.
+// "http://localhost:5173" for the dashboard's Vite dev server.
+func (h *Handler) SetWSAllowedOrigins(origins []string) {
+	h.wsAllowedOrigins = origins
 }
 
 // New returns a Handler. apiKey is the static shared key every request must

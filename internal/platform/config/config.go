@@ -162,6 +162,25 @@ func (l *Loader) CSV(key string) []string {
 	return out
 }
 
+// CSVDefault returns an optional comma-separated list. Unset or empty is
+// not an error, unlike CSV: it returns nil, so a caller can tell "not
+// configured" apart from "configured as an empty list" and default to
+// whatever behaviour doing nothing should produce.
+func (l *Loader) CSVDefault(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Port validates that a value is a usable TCP port.
 func (l *Loader) Port(key string, def int) int {
 	v := l.Int(key, def)

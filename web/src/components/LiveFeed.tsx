@@ -29,7 +29,7 @@ function emptyStateFor(connectionState: ConnectionState) {
     case 'reconnecting':
       return { icon: Radio, title: 'Reconnecting...', description: 'The connection dropped. Events will resume as soon as it is back.' };
     case 'disconnected':
-      return { icon: WifiOff, title: 'Live stream disconnected', description: 'Still retrying in the background. This batch’s numbers keep refreshing either way.' };
+      return { icon: WifiOff, title: 'Live stream disconnected', description: 'Still retrying in the background. This batch\'s numbers keep refreshing either way.' };
     case 'complete':
       return { icon: CheckCircle2, title: 'This batch already finished', description: 'No events streamed this session, there is nothing left to arrive.' };
     case 'live':

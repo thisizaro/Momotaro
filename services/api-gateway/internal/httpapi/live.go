@@ -38,6 +38,14 @@ func toBatchUpdateJSON(u *reportingv1.BatchUpdate) batchUpdateJSON {
 // handler.go) because a browser's WS handshake cannot set X-API-Key; the
 // key is checked as the negotiated Sec-WebSocket-Protocol instead, closing
 // gap 5.
+//
+// websocket.Accept refuses a cross-origin handshake by default (that is
+// the library's own behaviour, nothing this codebase opted into), which is
+// why the dashboard's Vite dev server on :5173 got a 403 against the
+// Gateway on :8090 in every dev/demo run: they are different origins.
+// h.wsAllowedOrigins (set via SetWSAllowedOrigins, from WS_ALLOWED_ORIGINS)
+// extends that allowlist without weakening it: nil keeps same-origin-only,
+// exactly today's behaviour.
 func (h *Handler) liveUpdates(w http.ResponseWriter, r *http.Request) {
 	batchID := r.PathValue("batch_id")
 	if batchID == "" {
@@ -49,7 +57,10 @@ func (h *Handler) liveUpdates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{h.apiKey}})
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols:   []string{h.apiKey},
+		OriginPatterns: h.wsAllowedOrigins,
+	})
 	if err != nil {
 		return
 	}
