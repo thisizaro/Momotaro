@@ -64,6 +64,12 @@ func (s *Server) SeedBatch(ctx context.Context, req *worldsimv1.SeedBatchRequest
 	}
 	rng := rand.New(rand.NewSource(seed))
 
+	// Every SimulateOutcome roll for any record, not just this batch's,
+	// derives from this same seed from here on, so the whole run
+	// reproduces end to end from the one seed on this request
+	// (docs/DEMO_READINESS.md Unit AD; see Server.randFor in server.go).
+	s.seed.Store(seed)
+
 	batchID := uuid.NewString()
 	source := fmt.Sprintf("demo:%s", preset.Name)
 	if err := s.store.insertBatch(ctx, batchID, source, count); err != nil {
