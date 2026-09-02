@@ -313,6 +313,39 @@ func TestComposeNudgeReturnsTheTemplateWhenTheChainIsTemplateOnly(t *testing.T) 
 	}
 }
 
+// TestComposeNudgeTemplateNeverTripsTheVocabularyValidatorForAnyBucket
+// closes a gap Unit AE's vocabulary check opened: validateNudge now runs on
+// every rung, including the terminal static-template rung, and nudge.go's
+// own comment says the chain's final "no rung produced a valid response"
+// error is unreachable "while the terminal rung is the static template,
+// which cannot fail". That is only true if no template happens to contain a
+// forbidden token; if one ever does, ComposeNudge would return an error
+// instead of a nudge, which is worse than the leak being fixed. Previous
+// coverage (TestComposeNudgeReturnsTheTemplateWhenTheChainIsTemplateOnly)
+// only exercised ROOT_CAUSE_BUCKET_TRANSIENT_BANK, one of eight. This walks
+// every bucket in the generated enum, so a bucket added later is covered
+// automatically rather than needing someone to remember to extend the list.
+func TestComposeNudgeTemplateNeverTripsTheVocabularyValidatorForAnyBucket(t *testing.T) {
+	s := newTestServer(t)
+
+	for value, name := range commonv1.RootCauseBucket_name {
+		bucket := commonv1.RootCauseBucket(value)
+		t.Run(name, func(t *testing.T) {
+			resp, err := s.ComposeNudge(context.Background(), &classifierv1.ComposeNudgeRequest{
+				Record:   &commonv1.Record{Id: "rec-1", AmountPaise: 499900},
+				Bucket:   bucket,
+				MaxChars: 160,
+			})
+			if err != nil {
+				t.Fatalf("ComposeNudge(%s): %v (the static template for this bucket leaks internal vocabulary; reword nudge_templates.go, do not weaken the validator)", name, err)
+			}
+			if resp.GetMessage() == "" {
+				t.Errorf("ComposeNudge(%s): Message is empty", name)
+			}
+		})
+	}
+}
+
 // TestComposeNudgeSubstitutesTheRealAmount is the property ARCHITECTURE.md
 // section 5b exists for: "the record's real amount ... interpolated by us,
 // not written by the model [or the template]". The literal placeholder
