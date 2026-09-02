@@ -1897,3 +1897,56 @@ status would be a contract change (`docs/API_GATEWAY.md` is frozen) for a
 problem that a correct poll already solves, so this is a note rather than a
 change. If a future unit does add batch status to the contract, this entry is
 the argument for it.
+
+## 2026-09-02: the live event stream had no reconnect, and a clean close read as failure
+
+**Symptom.** A red "Disconnected" badge sat in the dashboard header on a
+system that was working. It was logged as a cosmetic label bug and priced at
+one hour.
+
+**What it actually was.** Three defects in `subscribeToBatch`
+(`web/src/lib/api.ts`), found only by reading the code rather than the
+symptom:
+
+1. **No reconnection logic of any kind.** Once the WebSocket closed for any
+   reason (a service restart, a proxy idle timeout, a brief network blip) it
+   stayed closed for the life of the page. No event ever streamed again.
+2. **A normal close was reported as a failure.** The Gateway closes with
+   `websocket.StatusNormalClosure` when the upstream report stream ends,
+   i.e. when the batch finishes. `ws.onclose` fired
+   `onConnectionChange(false)` unconditionally, so a successfully completed
+   run painted a red failure indicator on itself.
+3. **A teardown race.** The cleanup called `ws.close()` and then set state
+   synchronously, but `onclose` fires asynchronously afterwards and could
+   clobber the newly selected batch's state back to disconnected.
+
+**Why nobody noticed defect 1.** A separate two-second polling loop kept
+refreshing the report and records, so the numbers on screen kept moving while
+the stream itself was dead. The dashboard looked alive. This is the
+instructive part: a redundant path masked the failure of the primary one, and
+the only visible trace was a badge everyone had learned to ignore.
+
+**Fix (#101).** Branch on the close code instead of treating every close as
+identical. 1000 means the run finished: report `complete`, do not reconnect,
+because nothing more will ever arrive. Any other code reconnects with
+exponential backoff from 1s to a 30s cap, reporting `reconnecting` (amber)
+and degrading to `disconnected` (red) only after three consecutive failures,
+while still retrying underneath so it self-heals. A `closed` flag captured in
+the closure is set before `ws.close()` and checked in every handler, so a
+late callback after teardown is a no-op. The reconnect timer is cleared on
+cleanup.
+
+**Lessons.**
+
+- **A cosmetic symptom is not evidence of a cosmetic cause.** This was
+  triaged from what it looked like. Reading the code moved it from a
+  one-hour label fix to a real reliability bug, and the estimate was wrong
+  because the diagnosis was.
+- **Redundancy hides failure.** The polling loop is worth keeping, but it
+  meant a dead stream produced no visible symptom beyond a badge. Anything
+  with a silent fallback needs its own explicit health signal.
+- **`web/` still has no CI.** No typecheck, build or test job has ever run
+  against it, which is also how the records pagination bug survived. The job
+  is committed on branch `ci/frontend-checks` and needs
+  `gh auth refresh -h github.com -s workflow` to push. Until then every
+  frontend change is verified by hand and nothing catches the next one.

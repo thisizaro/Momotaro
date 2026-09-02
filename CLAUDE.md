@@ -45,8 +45,8 @@ concurrent agents can append without conflicting. Add lines, never reorder.
 
 ## Current state
 
-Phases 0 to 4 complete. Phase 5 at 14/17, Phase 5.5 at 6/8, Phase 5.6 (demo
-readiness) not started. Phases 6 to 8 open.
+Phases 0 to 4 complete. Phase 5 at 14/17, Phase 5.5 at 6/8. **Phase 5.6 P0
+is complete** (#98, #99, #100, #101, merged 2026-09-02). Phases 6 to 8 open.
 
 **Work `docs/DEMO_READINESS.md` top to bottom.** P0 is demo-breaking, P1 is
 capability that already exists in the backend and cannot be seen, which is the
@@ -100,9 +100,11 @@ somewhere, point `LD_LIBRARY_PATH` at the extracted
 
 ## Facts worth not rediscovering
 
-- **The agent's own numbers vary run to run.** `batchgen` is seeded, the World
-  Simulator is not. Gross recovered swung Rs 349k to Rs 594k on identical
-  input, and one run lost to the naive baseline. Fixing that is Unit AD.
+- **Run-to-run variance is fixed as of #99 (Unit AD)**, but only when a seed
+  is supplied through `POST /v1/demo/batches`. Unseeded is still the default
+  and still varies: gross recovered swung Rs 349k to Rs 594k on identical
+  input before this, and one run lost to the naive baseline. Always seed for
+  anything you intend to compare or demo.
 - **Three figures are deterministic** and should match exactly on `SEED=7`:
   baseline net Rs 487,769, classification accuracy around 91%, and zero
   recovery-window escalations. A move in one of those is a real signal.

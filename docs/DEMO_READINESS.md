@@ -6,30 +6,36 @@ capability that already exists in the backend and cannot be seen.
 
 Ordered by what decides whether this wins. **P0 first, top to bottom.**
 
+> **Status, 2026-09-02: all five P0 units are merged** (#98, #99, #100, #101).
+> Each was built in its own worktree, reviewed against its central claim
+> rather than accepted on report, and merged only on green CI. Per-unit
+> resolutions are recorded under each heading below. **P1 is next**, and Unit
+> S remains the highest-value single item in the list.
+
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
 
-| # | Unit | What | Est |
-|---|---|---|---|
-| **P0** | | **Demo-breaking or embarrassing** | **~10h** |
-| 1 | AC | Nudge messages are written to a column nothing reads | 2h |
-| 2 | AD | Seed the World Simulator | 2h |
-| 3 | AE | LLM messages leak internal vocabulary | 2h |
-| 4 | AF | Empty states: infinite skeletons when no batch | 3h |
-| 5 | AG | "Disconnected" badge on a healthy system | 1h |
-| **P1** | | **Built already, invisible** | **~16h** |
-| 6 | S | Surface `decision_trace` (the "why not" table) | 4h |
-| 7 | AH | Historical timeline + real vs relative time | 6h |
-| 8 | AI | Confidence-based LLM routing + quota banner | 4h |
-| 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h |
-| **P2** | | **Differentiators** | **~11h** |
-| 10 | Y | Razorpay payment-downtime webhooks | 5h |
-| 11 | Z | Real webhook payload, signature, error taxonomy | 6h |
-| **P3** | | **Polish** | **~6h** |
-| 12 | AK | `/help` page from the frozen contract | 3h |
-| 13 | AL | Misleading labels and the confusion matrix | 2h |
-| 14 | AM | Read-only config panel | 1h |
-| **Last** | | **Phase 8 rehearsal, non-negotiable** | **~4h** |
+| # | Unit | What | Est | Status |
+|---|---|---|---|---|
+| **P0** | | **Demo-breaking or embarrassing** | **~10h** | |
+| 1 | AC | Nudge messages are written to a column nothing reads | 2h | **done** #100 |
+| 2 | AD | Seed the World Simulator | 2h | **done** #99 |
+| 3 | AE | LLM messages leak internal vocabulary | 2h | **done** #98 |
+| 4 | AF | Empty states: infinite skeletons when no batch | 3h | **done** #101 |
+| 5 | AG | "Disconnected" badge on a healthy system | 1h | **done** #101 |
+| **P1** | | **Built already, invisible** | **~16h** | |
+| 6 | S | Surface `decision_trace` (the "why not" table) | 4h | |
+| 7 | AH | Historical timeline + real vs relative time | 6h | |
+| 8 | AI | Confidence-based LLM routing + quota banner | 4h | |
+| 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | |
+| **P2** | | **Differentiators** | **~11h** | |
+| 10 | Y | Razorpay payment-downtime webhooks | 5h | |
+| 11 | Z | Real webhook payload, signature, error taxonomy | 6h | |
+| **P3** | | **Polish** | **~6h** | |
+| 12 | AK | `/help` page from the frozen contract | 3h | |
+| 13 | AL | Misleading labels and the confusion matrix | 2h | |
+| 14 | AM | Read-only config panel | 1h | |
+| **Last** | | **Phase 8 rehearsal, non-negotiable** | **~4h** | |
 
 **Explicitly skipped**: Phase 6 load testing, Phase 7 Kubernetes, Unit T
 modelling re-measure, OpenTelemetry tracing. Reasons in `docs/BACKLOG.md` and
@@ -40,6 +46,15 @@ modelling re-measure, OpenTelemetry tracing. Reasons in `docs/BACKLOG.md` and
 ## P0
 
 ### Unit AC: nudge messages are written to a column nothing reads
+
+**Resolved 2026-09-02 (#100).** Fixed by the write, not the join. The join was
+rejected on correctness rather than style: a claimed nudge-scheduled record
+produces two audit rows sharing one `attempt_number`, so joining on
+`(record_id, attempt_number)` would attach the message to both and imply it
+was sent twice. `recordOutcome` now writes `message_text` in the same
+transaction as the outcome, matching how `attempt_number` and `cost_paise`
+already work on that row. The proto, gateway mapping and drawer rendering all
+turned out to be wired already, so only the database write was missing.
 
 **Confirmed defect, measured.**
 
@@ -71,6 +86,16 @@ Whoever picks it up should say which and why.
 
 ### Unit AD: seed the World Simulator
 
+**Resolved 2026-09-02 (#99).** Every roll now derives from
+`hash(seed, record_id, attempt_number)` rather than a shared sequential
+stream. A mutex-guarded shared generator was rejected because it stays
+nondeterministic where it matters: which record consumes which draw depends
+on goroutine scheduling, so two runs with one seed would roll the same
+outcomes and hand them to different records. Per-record derivation is the
+only form of seeding that survives concurrency, and there is a test that
+rolls the same records from ten goroutines twice and asserts identical
+per-record results. Unseeded remains the default.
+
 `scripts/batchgen` is seeded, so records, amounts, failure codes and the sealed
 answer key reproduce byte for byte. **The World Simulator's outcome rolls are
 not seeded**, so the agent's own results do not.
@@ -89,6 +114,18 @@ That means a reproducible demo is currently impossible and an unlucky draw puts
 the whole run end to end. Keep unseeded as the default so nothing else changes.
 
 ### Unit AE: LLM messages leak internal vocabulary
+
+**Resolved 2026-09-02 (#98).** Both layers built, and the validator is the
+actual control. Its forbidden-token list is read off the generated proto enum
+maps rather than hand-copied, so a new enum value is covered the moment
+protoc regenerates. A second, deliberately hand-written tier covers the
+taxonomy's own meta-vocabulary (`bucket`, `root cause`, `action type`,
+`record state`), which is what actually leaked and cannot be derived
+mechanically: splitting enum constants on `_` also yields `retry`, `action`,
+`risk` and `new`, all legitimate customer vocabulary. All eight static
+templates are covered by a test that walks every `RootCauseBucket` through
+the template-only chain, proven non-vacuous by temporarily poisoning a
+template and confirming it failed.
 
 Both LLM-composed nudges in the measured batch leaked an internal enum name
 into customer-facing Hinglish:
@@ -110,6 +147,11 @@ lesson from `DECISIONS.md` 2026-08-28; the validator is the actual control.
 
 ### Unit AF: empty states
 
+**Resolved 2026-09-02 (#101).** The seven sites now distinguish three states
+rather than two, backed by a shared `EmptyState` component. Verified in a
+real browser: zero `animate-pulse` elements with no batch selected, down from
+seven, and a designed first-run card with a working call to action.
+
 With no batch selected, `report` is null and every panel renders
 `animate-pulse` skeletons **forever**: seven metric tiles, the donut, the
 recovery bar, the timeline. Nothing distinguishes "loading" from "there is
@@ -120,6 +162,14 @@ the Live Event Stream and World Simulator state cards, which read "Waiting for
 events" and "Nothing pending" in the same undifferentiated way.
 
 ### Unit AG: the "Disconnected" badge
+
+**Resolved 2026-09-02 (#101), and it was three defects, not a label bug.**
+See `docs/INCIDENTS.md` 2026-09-02. The socket had no reconnect logic at all,
+a clean close was reported as failure, and teardown raced. The fix reads the
+Gateway's actual close code: `StatusNormalClosure` (1000) means the batch
+finished, so it reports `complete` in green and correctly stops; anything
+else reconnects with backoff from 1s to a 30s cap, amber while retrying and
+red only after three consecutive failures, still retrying underneath.
 
 A red failure indicator sits in the header on both tabs of a working system.
 Either connect the WebSocket properly or do not render red when the honest
