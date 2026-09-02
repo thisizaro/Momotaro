@@ -155,6 +155,17 @@ message RecordSummary {
   // that state deliberately has no due_at, it waits on
   // ReportDelayedOutcome from the customer, nothing polls it.
   google.protobuf.Timestamp due_at = 8;
+  // The earliest audit_entry.ts recorded for this record, i.e. when it was
+  // first classified and left RECORD_STATE_NEW. Unset only in the brief
+  // real window between ingestion and that first classification, before
+  // any audit_entry row exists for it yet (docs/API_GATEWAY.md).
+  google.protobuf.Timestamp first_action_at = 9;
+  // Mirrored straight from record_state.last_action_at: the timestamp of
+  // the most recent Decision Engine transition for this record (a retry,
+  // a nudge, a recovery, an escalation, or an uneconomic close). Unset
+  // until the Decision Engine has acted on this record at least once,
+  // i.e. before record_state exists for it (docs/API_GATEWAY.md).
+  google.protobuf.Timestamp last_action_at = 10;
 }
 
 message ListBatchRecordsResponse {

@@ -314,13 +314,12 @@ function App() {
           </div>
         </div>
 
-        {/* Retry timeline */}
+        {/* Timeline: Live (scheduled) / History (what happened) toggle */}
         <div className="card p-5">
-          <h3 className="text-sm font-semibold text-slate-700">Retry Timeline</h3>
           {report ? (
-            <TimelineView records={records} />
+            <TimelineView key={activeBatchId} records={records} onSelect={handleSelectRecord} />
           ) : (
-            <div className="h-[280px] animate-pulse bg-slate-50 rounded-lg mt-4" />
+            <div className="h-[280px] animate-pulse bg-slate-50 rounded-lg" />
           )}
         </div>
 

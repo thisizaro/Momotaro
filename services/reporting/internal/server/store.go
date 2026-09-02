@@ -305,6 +305,13 @@ type recordListRow struct {
 	// it). Only RETRY_SCHEDULED and NUDGE_SCHEDULED ever carry a value
 	// (docs/ARCHITECTURE.md section 7a).
 	DueAt *time.Time
+	// FirstActionAt is MIN(audit_entry.ts) for this record: nil only in
+	// the brief real window before the classifier has written the
+	// record's first audit entry (docs/API_GATEWAY.md).
+	FirstActionAt *time.Time
+	// LastActionAt mirrors record_state.last_action_at directly: nil
+	// until the Decision Engine has acted on this record at least once.
+	LastActionAt *time.Time
 }
 
 // listRecords returns one page of records for batchID, oldest-created
@@ -322,7 +329,9 @@ func (s *store) listRecords(ctx context.Context, batchID string, stateFilter, bu
 			COALESCE(rs.root_cause_bucket, ''),
 			COALESCE(rs.attempt_count, 0),
 			COALESCE((SELECT SUM(ia.cost_paise) FROM intervention_attempt ia WHERE ia.record_id = r.id), 0),
-			rs.due_at
+			rs.due_at,
+			(SELECT MIN(ae.ts) FROM audit_entry ae WHERE ae.record_id = r.id),
+			rs.last_action_at
 		FROM record r
 		LEFT JOIN record_state rs ON rs.record_id = r.id
 		WHERE r.batch_id = $1
@@ -339,7 +348,7 @@ func (s *store) listRecords(ctx context.Context, batchID string, stateFilter, bu
 	var result []recordListRow
 	for rows.Next() {
 		var rec recordListRow
-		if err := rows.Scan(&rec.RecordID, &rec.Type, &rec.AmountPaise, &rec.CurrentState, &rec.Bucket, &rec.AttemptCount, &rec.SpendPaise, &rec.DueAt); err != nil {
+		if err := rows.Scan(&rec.RecordID, &rec.Type, &rec.AmountPaise, &rec.CurrentState, &rec.Bucket, &rec.AttemptCount, &rec.SpendPaise, &rec.DueAt, &rec.FirstActionAt, &rec.LastActionAt); err != nil {
 			return nil, 0, fmt.Errorf("scan record row: %w", err)
 		}
 		result = append(result, rec)

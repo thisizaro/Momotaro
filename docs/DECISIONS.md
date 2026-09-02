@@ -1970,3 +1970,79 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   where sorting by EV for display would pick a different tie-break than the
   correct first-in-list rule, to keep the two concerns (ranking for display,
   choosing the winner) from silently collapsing into one.
+
+- 2026-09-02: **`RecordSummary` gained `first_action_at` and `last_action_at`
+  rather than a per-record array of every audit timestamp (Unit AH).**
+  `due_at` was the only time field on this message and it is always in the
+  future or absent, so the timeline goes blank the instant a run finishes.
+  A first/last pair is enough to draw the historical view actually built: a
+  short connector from when a record was first classified to the most
+  recent thing that happened to it, plus a marker at the end colored by
+  outcome. `first_action_at` is `MIN(audit_entry.ts)` for the record, one
+  correlated subquery per page using the existing `audit_entry_record_idx
+  (record_id, ts)`, not a second endpoint and not N+1 gRPC calls.
+  `last_action_at` is a zero-cost addition: it mirrors
+  `record_state.last_action_at`, a column the Decision Engine already
+  writes on every transition, just never surfaced before. A rejected
+  alternative was shipping the full audit-entry timestamp array per record:
+  more bytes per record for a chart that only ever reads the two extremes,
+  and Audit's per-record trail route already exists for anyone who needs
+  the whole sequence for one record.
+
+- 2026-09-02: **`docs/API_GATEWAY.md` documents `first_action_at` and
+  `last_action_at` on `GET /v1/batches/{batch_id}/records` before the Unit
+  AH implementation that reads them, following the precedent Unit S set for
+  `decision_trace`.** Both follow the exact convention `due_at` already
+  established on the same message: empty string when absent, never
+  omitted, never null (Wire convention 6), not the "missing key" convention
+  `decision_trace`/`accuracy`/`baseline_comparison` use, because these two
+  are scalar timestamp fields in the same category `due_at` is already in,
+  not optional nested objects.
+
+- 2026-09-02: **The historical timeline shows real wall-clock time and the
+  simulated equivalent it represents, and the multiplication direction was
+  verified against `docs/ARCHITECTURE.md` section 17 and `configs/demo.env`
+  before writing any code, not assumed (Unit AH).** `DEMO_TIME_SCALE`
+  compresses waits the system schedules (retry delay, contact cooldown,
+  mandate lead time); a real elapsed duration this run actually took,
+  multiplied by that constant, recovers what that duration represents, the
+  same relationship `CLAUDE.md` already states in prose ("one real second
+  is about 3.5 simulated days"). `RecoveryWindow` is deliberately excluded:
+  `docs/INCIDENTS.md` 2026-08-31 already established it is compared against
+  a record's real elapsed age directly, never scaled, so this module never
+  divides a duration to schedule one, only multiplies one to describe one,
+  and the two directions are not treated as interchangeable anywhere in
+  `web/src/lib/demoTime.ts`. The constant (`300000`) is hardcoded in the
+  frontend rather than fetched, the same choice already made for
+  `LLM_SAMPLE_RATE` and `RECOVERY_WINDOW`: `docs/API_GATEWAY.md` is the
+  frozen wire contract for record and batch data, not operational config.
+  The dual-time axis is shown only on the History view, not Live: Live's
+  ticks are already a relative countdown to a live "now" marker, a
+  different, still-useful idiom that the absolute real/simulated pairing
+  would clutter rather than clarify.
+
+- 2026-09-02: **The Live/History toggle picks its own default once, from
+  whatever records the component first mounts with, rather than always
+  opening on Live (Unit AH).** If nothing is pending but the batch already
+  has history, it opens on History instead of showing the "nothing pending
+  right now" empty state on a run that has already finished, which is the
+  exact symptom this unit exists to fix. `App.tsx` keys `TimelineView` on
+  the active batch id so switching batches remounts it and re-evaluates the
+  default, rather than a manual toggle choice from a previous batch
+  silently carrying over to an unrelated one.
+
+- 2026-09-02: **Unit AH's reporting-layer test
+  (`TestListBatchRecordsIncludesFirstAndLastActionAt`,
+  `services/reporting/internal/server/reporting_test.go`) is written and
+  proven to compile under the `integration` build tag
+  (`go build -tags integration ./...`, `go vet -tags integration ./...`)
+  but was not executed**, honoring the working agreement not to run `make
+  test-integration` against the live demo stack (`CLAUDE.md`). It follows
+  the exact fixture pattern `TestListBatchRecordsIncludesDueAt` already
+  uses (real Postgres via `testPool`, seeded rows, `t.Cleanup`), so it runs
+  the same way that test already does whenever the tagged suite next runs.
+  The Gateway-layer test for the same fields
+  (`services/api-gateway/internal/httpapi/report_test.go`) is a real unit
+  test against a fake gRPC client and was run both red (before the mapping
+  code existed) and green (after), the same TDD proof available for every
+  other layer in this unit.

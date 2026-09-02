@@ -202,6 +202,15 @@ type recordSummaryJSON struct {
 	// docs/API_GATEWAY.md documents empty string as that absence, the same
 	// convention already used for rationale/message_text.
 	DueAt string `json:"due_at"`
+	// RFC3339 timestamp of the record's earliest audit entry (when it was
+	// first classified), empty string only in the brief real window before
+	// that first entry exists. Always present, same empty-string-for-absent
+	// convention as DueAt (docs/API_GATEWAY.md).
+	FirstActionAt string `json:"first_action_at"`
+	// RFC3339 timestamp of the most recent Decision Engine transition for
+	// this record, empty string until the Decision Engine has acted on it
+	// at least once. Always present, same convention as DueAt.
+	LastActionAt string `json:"last_action_at"`
 }
 
 type listBatchRecordsResponse struct {
@@ -238,14 +247,16 @@ func (h *Handler) listBatchRecords(w http.ResponseWriter, r *http.Request) {
 	records := make([]recordSummaryJSON, len(resp.GetRecords()))
 	for i, rec := range resp.GetRecords() {
 		records[i] = recordSummaryJSON{
-			RecordID:     rec.GetRecordId(),
-			Type:         rec.GetType().String(),
-			AmountPaise:  rec.GetAmountPaise(),
-			CurrentState: rec.GetCurrentState().String(),
-			Bucket:       rec.GetBucket().String(),
-			AttemptCount: rec.GetAttemptCount(),
-			SpendPaise:   rec.GetSpendPaise(),
-			DueAt:        formatOptionalTimestamp(rec.GetDueAt()),
+			RecordID:      rec.GetRecordId(),
+			Type:          rec.GetType().String(),
+			AmountPaise:   rec.GetAmountPaise(),
+			CurrentState:  rec.GetCurrentState().String(),
+			Bucket:        rec.GetBucket().String(),
+			AttemptCount:  rec.GetAttemptCount(),
+			SpendPaise:    rec.GetSpendPaise(),
+			DueAt:         formatOptionalTimestamp(rec.GetDueAt()),
+			FirstActionAt: formatOptionalTimestamp(rec.GetFirstActionAt()),
+			LastActionAt:  formatOptionalTimestamp(rec.GetLastActionAt()),
 		}
 	}
 	writeJSON(w, http.StatusOK, listBatchRecordsResponse{

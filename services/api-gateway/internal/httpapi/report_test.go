@@ -352,6 +352,84 @@ func TestListBatchRecordsRendersDueAtOrEmptyStringWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestListBatchRecordsRendersFirstAndLastActionAtOrEmptyStringWhenAbsent
+// covers Unit AH: the historical timeline needs real timing on
+// RecordSummary, distinct from due_at's future scheduling. A record the
+// Decision Engine has acted on carries both as RFC3339 strings; a brand
+// new record with neither yet still gets both keys, as empty strings
+// rather than omitted, the same convention TestListBatchRecordsRendersDueAt
+// OrEmptyStringWhenAbsent already established for due_at.
+func TestListBatchRecordsRendersFirstAndLastActionAtOrEmptyStringWhenAbsent(t *testing.T) {
+	firstAt := time.Date(2026, 8, 29, 14, 0, 5, 0, time.UTC)
+	lastAt := time.Date(2026, 8, 29, 14, 3, 11, 0, time.UTC)
+	rep := &fakeReporting{recordsResp: &reportingv1.ListBatchRecordsResponse{
+		Records: []*reportingv1.RecordSummary{
+			{
+				RecordId:      "rec-acted",
+				CurrentState:  commonv1.RecordState_RECORD_STATE_RETRYING,
+				FirstActionAt: timestamppb.New(firstAt),
+				LastActionAt:  timestamppb.New(lastAt),
+			},
+			{
+				RecordId:      "rec-new",
+				CurrentState:  commonv1.RecordState_RECORD_STATE_NEW,
+				FirstActionAt: nil,
+				LastActionAt:  nil,
+			},
+		},
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/batches/batch-1/records", nil)
+	req.Header.Set("X-API-Key", testAPIKey)
+	rr := httptest.NewRecorder()
+	newHandlerWithReporting(rep).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	records := got["records"].([]any)
+	if len(records) != 2 {
+		t.Fatalf("len(records) = %d, want 2", len(records))
+	}
+
+	acted := records[0].(map[string]any)
+	firstRaw, present := acted["first_action_at"]
+	if !present {
+		t.Fatal("acted record: first_action_at key missing, want the field always present")
+	}
+	if firstRaw != "2026-08-29T14:00:05Z" {
+		t.Errorf("acted record: first_action_at = %v, want 2026-08-29T14:00:05Z", firstRaw)
+	}
+	lastRaw, present := acted["last_action_at"]
+	if !present {
+		t.Fatal("acted record: last_action_at key missing, want the field always present")
+	}
+	if lastRaw != "2026-08-29T14:03:11Z" {
+		t.Errorf("acted record: last_action_at = %v, want 2026-08-29T14:03:11Z", lastRaw)
+	}
+
+	fresh := records[1].(map[string]any)
+	freshFirst, present := fresh["first_action_at"]
+	if !present {
+		t.Fatal("new record: first_action_at key missing, want the field always present, empty string")
+	}
+	if freshFirst != "" {
+		t.Errorf("new record: first_action_at = %v, want empty string for an absent value", freshFirst)
+	}
+	freshLast, present := fresh["last_action_at"]
+	if !present {
+		t.Fatal("new record: last_action_at key missing, want the field always present, empty string")
+	}
+	if freshLast != "" {
+		t.Errorf("new record: last_action_at = %v, want empty string for an absent value", freshLast)
+	}
+}
+
 func TestListBatchRecordsUnknownBatchIsNotFound(t *testing.T) {
 	rep := &fakeReporting{recordsErr: notFoundErr("batch not found")}
 	req := httptest.NewRequest(http.MethodGet, "/v1/batches/unknown/records", nil)

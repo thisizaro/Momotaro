@@ -1014,6 +1014,12 @@ export class MockEngine {
         attempt_count: r.attempt_count,
         spend_paise: r.interventions.reduce((sum, iv) => sum + iv.cost_paise, 0),
         due_at: r.due_at,
+        // Mirrors the real Gateway's MIN(audit_entry.ts)/last_action_at
+        // pair (docs/API_GATEWAY.md): the earliest and most recent entries
+        // this mock has actually appended for the record, empty string
+        // before anything has happened to it yet.
+        first_action_at: r.entries[0]?.ts ?? '',
+        last_action_at: r.entries[r.entries.length - 1]?.ts ?? '',
       }));
 
     // Mirrors the Gateway's own default (docs/API_GATEWAY.md: page_size is

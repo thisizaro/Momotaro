@@ -21,6 +21,8 @@ function record(id: string): RecordSummary {
     attempt_count: 0,
     spend_paise: 0,
     due_at: '',
+    first_action_at: '',
+    last_action_at: '',
   };
 }
 

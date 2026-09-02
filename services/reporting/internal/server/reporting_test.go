@@ -419,6 +419,72 @@ func TestListBatchRecordsIncludesDueAt(t *testing.T) {
 	}
 }
 
+// TestListBatchRecordsIncludesFirstAndLastActionAt covers Unit AH: the
+// historical timeline needs real timing, not just the scheduler's future
+// due_at, so RecordSummary must carry when a record was first classified
+// (MIN(audit_entry.ts)) and when the Decision Engine last touched it
+// (record_state.last_action_at). A record with neither audit entries nor a
+// record_state row (just landed, RECORD_STATE_NEW, nothing has acted on it
+// yet) must carry neither field, the same "absent means no answer"
+// convention due_at already established, not a zeroed-out epoch.
+func TestListBatchRecordsIncludesFirstAndLastActionAt(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	batchID := seedBatch(ctx, t, pool)
+
+	acted := seedRecord(ctx, t, pool, batchID, 10000, "RECORD_TYPE_PAYMENT")
+	firstTs := time.Now().Add(-90 * time.Second).Truncate(time.Second).UTC()
+	lastTs := time.Now().Add(-10 * time.Second).Truncate(time.Second).UTC()
+	// Two audit entries: MIN(ts) must pick the earlier one, not the last
+	// row inserted or the last one in id order.
+	seedAuditEntry(ctx, t, pool, acted, batchID, lastTs, "RECORD_STATE_RETRY_SCHEDULED", "RECORD_STATE_RETRYING")
+	seedAuditEntry(ctx, t, pool, acted, batchID, firstTs, "RECORD_STATE_NEW", "RECORD_STATE_SCORING")
+	seedRecordStateWithLastActionAt(ctx, t, pool, acted, "RECORD_STATE_RETRYING", "ROOT_CAUSE_BUCKET_TRANSIENT_BANK", 1, lastTs)
+
+	untouched := seedRecord(ctx, t, pool, batchID, 10000, "RECORD_TYPE_PAYMENT")
+	// No audit_entry, no record_state row at all: brand new, nothing has
+	// acted on it yet.
+
+	s := New(pool, NewHub())
+	resp, err := s.ListBatchRecords(ctx, &reportingv1.ListBatchRecordsRequest{BatchId: batchID})
+	if err != nil {
+		t.Fatalf("ListBatchRecords: %v", err)
+	}
+
+	var gotActed, gotUntouched *reportingv1.RecordSummary
+	for _, rec := range resp.Records {
+		switch rec.RecordId {
+		case acted:
+			gotActed = rec
+		case untouched:
+			gotUntouched = rec
+		}
+	}
+	if gotActed == nil || gotUntouched == nil {
+		t.Fatalf("did not find both seeded records in response: %+v", resp.Records)
+	}
+
+	if gotActed.GetFirstActionAt() == nil {
+		t.Fatal("acted record: FirstActionAt is nil, want the earlier of the two seeded audit entries")
+	}
+	if !gotActed.GetFirstActionAt().AsTime().Equal(firstTs) {
+		t.Errorf("acted record: FirstActionAt = %v, want the earlier entry %v, not the later one", gotActed.GetFirstActionAt().AsTime(), firstTs)
+	}
+	if gotActed.GetLastActionAt() == nil {
+		t.Fatal("acted record: LastActionAt is nil, want the seeded record_state.last_action_at")
+	}
+	if !gotActed.GetLastActionAt().AsTime().Equal(lastTs) {
+		t.Errorf("acted record: LastActionAt = %v, want %v", gotActed.GetLastActionAt().AsTime(), lastTs)
+	}
+
+	if gotUntouched.GetFirstActionAt() != nil {
+		t.Errorf("untouched record: FirstActionAt = %v, want nil (no audit_entry rows yet)", gotUntouched.GetFirstActionAt().AsTime())
+	}
+	if gotUntouched.GetLastActionAt() != nil {
+		t.Errorf("untouched record: LastActionAt = %v, want nil (no record_state row yet)", gotUntouched.GetLastActionAt().AsTime())
+	}
+}
+
 func TestListBatchRecordsUnknownBatchNotFound(t *testing.T) {
 	pool := testPool(t)
 	s := New(pool, NewHub())

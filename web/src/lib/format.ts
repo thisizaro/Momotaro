@@ -72,6 +72,25 @@ export const RECORD_TYPE_LABELS: Record<RecordType, string> = {
   RECORD_TYPE_INVOICE: 'Invoice',
 };
 
+/**
+ * Fixed display order for the nine record states, used everywhere a
+ * per-state legend or breakdown needs one so a state sits in the same
+ * position across StateDistribution, the historical timeline and anywhere
+ * else it appears: new/scoring first, the two scheduled/in-flight pairs
+ * next, then the three terminal outcomes.
+ */
+export const STATE_ORDER: RecordState[] = [
+  'RECORD_STATE_NEW',
+  'RECORD_STATE_SCORING',
+  'RECORD_STATE_RETRY_SCHEDULED',
+  'RECORD_STATE_RETRYING',
+  'RECORD_STATE_NUDGE_SCHEDULED',
+  'RECORD_STATE_NUDGED',
+  'RECORD_STATE_RECOVERED',
+  'RECORD_STATE_ESCALATED',
+  'RECORD_STATE_CLOSED_UNECONOMIC',
+];
+
 export const STATE_LABELS: Record<RecordState, string> = {
   RECORD_STATE_NEW: 'New',
   RECORD_STATE_SCORING: 'Scoring',
@@ -94,6 +113,26 @@ export const STATE_COLORS: Record<RecordState, string> = {
   RECORD_STATE_RECOVERED: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   RECORD_STATE_ESCALATED: 'bg-rose-50 text-rose-700 border-rose-200',
   RECORD_STATE_CLOSED_UNECONOMIC: 'bg-slate-200 text-slate-500 border-slate-300',
+};
+
+/**
+ * Hex fills for SVG/CSS contexts that can't take a Tailwind class (an
+ * inline `fill` attribute, a `background-color` set from JS). Same nine
+ * states as STATE_DOT_COLORS above, same colors, just as raw hex so
+ * StateDistribution's bar segments and the historical timeline's outcome
+ * markers read as the same visual language rather than two palettes that
+ * happen to be close.
+ */
+export const STATE_FILL: Record<RecordState, string> = {
+  RECORD_STATE_NEW: '#cbd5e1',
+  RECORD_STATE_SCORING: '#f59e0b',
+  RECORD_STATE_RETRY_SCHEDULED: '#60a5fa',
+  RECORD_STATE_RETRYING: '#3b82f6',
+  RECORD_STATE_NUDGE_SCHEDULED: '#22d3ee',
+  RECORD_STATE_NUDGED: '#06b6d4',
+  RECORD_STATE_RECOVERED: '#10b981',
+  RECORD_STATE_ESCALATED: '#f43f5e',
+  RECORD_STATE_CLOSED_UNECONOMIC: '#94a3b8',
 };
 
 export const STATE_DOT_COLORS: Record<RecordState, string> = {

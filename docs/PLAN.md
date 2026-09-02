@@ -935,7 +935,12 @@ ordered by value per hour. Detail for each is in
       alternatives" table, still the highest-value single item), **done**
       2026-09-02, see `docs/PLAN.md`'s own Unit S line above and
       `docs/DECISIONS.md` 2026-09-02; AH historical
-      timeline plus real-vs-relative time; AI confidence-based LLM routing with
+      timeline plus real-vs-relative time, **done** 2026-09-02: `RecordSummary`
+      gained `first_action_at`/`last_action_at`, `docs/API_GATEWAY.md` edited
+      first per the Unit S precedent, timeline split into a Live/History
+      toggle with a real-vs-simulated-time axis on History, see
+      `docs/DEMO_READINESS.md` Unit AH and `docs/DECISIONS.md` 2026-09-02;
+      AI confidence-based LLM routing with
       a quota-exhausted banner; AJ live production stream via a webhook CLI,
       which fills the dead event panel and makes the no-answer-key distinction
       explanatory → `docs/DEMO_READINESS.md`

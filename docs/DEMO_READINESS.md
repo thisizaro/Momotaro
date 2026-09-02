@@ -25,7 +25,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 5 | AG | "Disconnected" badge on a healthy system | 1h | **done** #101 |
 | **P1** | | **Built already, invisible** | **~16h** | |
 | 6 | S | Surface `decision_trace` (the "why not" table) | 4h | **done** |
-| 7 | AH | Historical timeline + real vs relative time | 6h | |
+| 7 | AH | Historical timeline + real vs relative time | 6h | **done** |
 | 8 | AI | Confidence-based LLM routing + quota banner | 4h | |
 | 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | |
 | **P2** | | **Differentiators** | **~11h** | |
@@ -308,6 +308,42 @@ than something a judge takes on trust, and it is the honest version of the
 
 **Also make it interactive**: click a dot to open that record's drawer, hover
 for bucket, amount, action and due time. Cheap once the data is there.
+
+**Resolved 2026-09-02.** Built as scoped, with the field shape decided rather
+than guessed: `RecordSummary` gained `first_action_at`
+(`MIN(audit_entry.ts)`, one correlated subquery, not N+1) and
+`last_action_at` (mirrors `record_state.last_action_at`, already written by
+the Decision Engine on every transition, so this half was free), not a
+per-record attempts array, since a first/last pair is enough for the chart
+actually built and Audit's own per-record trail route already exists for
+anyone who needs the full sequence. `docs/API_GATEWAY.md` documents both
+before the implementation that reads them, following Unit S's precedent.
+
+The timeline is now a Live/History toggle
+(`web/src/components/TimelineView.tsx`, delegating to `LiveTimeline` and
+`HistoryTimeline`). Live is unchanged in substance (what's scheduled, via
+`due_at`). History plots every record the agent has acted on from
+`first_action_at` to `last_action_at`, bucket-row layout matching Live so
+the two read as one visual language, marker size encoding amount and color
+encoding current state/outcome (the same `STATE_FILL` palette
+`StateDistribution` already uses), with a legend for whichever states are
+actually present. The toggle's default is chosen once from the records it
+first mounts with: if nothing is pending but history exists, it opens on
+History rather than reproducing the exact "nothing pending right now" bug
+this unit exists to fix; `App.tsx` keys the component on the active batch
+id so switching batches re-evaluates that default.
+
+The real/simulated dual-time axis landed on History only, formatted as
+"HH:MM:SS" real time above "day N of the 7-day recovery window" simulated
+time beneath, computed in `web/src/lib/demoTime.ts` and unit-tested against
+hand-checkable values. The multiplication direction was verified against
+`docs/ARCHITECTURE.md` section 17 and `configs/demo.env` before writing any
+code (a real elapsed duration times `DEMO_TIME_SCALE` recovers what it
+represents; `RecoveryWindow` is excluded, per `docs/INCIDENTS.md`
+2026-08-31, since it is compared against real elapsed age, never scaled).
+Both charts are click-to-drawer and hover-for-detail, wired straight to
+`App.tsx`'s existing `handleSelectRecord` rather than a second drawer-opening
+path. `docs/DECISIONS.md` has the full reasoning for each choice.
 
 ### Unit AI: confidence-based LLM routing, and a quota banner
 
