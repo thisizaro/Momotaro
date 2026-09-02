@@ -125,6 +125,15 @@ describe('DecisionTracePanel', () => {
     expect(positiveEv?.querySelector('.text-emerald-600, .text-emerald-700')).toBeTruthy();
   });
 
+  it('keeps the EV value on one line so a large amount does not wrap and break the column it anchors', () => {
+    const trace: DecisionTrace = {
+      candidates: [{ action: 'ACTION_TYPE_RETRY', ev_paise: 183799, cost_paise: 100, p_recovery: 0.5 }],
+    };
+    render(<DecisionTracePanel trace={trace} atRiskPaise={200000} />);
+    const evEl = screen.getByText('+₹1837.99');
+    expect(evEl.className).toMatch(/whitespace-nowrap/);
+  });
+
   it('lets a long guardrail reason wrap rather than overflow the panel', () => {
     const longReason =
       'contact cooldown active: last contact 73.169551123456789ms ago and the configured cooldown window for this channel is 288ms, so no further outbound contact is permitted until it elapses';

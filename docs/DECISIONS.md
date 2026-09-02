@@ -2113,3 +2113,95 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   a "real" answer versus a default; the type fix is additive, matches
   `common.proto`'s actual 4-value enum, and needed no backend or wire
   change. See `docs/INCIDENTS.md` 2026-09-02.
+
+- 2026-09-02: **HistoryTimeline moved from one shared row per bucket to one
+  sub-row per record, a small-multiples/Gantt layout, to fix overplotting
+  rather than adding opacity tricks on top of the shared-row layout (Unit
+  AO).** With up to 28 Abandonment and 16 Hard Decline records sharing a row,
+  every connector line drew on top of the others regardless of opacity;
+  jittering the shared row (the original layout's own mitigation) only
+  scattered markers vertically, it never separated the lines connecting them.
+  A dedicated row per record removes the overlap by construction instead of
+  making it harder to see. Row height (13px, `TIMELINE_SUB_ROW_HEIGHT` in
+  `web/src/lib/timelineGeometry.ts`) and `amountRadius`'s bounds (retuned to
+  2.5-5.5px from the single-row layout's 3.5-9px) were chosen together so the
+  largest marker at 100-record density still clears its row's edges by at
+  least a pixel; `amountRadius` has no other caller, so retuning it was safe
+  without a parallel variant. Records within a bucket sort by
+  `first_action_at` then `record_id` (a stable tie-break) rather than
+  render-order, so the row order reads as "who acted first" consistently
+  across renders; one pre-existing test that had incidentally relied on
+  array-declaration order for two same-bucket records was updated to look up
+  each record by a new `data-record-id` attribute instead of by position,
+  since declaration order was never the property being tested (marker size
+  vs. amount was).
+
+- 2026-09-02: **Isolating a bucket collapses its siblings to a one-line
+  summary rather than removing them, and a bucket filter and an outcome
+  filter compose rather than being mutually exclusive (Unit AO).** The
+  alternative, hiding non-selected buckets entirely, would need an extra
+  "show all buckets" step before switching which bucket is isolated;
+  collapsing to a single compact row keeps every bucket clickable while
+  isolated, so switching focus stays one click, and it caps the isolated
+  view's height as a side effect (a collapsed bucket costs one row instead
+  of up to 28). The outcome legend is deliberately built from the whole
+  run's records, never re-scoped to the current bucket filter, so it does
+  not shift under the reader as they filter and so a state absent from the
+  isolated bucket is still one click away; the direct consequence is that a
+  bucket-plus-outcome combination can legitimately match nothing, which is
+  why a filtered-empty combination is reachable through ordinary use rather
+  than only by deliberately constructed props, and needs its own honest
+  `EmptyState` rather than a blank chart. The time axis's domain and
+  `amountRadius`'s `maxAmountPaise` scale both stay computed from the whole
+  unfiltered run regardless of the active filters, so filtering narrows
+  which records draw without ever rescaling the axis or changing what
+  "biggest amount" means mid-filter.
+
+- 2026-09-02: **The record area is capped at 480px
+  (`TIMELINE_MAX_BODY_HEIGHT`) with internal scroll, and the axis lives
+  outside that scrolling container rather than inside it (Unit AO).** A
+  per-record row layout makes total height proportional to record count
+  (roughly `recordCount * 13px` plus small inter-bucket gaps) rather than a
+  fixed 7-row height, so an unfiltered 80-record run is genuinely tall
+  (over 1000px) if nothing bounds it. 480px was chosen against the real
+  shape of a run rather than picked arbitrarily: an isolated single bucket
+  at typical demo density (up to ~28 records) fits without a scrollbar,
+  while the unfiltered all-buckets view scrolls, which is intentional
+  since isolating a bucket is the same click that both focuses the view
+  and, as a side effect of the collapse behaviour above, brings it under
+  the cap. The axis renders in its own fixed row below the scrolling
+  record area, computed from the same stable domain either way, so the
+  time reference never scrolls out of view while the record area above it
+  does.
+
+- 2026-09-02: **The connector line's colour is a fixed neutral slate
+  (`#cbd5e1`), not derived from the bucket or any per-record value, and it
+  stays neutral on hover too, only its opacity and width change (Unit
+  AO).** The bug being fixed was two encodings (bucket colour on the line,
+  state colour on the marker) competing for the same visual channel; giving
+  the connector a third colour on hover (e.g. recolouring it toward the
+  hovered record's state) would have reintroduced exactly that competition
+  for the one interaction state where it matters most. Bucket identity is
+  carried by the row grouping and its own label/legend entry, which was
+  always the primary channel for it, so the connector loses nothing by
+  going neutral.
+
+- 2026-09-02: **`RecordDrawer` suppresses a rationale box only when it is
+  identical to the immediately previous entry's, not via a running set of
+  rationales seen so far in the trail (Unit AO).** The defect was a specific
+  adjacency (Scoring, then the entry right after it, both writing the same
+  sentence because the Decision Engine composes it once at scoring rather
+  than per hop); a broader "hide any repeat anywhere earlier in the trail"
+  rule would also hide a genuinely coincidental repeat of an unrelated
+  rationale much later in a long trail, which is not the defect this unit
+  was asked to fix and would silently drop real information. Compared
+  `entry.rationale` against `detail.entries[i - 1].rationale` only.
+
+- 2026-09-02: **`DecisionTracePanel`'s EV column gets `whitespace-nowrap`
+  and `flex-shrink-0` rather than only a wider fixed width (Unit AO).** The
+  reported defect, `+₹1837.99` wrapping after the `+`, happens inside a
+  flex row (`CandidateRow`'s `<li className="flex items-center gap-2">`)
+  where a fixed-width child can still be compressed below its own content
+  width unless told not to shrink; widening `w-16` alone would have raised
+  the threshold at which the same wrap recurs for a larger EV rather than
+  removing the failure mode.

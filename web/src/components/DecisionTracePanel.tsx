@@ -43,7 +43,7 @@ function CandidateRow({ candidate, isWinner }: { candidate: DecisionTraceCandida
       <span className={`flex-1 min-w-0 truncate ${isWinner ? 'font-semibold text-slate-800' : 'text-slate-500'}`}>
         {actionLabel(candidate.action)}
       </span>
-      <span className={`w-16 text-right tabular-nums font-medium ${evColor(candidate.ev_paise)}`}>
+      <span className={`w-16 flex-shrink-0 text-right tabular-nums font-medium whitespace-nowrap ${evColor(candidate.ev_paise)}`}>
         {formatSignedPaise(candidate.ev_paise)}
       </span>
       <span className="w-12 text-right tabular-nums text-slate-400">
