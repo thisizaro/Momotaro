@@ -359,3 +359,32 @@ whole demo intent for about two hours of additive, zero-risk work, and the
 retry backoff being instant is fine: nobody needs to watch an exponential
 backoff, they need to see that an empty account is deliberately left alone
 until payday.
+
+## An isolated database per test package
+
+**Parked 2026-09-02, after #105.**
+
+Every integration test in the repo runs against one Postgres, one Redis and
+one Kafka. `go test ./...` runs packages in parallel, so any two packages
+touching the same rows can interfere. That is not hypothetical: it produced
+the intermittent CI failure logged in `docs/INCIDENTS.md` 2026-09-02, where
+`test/e2e`'s real decision-engine claimed records out from under
+`services/decision-engine/internal/engine`'s tests.
+
+#105 fixed that specific collision by serialising those two packages. It did
+not fix the general case, and the next pair of packages to contend for shared
+state will produce a new symptom that also looks like a flake.
+
+**The durable fix** is a database per test package: each package creates a
+scratch database, migrates it, runs against it, and drops it. The pattern
+already exists in this repo, the Unit AC agent used it by hand
+(`momotaro_test_ac`) specifically to avoid touching a running demo stack, and
+the Unit AD agent did the same (`momotaro_ad_scratch`). Promoting it into a
+shared test helper is the work.
+
+**Why it is parked rather than done.** It touches every integration test file
+in the repo, it is a refactor with no user-visible benefit, and the
+buildathon deadline is three days out. #105 removes the bleeding. This is the
+stitches.
+
+**Cost when picked up:** roughly half a day, most of it mechanical.

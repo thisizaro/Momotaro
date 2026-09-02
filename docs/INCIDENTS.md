@@ -1710,7 +1710,16 @@ everything that calls it through `ConsumeKeyed`, and every SQL statement in
 that call path has to be checked for what it does when its target row does
 not exist, not just the one the stack trace happened to name.
 
-### 2026-09-01, flaky in CI: TestSchedulerNeverDoubleClaimsTheSameRecord and TestBatchCorrectnessInvariants, UNRESOLVED, needs pickup
+### 2026-09-01, flaky in CI: TestSchedulerNeverDoubleClaimsTheSameRecord and TestBatchCorrectnessInvariants, RESOLVED 2026-09-02 (#105)
+
+> **Resolved, and it was not a flaky test.** Root cause and fix are in the
+> 2026-09-02 entry below, "the integration job was never flaky". The
+> recommended fix recorded in this entry, scoping assertions to each test's
+> own seeded `record_id`, was aimed at the symptom and would not have worked:
+> the records were being claimed by a real decision-engine running in another
+> package's test binary, so no assertion change could have prevented it. Left
+> in place rather than rewritten, because a wrong diagnosis that looked
+> reasonable for a day is worth keeping visible.
 
 **Status: open.** Report only, no fix or test change applied. Whoever next
 touches the Decision Engine scheduler should claim this, write the regression
@@ -2023,3 +2032,67 @@ the open.
   wall-clock comparison, after the RecoveryWindow escalation on 2026-08-31.
   Any guardrail compared against a real clock needs to be audited against the
   scale factor, not just the ones that failed loudly.
+
+## 2026-09-02: the integration job was never flaky, two schedulers shared one database
+
+**Symptom.** The `integration` job failed intermittently from 2026-09-01,
+blocked three PRs, and on 2026-09-02 reached `main`. Failures looked random:
+
+```
+run A (PR):    TestSchedulerFiresOnceWhenFakeClockPassesDueAt, TestBatchCorrectnessInvariants
+run B (PR):    green, same branch, same content
+run C (main):  four scheduler tests, plus TestBatchCorrectnessInvariants
+```
+
+Failure messages were all of one shape: `executor called 0 times`,
+`Execute was never called`, `attempt_count = 0, want 1`.
+
+**Root cause.** `claimDue` (`services/decision-engine/internal/engine/store.go`)
+claims work with no batch or record filter:
+
+```sql
+WHERE rs.due_at IS NOT NULL AND rs.due_at <= $1
+  AND rs.current_state IN ($2, $3)
+ORDER BY rs.due_at LIMIT $4
+```
+
+`test/e2e/walking_skeleton_test.go` starts the **real decision-engine as a
+subprocess**, and its scheduler calls exactly that. `go test ./...` runs
+packages in parallel, so e2e's live scheduler and
+`services/decision-engine/internal/engine`'s integration tests ran
+concurrently against one Postgres and raced for the same rows. Whichever
+ticked first claimed the other's records; the loser failed.
+
+That explains everything that read as randomness. **Which** tests fail
+depends on who wins the race. And it never reproduces on a developer machine
+because the windows do not overlap there: the exact CI command, `-race`, all
+packages, e2e included, passed locally four times in a row while `main` was
+red.
+
+**Fix (#105).** Split the job into two passes: everything except `test/e2e`,
+then `test/e2e` alone. Only those two are serialised, so the other 49
+packages still run in parallel. Rejected `-p 1`, which serialises all of them
+permanently to resolve a conflict between two. `claimDue` was deliberately
+left alone: claiming any due record is correct for a real scheduler, and
+narrowing it to make tests pass would trade a test problem for a product one.
+
+Also added a guard asserting the e2e pass actually ran tests, because
+splitting one command into two tag-specific ones reintroduces the risk the
+old comment warned about, and a tag mismatch that tests nothing while
+reporting green is the 2026-08-23 incident above.
+
+**Lessons.**
+
+- **"Flaky" is a description, not a diagnosis.** This sat labelled a flake
+  for a day with a plausible-sounding recommended fix (scope assertions to
+  the test's own `record_id`) that would not have worked, because the
+  interference came from a different test binary entirely. Naming something
+  flaky ends the investigation, which is precisely when it should start.
+- **A test that cannot reproduce locally is telling you about the
+  environment, not lying to you.** The useful question was not "why is this
+  test bad" but "what does CI do that I do not", and the answer was in the
+  workflow file: parallel packages against shared infrastructure.
+- **Shared mutable infrastructure is the real defect.** One Postgres for
+  every package is the underlying problem; serialising two packages is a
+  targeted fix, not a general one. A database per package is the durable
+  answer and is parked in `docs/BACKLOG.md`.
