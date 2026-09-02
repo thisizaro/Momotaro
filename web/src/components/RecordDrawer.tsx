@@ -200,6 +200,18 @@ export function RecordDrawer({ open, detail, loading, error, onClose, onRetry, d
                     const gapRealMs =
                       i > 0 ? Math.max(entryMs - new Date(detail.entries[i - 1].ts).getTime(), 0) : 0;
                     const sourceBadge = SOURCE_BADGE[entry.source];
+                    // The Scoring entry and the entry right after it (often
+                    // Nudge Scheduled) frequently carry the same rationale
+                    // verbatim, since the Decision Engine writes it once at
+                    // the point of scoring rather than re-deriving it per
+                    // hop. Showing the identical sentence in the same amber
+                    // box twice in a row costs vertical space for no new
+                    // information, so suppress only an exact repeat of the
+                    // immediately previous entry's rationale, never one that
+                    // differs, and never a repeat further back in the trail
+                    // (docs/DEMO_READINESS.md Unit AO).
+                    const previousRationale = i > 0 ? detail.entries[i - 1].rationale : '';
+                    const showRationale = entry.rationale !== '' && entry.rationale !== previousRationale;
 
                     return (
                       <div key={i} data-testid="audit-entry" className="relative pb-5 last:pb-0">
@@ -251,7 +263,7 @@ export function RecordDrawer({ open, detail, loading, error, onClose, onRetry, d
 
                           <DecisionTracePanel trace={entry.decision_trace} atRiskPaise={detail.record.amount_paise} />
 
-                          {entry.rationale && (
+                          {showRationale && (
                             <div className="flex items-start gap-2 bg-amber-50/50 border border-amber-100 rounded-lg p-2.5 mt-2">
                               <Cpu className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
                               <p className="text-xs text-slate-600 leading-relaxed">{entry.rationale}</p>

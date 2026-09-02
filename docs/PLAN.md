@@ -960,6 +960,30 @@ ordered by value per hour. Detail for each is in
       second implementation, with a new `formatSimulatedGap` function
       added test-first. No backend change → `docs/DEMO_READINESS.md` Unit
       AN, `docs/DECISIONS.md` 2026-09-02.
+- [x] **[FRONTEND] Unit AO: refine and make the timeline interactive.**
+      Added after Unit AH shipped, on review of the working feature.
+      `HistoryTimeline` gave every record its own thin sub-row inside its
+      bucket band, a small-multiples/Gantt layout instead of one shared row
+      per bucket, so a dense bucket's connector lines (28 Abandonment
+      records, 16 Hard Decline) no longer merge into a solid band. The
+      connector is now a neutral slate rather than the bucket colour, so
+      the state colour on the marker is the only meaningful hue; the
+      `circle size = amount at risk` caption's contrast was fixed
+      (`text-slate-300` to `text-slate-500`). Added click-to-filter:
+      clicking a bucket row isolates it (the other buckets collapse to a
+      one-line summary rather than vanishing, so switching focus stays one
+      click), clicking an outcome in the legend filters to it, both
+      compose, and hovering a record highlights its line and marker while
+      dimming the rest. A filtered-empty combination renders the shared
+      `EmptyState` rather than a blank panel, with the active-filter chips
+      and a clear-filters control staying visible above it. The record
+      area is capped at a max height with internal scrolling rather than
+      growing unboundedly. No backend change was needed. Also fixed in the
+      same unit: `DecisionTracePanel`'s EV value no longer wraps
+      (`whitespace-nowrap`), and `RecordDrawer` suppresses a rationale box
+      that repeats the immediately previous entry's rationale verbatim,
+      keeping it when it differs or when the repeat is not consecutive →
+      `docs/DEMO_READINESS.md` Unit AO, `docs/DECISIONS.md` 2026-09-02.
 - [ ] **P2, ~11h.** Unit Y Razorpay payment-downtime webhooks; Unit Z real
       webhook payload, signature verification and the four-field error
       taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`, `docs/DEMO_READINESS.md`

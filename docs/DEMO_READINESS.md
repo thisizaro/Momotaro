@@ -16,6 +16,11 @@ Ordered by what decides whether this wins. **P0 first, top to bottom.**
 > outgrew its own container carrying Unit S's decision panel plus a long
 > audit trail, and the trail had no sense of the 300000x time compression at
 > all. Detail under P1 below.
+>
+> **Unit AO added 2026-09-02, done.** Not in the original list either: a
+> review of the working Unit AH timeline found dense buckets overplotting
+> into a solid band, two competing colour encodings, a near-invisible legend
+> caption, and no click-to-filter. Detail under P1 below, after Unit AN.
 
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
@@ -443,6 +448,109 @@ a second hardcoded constant. Full reasoning in `docs/DECISIONS.md`
 
 No backend change was needed: `audit_entry.ts` already carried real
 timestamps and the drawer already received them.
+
+### Unit AO: refine and make the timeline interactive
+
+**Added 2026-09-02, after Unit AH shipped and was verified working.** Unit
+AH's Live/History timeline was called "a genuinely great job" in review, and
+this unit is refinement, not a redesign: the bucket rows, the shared colour
+palette with `DonutChart` and `StateDistribution`, the Live/History toggle,
+and the dual-axis tick labels all stay exactly as built.
+
+**Two problems with the visual encoding, one with contrast, one missing
+capability.**
+
+First, overplotting: `HistoryTimeline` put every record in a bucket on the
+same row, so a dense bucket's connector lines drew directly on top of each
+other. With up to 28 Abandonment records and 16 Hard Decline records in one
+row, the connectors merged into a solid pastel band and no individual
+record's journey could be followed, the entire point of a timeline.
+
+Second, two colour encodings competed for the same space: the connector was
+bucket-coloured, the end marker was state-coloured, so the eye had no single
+thread to follow.
+
+Third, the `circle size = amount at risk` caption rendered `text-slate-300`
+on white, explaining the chart's most important encoding at unreadable
+contrast.
+
+Fourth, the chart had no interactivity beyond click-to-drawer: no way to
+isolate a bucket or an outcome, which is what "I can choose to see a
+specific group of records or a specific record" actually asks for.
+
+**Resolved 2026-09-02.** `HistoryTimeline` now gives every record its own
+thin sub-row within its bucket band, a small-multiples/Gantt layout instead
+of one shared row per bucket, so a dense bucket's connectors read as
+individual lines rather than a band. The connector is now a fixed neutral
+slate (`#cbd5e1`) rather than `BUCKET_COLORS[bucket]`, so the state colour
+on the marker is the only meaningful hue in the plot; bucket identity is
+still carried by the row grouping and its label, which was always the
+primary channel for it. The caption's contrast was fixed
+(`text-slate-300` to `text-slate-500`).
+
+**Row layout and height bounding.** A record's sub-row height is 13px
+(`TIMELINE_SUB_ROW_HEIGHT`, `web/src/lib/timelineGeometry.ts`), tuned
+against `amountRadius`'s bounds (also retuned, 2.5-5.5px instead of the
+single-row layout's 3.5-9px, so the largest marker in a batch still clears
+its row's edges by a pixel). Records within a bucket sort by
+`first_action_at` then `record_id` for a stable chronological read. A
+bucket band's height is `max(recordCount, 1) * 13px` when that bucket is
+"expanded" (every bucket, when no bucket filter is active; only the
+isolated bucket, when one is), and a single collapsed row otherwise, so an
+isolated bucket's siblings stay visible and one click away rather than
+disappearing. The whole record area sits in a container capped at 480px
+(`TIMELINE_MAX_BODY_HEIGHT`) with internal `overflow-y: auto` rather than
+letting the card grow unboundedly; the axis is pinned below that container,
+outside the scroll, so the time reference never scrolls out of view.
+Judged against the real shape of a run (up to ~80 acted-on records across 7
+buckets, some buckets much denser than others): the unfiltered view scrolls
+past two or three buckets before the cap kicks in, and isolating a single
+bucket at typical demo density (up to ~28 records) usually fits without
+scrolling at all, which makes isolate a practical way to both focus and
+shrink the card at once.
+
+**Interactivity, layered on top of the unchanged default view.** Clicking a
+bucket row (which already doubled as that bucket's legend entry, per Unit
+AH) isolates it; clicking again restores every bucket. Clicking a state in
+the outcome legend filters to it; clicking again clears it. Both filters
+compose: an isolated bucket and an active outcome filter apply together, and
+the legend always lists every state present in the whole run regardless of
+the current bucket filter, so a state absent from the isolated bucket stays
+one click away, which is also what makes a filtered-empty result reachable
+through normal use rather than only by construction. Hovering a record
+highlights its connector and marker (full opacity, a darker slate stroke on
+the line, a dark outline on the marker) and dims every other visible record
+to a low opacity, without touching the existing `<title>` tooltip. Clicking
+a marker still opens the drawer via the same `onSelect` path Unit AH wired,
+unchanged. Active filters render as dismissible chips above the chart
+(`Clear filters, show everything` always present alongside them) so a
+filtered view is never silently different from the default one, and a
+combination that matches nothing renders the shared `EmptyState` instead of
+a blank panel, with the chips and clear control still visible above it so
+there is always an obvious way back. Filter state
+(`bucketFilter`/`stateFilter`/`hoveredId`) is local `useState` inside
+`HistoryTimeline` and needs no explicit reset wiring: `TimelineView` already
+remounts on a batch switch (keyed on the batch id, Unit AH) and remounts
+`HistoryTimeline` for free every time the Live/History toggle swaps which
+component renders, since they are different component types.
+
+**Two small fixes from the same review, done in this unit.**
+`DecisionTracePanel`'s EV value (`w-16` column) could wrap after the `+`
+sign in the winning row, breaking the column's alignment; fixed with
+`whitespace-nowrap` (plus `flex-shrink-0`, since the column sits inside a
+flex row that could otherwise shrink it below its content width) rather
+than only widening the column, which would not have guaranteed no future
+wrap. `RecordDrawer` rendered the amber rationale box twice in a row when
+the Scoring entry and the entry right after it (often Nudge Scheduled)
+carried the same `rationale` verbatim, since the Decision Engine writes it
+once at scoring rather than re-deriving it per hop; suppressed by comparing
+each entry's rationale only to the immediately previous entry's, so an
+exact consecutive repeat is hidden but a rationale that differs, or repeats
+a non-adjacent earlier entry, still renders.
+
+No backend change was needed: `RecordSummary` already carried everything
+this unit reads (`first_action_at`, `last_action_at`, `current_state`,
+`bucket`, `amount_paise`).
 
 ---
 

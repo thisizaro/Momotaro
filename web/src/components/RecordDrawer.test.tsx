@@ -185,4 +185,41 @@ describe('RecordDrawer', () => {
     expect(screen.getByText(/Aapka payment fail ho gaya/)).toBeTruthy();
     expect(screen.getByText('Why this action')).toBeTruthy();
   });
+
+  /**
+   * Unit AO (docs/DEMO_READINESS.md): the Scoring entry and the entry that
+   * follows it (e.g. Nudge Scheduled) often carry the same rationale
+   * verbatim, since the Decision Engine writes it once at the point of
+   * scoring and it is not re-derived per hop. Rendering it twice in a row
+   * costs vertical space for no new information; suppress the exact repeat,
+   * but never a rationale that differs from the entry before it.
+   */
+  it('suppresses a rationale box that repeats the previous entry verbatim', () => {
+    const entries = [
+      makeEntry({ to_state: 'RECORD_STATE_SCORING', rationale: 'High confidence recovery, retry is economical.' }),
+      makeEntry({ to_state: 'RECORD_STATE_NUDGE_SCHEDULED', rationale: 'High confidence recovery, retry is economical.' }),
+    ];
+    render(<RecordDrawer {...baseProps} detail={makeDetail(entries)} />);
+    expect(screen.getAllByText('High confidence recovery, retry is economical.')).toHaveLength(1);
+  });
+
+  it('keeps a rationale box that differs from the previous entry', () => {
+    const entries = [
+      makeEntry({ to_state: 'RECORD_STATE_SCORING', rationale: 'First rationale.' }),
+      makeEntry({ to_state: 'RECORD_STATE_NUDGE_SCHEDULED', rationale: 'Second, different rationale.' }),
+    ];
+    render(<RecordDrawer {...baseProps} detail={makeDetail(entries)} />);
+    expect(screen.getByText('First rationale.')).toBeTruthy();
+    expect(screen.getByText('Second, different rationale.')).toBeTruthy();
+  });
+
+  it('keeps a rationale that repeats a non-adjacent earlier entry, not just the immediately previous one', () => {
+    const entries = [
+      makeEntry({ to_state: 'RECORD_STATE_SCORING', rationale: 'Rationale A.' }),
+      makeEntry({ to_state: 'RECORD_STATE_NUDGE_SCHEDULED', rationale: 'Rationale B.' }),
+      makeEntry({ to_state: 'RECORD_STATE_NUDGED', rationale: 'Rationale A.' }),
+    ];
+    render(<RecordDrawer {...baseProps} detail={makeDetail(entries)} />);
+    expect(screen.getAllByText('Rationale A.')).toHaveLength(2);
+  });
 });
