@@ -1803,6 +1803,30 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   signature is unchanged (no existing test needed touching), and an
   unregistered route 404s by construction rather than needing every handler
   to remember to check a flag and return 404 itself.
+- 2026-09-02: **Unit AC, `message_text` written onto `audit_entry` rather
+  than joined from `intervention_attempt`.** The composed Hinglish nudge
+  text was landing on `intervention_attempt.message_text` (the Executor's
+  own table) but never on `audit_entry.message_text`, the column Audit's
+  `GetRecordAudit` actually selects, so 134 real composed messages sat in
+  the database unreachable through the API. Between the two fixes
+  `docs/DEMO_READINESS.md` named, chose the write: `recordOutcome`
+  (`services/decision-engine/internal/engine/store.go`) now takes the
+  composed message and writes it in the same transaction as the outcome,
+  the same pattern `attempt_number` and `cost_paise` already use on that
+  row. The join was rejected on correctness grounds, not just style: a
+  claimed nudge-scheduled record's "scheduler claimed due record" audit
+  entry and its later outcome entry share the same `attempt_number` (both
+  belong to the same claim), so a naive `LEFT JOIN
+  intervention_attempt ON (record_id, attempt_number)` would attach the
+  message to both rows, implying it was sent twice. Ruling that out needs
+  either a `reason`/`to_state` filter baked into the join or a second join
+  key Audit does not otherwise need, at which point the join is not
+  actually less code than the write. Scope: only `recordOutcome`, the
+  transition the drawer's `Nudged` entry renders. A nudge that fails to
+  send synchronously (`NOTIFICATION_NOT_SENT`) goes through
+  `recordRescore` instead, which still has no `message_text`; left alone
+  since the measured defect and the demo beat are both about the sent
+  message, not the failed one.
 - 2026-09-02: **Unit AD, World Simulator's outcome rolls seeded per-record,
   not via a shared sequential stream.** `scripts/batchgen` and SeedBatch
   were already seeded for record generation; the unseeded part was

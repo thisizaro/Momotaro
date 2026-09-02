@@ -127,7 +127,7 @@ func (s *Scheduler) process(ctx context.Context, c claimedRecord) {
 	log := logger.ForRecord(logger.From(ctx), c.RecordID, c.BatchID)
 	attemptNumber := int32(c.AttemptCount + 1)
 
-	resp, err := s.executeWithRetry(ctx, c, attemptNumber)
+	resp, messageText, err := s.executeWithRetry(ctx, c, attemptNumber)
 	if err != nil {
 		log.Error("execute failed after retries, dead-lettering", logger.KeyError, err.Error())
 		dl := DeadLetter{
@@ -150,7 +150,7 @@ func (s *Scheduler) process(ctx context.Context, c claimedRecord) {
 
 	toState, reason := decideAfterExecute(c.PendingAction, outcome)
 	now := s.clock.Now()
-	if err := s.store.recordOutcome(ctx, c, toState, reason, int(attemptNumber), resp.GetCostPaise(), now); err != nil {
+	if err := s.store.recordOutcome(ctx, c, toState, reason, int(attemptNumber), resp.GetCostPaise(), messageText, now); err != nil {
 		log.Error("failed to record outcome", logger.KeyError, err.Error())
 		return
 	}
@@ -284,7 +284,10 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 	return true, final, nil
 }
 
-func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attemptNumber int32) (*executorv1.ExecuteResponse, error) {
+// executeWithRetry also returns the composed nudge text it sent ("" for a
+// non-nudge action), so process() can carry it onto the outcome audit entry
+// (docs/DEMO_READINESS.md Unit AC) without recomposing it.
+func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attemptNumber int32) (*executorv1.ExecuteResponse, string, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxExecuteAttempts; attempt++ {
 		nudge, err := s.composeMessage(ctx, c, attemptNumber)
@@ -292,7 +295,7 @@ func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attem
 			var resp *executorv1.ExecuteResponse
 			resp, err = s.clients.execute(ctx, c.RecordID, c.BatchID, c.PendingAction, attemptNumber, c.AmountPaise, c.EVScoreAtDecision, c.PRecoveryAtDecision, nudge.message, nudge.source)
 			if err == nil {
-				return resp, nil
+				return resp, nudge.message, nil
 			}
 		}
 		lastErr = err
@@ -300,11 +303,11 @@ func (s *Scheduler) executeWithRetry(ctx context.Context, c claimedRecord, attem
 			select {
 			case <-s.clock.After(executeRetryDelay):
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, "", ctx.Err()
 			}
 		}
 	}
-	return nil, lastErr
+	return nil, "", lastErr
 }
 
 // composeMessage returns the wording an Execute call for c needs, zero
