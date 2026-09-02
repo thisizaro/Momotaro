@@ -1851,3 +1851,64 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   in-flight reseeds its rolls too. Closing that needs a seed column
   alongside `GROUND_TRUTH`, not attempted here because the intended demo
   workflow seeds one batch and lets it play out before seeding the next.
+
+- 2026-09-02: **Unit AD take two, the roll key supersedes the record_id
+  keying recorded above.** The entry above describes #99, which keyed
+  `SimulateOutcome`'s draw off `hash(seed, record_id, attempt_number)`. That
+  is superseded by #104 and should not be treated as current. The reasoning
+  in it about per-record derivation beating a mutex-guarded shared stream
+  still holds and is why #104 kept the shape; what was wrong was the key.
+  `record_id` is `uuid.NewString()` at generation time in both `SeedBatch`
+  and `scripts/batchgen`, fresh every run regardless of seed, so the
+  deterministic function was never fed the same inputs twice and two
+  same-seed runs still diverged by Rs 153,632. #104 adds
+  `GROUND_TRUTH.roll_key` (migration 00007), set from
+  `(seed, ordinal index in batch)` by both writers and used by the roll
+  instead. Record ids deliberately stay random: deriving them from the seed
+  would mint identical ids for two batches seeded alike and collide on that
+  table's primary key. Rejected alternative: keying off `(batch_id, ordinal)`
+  computed at read time, which needs a second query on the hot path, where
+  `roll_key` rides along on the profile row already being fetched.
+
+- 2026-09-02: **A seed is not promised to reproduce a run end to end.**
+  Following the measurement in `docs/INCIDENTS.md` 2026-09-02, the honest
+  scope of "seeded" here is: inputs, the sealed answer key and the economics
+  reproduce exactly; the run's final totals do not. Two causes, both
+  deliberate earlier choices now in tension. `schedule.go` enforces TRAI
+  TCCCPR 2018 contact hours against the real clock, and
+  `DEMO_TIME_SCALE=300000` makes one real second about 3.5 simulated days,
+  so sub-second jitter flips whether a nudge is permitted. And
+  `LLM_SAMPLE_RATE=0.15` routes a subset to a live model. Closing either
+  gap is a real change (a virtual clock, or a deterministic-only demo mode)
+  and is not being done under hackathon time, so the claim is being narrowed
+  rather than the system changed. Do not put a reproducible rupee total on a
+  slide.
+
+- 2026-09-02: **Unit AE's forbidden-vocabulary list is derived from the
+  generated proto enum maps, with a small hand-written second tier.** Tier
+  one reads `RootCauseBucket_name`, `ActionType_name` and `RecordState_name`,
+  so a new enum value is covered as soon as protoc regenerates and nothing
+  goes stale by hand. Tier two is four literal meta words (`bucket`,
+  `root cause`, `action type`, `record state`), which is what actually leaked
+  and cannot be derived mechanically: splitting the constants on `_` also
+  yields `retry`, `action`, `risk` and `new`, all legitimate customer
+  vocabulary that this repo's own fixtures use. The validator, not the
+  prompt, is the control, consistent with 2026-08-28.
+
+- 2026-09-03: **The live socket branches on the WebSocket close code rather
+  than treating every close as failure.** The Gateway closes with
+  `StatusNormalClosure` when the upstream report stream ends, meaning the
+  batch finished, and with `StatusInternalError` otherwise. So 1000 reports
+  `complete` and deliberately does not reconnect, because nothing further can
+  arrive; anything else reconnects with backoff capped at 30s, showing amber
+  and degrading to red only after three consecutive failures while still
+  retrying. Rejected alternative: reconnecting on every close, which would
+  reopen a socket forever against a finished batch.
+
+- 2026-09-03: **The web CI job is pinned to node 24 rather than loosening
+  `npm ci` to `npm install`.** `web/package-lock.json` is npm 11's; node 20
+  ships npm 10, which resolves esbuild's optional platform packages
+  differently and rejects the lockfile outright. Keeping the lockfile
+  authoritative is the point of running it in CI, and an install that
+  silently accepts a drifting dependency tree would not have caught the
+  mismatch at all.
