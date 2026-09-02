@@ -4,6 +4,7 @@ import { Bug, Globe, Info, Play, PowerOff, RefreshCw, SlidersHorizontal } from '
 import { api, DemoControlsDisabledError, USE_MOCK } from '@/lib/api';
 import type { DemoBatchResponse, DemoInjectPoisonResponse, DemoScenario, DemoWorldResponse } from '@/types';
 import { DueCountdown } from '@/components/DueCountdown';
+import { EmptyState } from '@/components/EmptyState';
 import { ErrorBanner } from '@/components/ErrorBanner';
 import { OUTCOME_LABELS } from '@/lib/format';
 
@@ -249,7 +250,12 @@ export function DemoControlPanel({ onBatchSeeded }: Props) {
           {worldError && <ErrorBanner message={worldError} onRetry={loadWorld} />}
           {!world && !worldError && <div className="h-24 animate-pulse bg-slate-50 rounded-lg" />}
           {world && world.pending.length === 0 && (
-            <p className="text-sm text-slate-400 italic">Nothing pending right now.</p>
+            <EmptyState
+              size="inline"
+              icon={Globe}
+              title="Nothing pending right now"
+              description="No delayed retry or nudge is waiting in the World Simulator. Seed a batch, or inject an outage below, to give it something to hold."
+            />
           )}
           {world && world.pending.length > 0 && (
             <ul className="space-y-1.5 max-h-72 overflow-y-auto scrollbar-thin">

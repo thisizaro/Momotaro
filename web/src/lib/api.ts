@@ -148,6 +148,144 @@ function recordsPath(batch_id: string, page_token: string): string {
   return `/v1/batches/${batch_id}/records?${params.toString()}`;
 }
 
+/**
+ * What the live event stream is actually doing right now, honest enough for
+ * a header badge to show without lying:
+ *
+ * - `live`: open and streaming.
+ * - `reconnecting`: the connection dropped and a retry is scheduled; this is
+ *   still self-healing, so it is not a failure state.
+ * - `disconnected`: reconnecting has failed enough times in a row
+ *   (`LIVE_SOCKET_DEGRADED_AFTER_ATTEMPTS`) that "amber, still trying" would
+ *   be dishonest; retries keep happening in the background regardless.
+ * - `complete`: the server closed the socket deliberately (WebSocket close
+ *   code 1000) because the batch finished. Nothing more will ever arrive,
+ *   and this is a success, not a failure.
+ */
+export type LiveConnectionStatus = 'live' | 'reconnecting' | 'disconnected' | 'complete';
+
+/** First retry delay after a dropped connection. */
+export const LIVE_SOCKET_INITIAL_DELAY_MS = 1000;
+
+/** Backoff never waits longer than this between retries. */
+export const LIVE_SOCKET_MAX_DELAY_MS = 30000;
+
+/**
+ * Consecutive failed reconnect attempts, without a successful open in
+ * between, before the badge stops saying "reconnecting" (amber, implying
+ * "any moment now") and admits the connection is genuinely broken (red).
+ * Retries do not stop, this only changes what's reported.
+ */
+export const LIVE_SOCKET_DEGRADED_AFTER_ATTEMPTS = 3;
+
+/** Close code the Gateway's liveUpdates sends (websocket.StatusNormalClosure
+ *  in services/api-gateway/internal/httpapi/live.go) when the upstream
+ *  Reporting stream ends with io.EOF, i.e. the batch is done. Any other
+ *  close is the connection breaking, not the run finishing. */
+const WS_NORMAL_CLOSURE = 1000;
+
+export interface LiveSocketOptions {
+  onUpdate: (update: BatchUpdate) => void;
+  onStatusChange?: (status: LiveConnectionStatus) => void;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  degradedAfterAttempts?: number;
+  /** Injectable so tests can drive a fake socket instead of a real one;
+   *  defaults to the real WebSocket constructor. */
+  createSocket?: (url: string, protocols: string[]) => WebSocket;
+}
+
+/**
+ * Opens a live-updates WebSocket and keeps it open: a dropped connection is
+ * retried with exponential backoff instead of left dead (the bug this
+ * exists to fix, docs/DEMO_READINESS.md Unit AG), while a deliberate local
+ * teardown (the returned cleanup function) and a deliberate remote teardown
+ * (the batch finished) are both told apart from a broken connection rather
+ * than folded into the same "disconnected" state.
+ *
+ * The `closed` flag is the fix for the teardown race: it is set by the
+ * returned cleanup function before `ws.close()` is called, and every socket
+ * event handler checks it first. A close event that arrives after teardown
+ * (browsers deliver it asynchronously even for a locally-initiated close)
+ * is therefore a no-op instead of clobbering whatever state the caller has
+ * already moved on to.
+ */
+export function connectLiveSocket(
+  url: string,
+  protocols: string[],
+  {
+    onUpdate,
+    onStatusChange,
+    initialDelayMs = LIVE_SOCKET_INITIAL_DELAY_MS,
+    maxDelayMs = LIVE_SOCKET_MAX_DELAY_MS,
+    degradedAfterAttempts = LIVE_SOCKET_DEGRADED_AFTER_ATTEMPTS,
+    createSocket = (u, p) => new WebSocket(u, p),
+  }: LiveSocketOptions,
+): () => void {
+  let closed = false;
+  let attempt = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let ws: WebSocket | null = null;
+
+  const scheduleReconnect = () => {
+    const delay = Math.min(initialDelayMs * 2 ** (attempt - 1), maxDelayMs);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  };
+
+  const connect = () => {
+    if (closed) return;
+    ws = createSocket(url, protocols);
+
+    ws.onopen = () => {
+      if (closed) return;
+      attempt = 0;
+      onStatusChange?.('live');
+    };
+
+    // A browser always follows an error event with a close event carrying
+    // the real detail (code, wasClean); onclose below is what decides
+    // reconnect-vs-complete, so onerror deliberately reports nothing on its
+    // own to avoid a duplicate, contradictory status flip.
+    ws.onerror = () => {};
+
+    ws.onclose = (event) => {
+      if (closed) return; // local teardown already handled by the caller
+
+      if (event.code === WS_NORMAL_CLOSURE) {
+        onStatusChange?.('complete');
+        return;
+      }
+
+      attempt++;
+      onStatusChange?.(attempt > degradedAfterAttempts ? 'disconnected' : 'reconnecting');
+      scheduleReconnect();
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const update = JSON.parse(event.data) as BatchUpdate;
+        onUpdate(update);
+      } catch {
+        // ignore malformed messages
+      }
+    };
+  };
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    ws?.close();
+  };
+}
+
 export const api = {
   async getBatches(): Promise<BatchSummary[]> {
     if (USE_MOCK) return mockEngine.getBatches();
@@ -184,32 +322,17 @@ export const api = {
   subscribeToBatch(
     batch_id: string,
     onUpdate: (update: BatchUpdate) => void,
-    onConnectionChange?: (connected: boolean) => void,
+    onConnectionChange?: (status: LiveConnectionStatus) => void,
   ): () => void {
     if (USE_MOCK) {
-      onConnectionChange?.(true);
+      onConnectionChange?.('live');
       return mockEngine.subscribe(batch_id, onUpdate);
     }
 
     // Auth, closes gap 5 (API_GATEWAY.md): a WebSocket handshake cannot set
     // a custom header, so the API key is sent as a subprotocol instead.
     const wsUrl = `${API_BASE.replace(/^http/, 'ws')}/v1/batches/${batch_id}/live`;
-    const ws = new WebSocket(wsUrl, [API_KEY]);
-
-    ws.onopen = () => onConnectionChange?.(true);
-    ws.onerror = () => onConnectionChange?.(false);
-    ws.onclose = () => onConnectionChange?.(false);
-
-    ws.onmessage = (event) => {
-      try {
-        const update = JSON.parse(event.data) as BatchUpdate;
-        onUpdate(update);
-      } catch {
-        // ignore malformed messages
-      }
-    };
-
-    return () => ws.close();
+    return connectLiveSocket(wsUrl, [API_KEY], { onUpdate, onStatusChange: onConnectionChange });
   },
 
   // `/v1/demo/*` (docs/API_GATEWAY.md "Demo controls"). All four go through
