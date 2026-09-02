@@ -176,10 +176,40 @@ jobs:
           POSTGRES_DSN: postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable
           REDIS_ADDR: localhost:6379
           KAFKA_BROKERS: localhost:9092
-        # Both tags: `integration` covers the tests that need Postgres/Kafka,
-        # `e2e` covers test/e2e, which runs the real service binaries as
-        # subprocesses. Naming only one silently skips the other.
-        run: go test -race -count=1 -tags='integration e2e' ./...
+        # Run in two passes rather than one `./...`, because the two
+        # cannot safely share a database concurrently.
+        #
+        # test/e2e starts the REAL decision-engine as a subprocess, and its
+        # scheduler calls claimDue, which selects any record whose due_at
+        # has passed with no batch or record filter (store.go). That is
+        # correct for the real service and must not be narrowed to suit
+        # tests. But `go test ./...` runs packages in parallel, so e2e's
+        # live scheduler and services/decision-engine/internal/engine's
+        # integration tests raced for the same rows: whichever ticked first
+        # claimed the other's records, and the loser failed with
+        # "executor called 0 times" or "Execute was never called". That is
+        # the flake logged in docs/INCIDENTS.md 2026-09-01, which reached
+        # main on 2026-09-02.
+        #
+        # Pass 1 excludes test/e2e, so no live scheduler is running while
+        # the engine tests drive their own. Pass 2 runs test/e2e alone.
+        # Only these two are serialised; every other package still runs in
+        # parallel, unlike -p 1.
+        #
+        # Both tags still appear: `integration` covers the tests that need
+        # Postgres/Kafka, `e2e` covers test/e2e. Naming only one silently
+        # skips the other, so pass 2 asserts it actually ran tests rather
+        # than reporting a vacuous pass (docs/INCIDENTS.md 2026-08-23, where
+        # a tag mismatch made the e2e job execute nothing and still go
+        # green).
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -tags=integration $(go list ./... | grep -v '/test/e2e')
+          go test -race -count=1 -tags=e2e -v ./test/e2e/... 2>&1 | tee /tmp/e2e.log
+          grep -q '^=== RUN' /tmp/e2e.log || {
+            echo "e2e pass executed no tests, the e2e build tag is not matching"
+            exit 1
+          }
       - name: infra logs on failure
         if: failure()
         run: docker compose logs --tail=100
