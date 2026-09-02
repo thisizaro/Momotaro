@@ -94,6 +94,56 @@ func TestGetRecordAuditReturnsRecordStateAndEntries(t *testing.T) {
 	}
 }
 
+// decision_trace is attached only to the audit_entry row that actually left
+// RECORD_STATE_SCORING (docs/API_GATEWAY.md, docs/DECISIONS.md): this proves
+// the full round trip through Postgres, not just the decode function
+// (decision_trace_test.go covers decodeDecisionTrace in isolation, without a
+// database).
+func TestGetRecordAuditIncludesDecisionTraceOnlyOnTheScoringExit(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	batchID, recordID := seedRecord(ctx, t, pool)
+	seedRecordState(ctx, t, pool, recordID, "RECORD_STATE_RETRY_SCHEDULED")
+
+	trace := `{"candidates":[{"action":"ACTION_TYPE_RETRY","ev_paise":-625,"cost_paise":625,"p_recovery":0},{"action":"ACTION_TYPE_NUDGE_REMINDER","ev_paise":870.76,"cost_paise":35,"p_recovery":0.12}],"blocked":{"ACTION_TYPE_NUDGE_METHOD_UPDATE":"contact cap reached: 4 of 4 contacts used"}}`
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, source, decision_trace, actor, attempt_number, cost_paise)
+		VALUES
+		 ($1, $2, now() - interval '1 minute', 'RECORD_STATE_NEW', 'RECORD_STATE_SCORING', 'classified', 'SOURCE_RULES_FALLBACK', NULL, 'system', 0, NULL),
+		 ($1, $2, now(), 'RECORD_STATE_SCORING', 'RECORD_STATE_RETRY_SCHEDULED', 'best expected value', 'SOURCE_RULES_FALLBACK', $3, 'system', 0, NULL)
+	`, recordID, batchID, trace); err != nil {
+		t.Fatalf("seed audit_entry: %v", err)
+	}
+
+	s := New(pool)
+	resp, err := s.GetRecordAudit(ctx, &auditv1.GetRecordAuditRequest{RecordId: recordID})
+	if err != nil {
+		t.Fatalf("GetRecordAudit: %v", err)
+	}
+	if len(resp.Entries) != 2 {
+		t.Fatalf("len(Entries) = %d, want 2", len(resp.Entries))
+	}
+	if resp.Entries[0].DecisionTrace != nil {
+		t.Errorf("Entries[0].DecisionTrace = %v, want nil on the New->Scoring entry", resp.Entries[0].DecisionTrace)
+	}
+	got := resp.Entries[1].DecisionTrace
+	if got == nil {
+		t.Fatal("Entries[1].DecisionTrace = nil, want a populated trace on the Scoring-exit entry")
+	}
+	if len(got.Candidates) != 2 {
+		t.Fatalf("len(Candidates) = %d, want 2", len(got.Candidates))
+	}
+	if got.Candidates[1].Action != commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER {
+		t.Errorf("Candidates[1].Action = %v, want ACTION_TYPE_NUDGE_REMINDER", got.Candidates[1].Action)
+	}
+	if got.Candidates[1].EvPaise != 870.76 {
+		t.Errorf("Candidates[1].EvPaise = %v, want 870.76 (fractional EV preserved)", got.Candidates[1].EvPaise)
+	}
+	if reason := got.Blocked["ACTION_TYPE_NUDGE_METHOD_UPDATE"]; reason != "contact cap reached: 4 of 4 contacts used" {
+		t.Errorf("Blocked[ACTION_TYPE_NUDGE_METHOD_UPDATE] = %q, want the guardrail reason verbatim", reason)
+	}
+}
+
 func TestGetRecordAuditRecordNotFound(t *testing.T) {
 	pool := testPool(t)
 	s := New(pool)

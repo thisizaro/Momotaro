@@ -13,6 +13,7 @@ import {
 import type { RecordAuditResponse } from '@/types';
 import { ErrorBanner } from '@/components/ErrorBanner';
 import { DueCountdown } from '@/components/DueCountdown';
+import { DecisionTracePanel } from '@/components/DecisionTracePanel';
 
 const HOP_RESULT_STYLE: Record<ProviderHopResult, string> = {
   ok: 'bg-emerald-50 text-emerald-700',
@@ -154,6 +155,7 @@ export function RecordDrawer({ open, detail, loading, error, onClose, onRetry, d
                         <span className="text-xs text-slate-300 ml-auto font-mono">{formatTime(entry.ts)}</span>
                       </div>
                       <p className="text-xs text-slate-500 mt-0.5">{entry.reason}</p>
+                      <DecisionTracePanel trace={entry.decision_trace} atRiskPaise={detail.record.amount_paise} />
                       {entry.rationale && (
                         <div className="flex items-start gap-2 bg-amber-50/50 border border-amber-100 rounded-lg p-2.5 mt-1.5">
                           <Cpu className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />

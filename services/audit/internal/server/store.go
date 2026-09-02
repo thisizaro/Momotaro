@@ -70,7 +70,7 @@ func (s *store) loadCurrentState(ctx context.Context, recordID string) (commonv1
 // loadAuditEntries returns a record's full trail, oldest first.
 func (s *store) loadAuditEntries(ctx context.Context, recordID string) ([]*auditv1.AuditEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT ts, from_state, to_state, reason, rationale, source, actor, attempt_number, cost_paise, message_text, provider_hops
+		SELECT ts, from_state, to_state, reason, rationale, source, actor, attempt_number, cost_paise, message_text, provider_hops, decision_trace
 		FROM audit_entry WHERE record_id = $1 ORDER BY ts ASC, id ASC`, recordID)
 	if err != nil {
 		return nil, fmt.Errorf("query audit_entry for %s: %w", recordID, err)
@@ -81,11 +81,11 @@ func (s *store) loadAuditEntries(ctx context.Context, recordID string) ([]*audit
 	for rows.Next() {
 		var ts time.Time
 		var fromState, toState, reason string
-		var rationale, source, actor, messageText, providerHops sql.NullString
+		var rationale, source, actor, messageText, providerHops, decisionTrace sql.NullString
 		var attemptNumber sql.NullInt32
 		var costPaise sql.NullInt64
 
-		if err := rows.Scan(&ts, &fromState, &toState, &reason, &rationale, &source, &actor, &attemptNumber, &costPaise, &messageText, &providerHops); err != nil {
+		if err := rows.Scan(&ts, &fromState, &toState, &reason, &rationale, &source, &actor, &attemptNumber, &costPaise, &messageText, &providerHops, &decisionTrace); err != nil {
 			return nil, fmt.Errorf("scan audit_entry for %s: %w", recordID, err)
 		}
 
@@ -96,6 +96,16 @@ func (s *store) loadAuditEntries(ctx context.Context, recordID string) ([]*audit
 		hops, err := hopcodec.Decode(providerHops.String)
 		if err != nil {
 			return nil, fmt.Errorf("decode provider_hops for %s: %w", recordID, err)
+		}
+
+		// decision_trace is nullable: most entries never scored a decision
+		// (decodeDecisionTrace treats an empty string, what sql.NullString
+		// yields for SQL NULL, as "no trace" and returns nil rather than an
+		// empty message), so scanning into a plain string would collapse
+		// "never scored" and "scored and empty" into the same value.
+		trace, err := decodeDecisionTrace(decisionTrace.String)
+		if err != nil {
+			return nil, fmt.Errorf("decode decision_trace for %s: %w", recordID, err)
 		}
 
 		entries = append(entries, &auditv1.AuditEntry{
@@ -110,6 +120,7 @@ func (s *store) loadAuditEntries(ctx context.Context, recordID string) ([]*audit
 			CostPaise:     costPaise.Int64,
 			MessageText:   messageText.String,
 			Hops:          hops,
+			DecisionTrace: trace,
 		})
 	}
 	if err := rows.Err(); err != nil {

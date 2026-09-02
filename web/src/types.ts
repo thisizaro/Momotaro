@@ -152,6 +152,29 @@ export interface BatchRecordsResponse {
   total_count: number;
 }
 
+export interface DecisionTraceCandidate {
+  action: ActionType;
+  /**
+   * A JSON number, not integer paise: the one documented exception to Wire
+   * convention 1. A probability-weighted expectation is not money anyone
+   * holds, so it can be negative or fractional. Convert to rupees only at
+   * the display edge, with the shared formatter, never in logic.
+   */
+  ev_paise: number;
+  p_recovery: number;
+  cost_paise: number;
+}
+
+/**
+ * Mirrors audit.v1.DecisionTrace (docs/API_GATEWAY.md). `candidates` and
+ * `blocked` are each independently optional: absent, not an empty array or
+ * object, when there is nothing of that kind to show.
+ */
+export interface DecisionTrace {
+  candidates?: DecisionTraceCandidate[];
+  blocked?: Partial<Record<ActionType, string>>;
+}
+
 export interface AuditEntry {
   ts: string;
   from_state: RecordState;
@@ -164,6 +187,13 @@ export interface AuditEntry {
   cost_paise: number;
   message_text: string;
   hops: ProviderHop[];
+  /**
+   * Present only on the entry that actually compared candidate actions
+   * (docs/API_GATEWAY.md, GET /v1/records/{record_id}/audit). Absent (key
+   * missing, never null) on every other entry, same "missing key means no
+   * answer" rule as BatchReport.accuracy.
+   */
+  decision_trace?: DecisionTrace;
 }
 
 export interface AuditRecordInfo {

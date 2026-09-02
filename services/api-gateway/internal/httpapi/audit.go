@@ -31,6 +31,27 @@ type providerHopJSON struct {
 	Result   string `json:"result"`
 }
 
+// decisionTraceCandidateJSON and decisionTraceJSON mirror
+// audit.v1.DecisionTrace field for field (docs/API_GATEWAY.md, GET
+// /v1/records/{record_id}/audit). candidates and blocked are each tagged
+// omitempty: both are legitimately absent independently (an entry that
+// scored everything and blocked nothing has candidates only, one where the
+// guardrails refused everything before scoring has blocked only), the same
+// "missing means no answer" rule the doc already uses for accuracy and
+// baseline_comparison, not the zero-value-always-present rule that governs
+// every other field on this response.
+type decisionTraceCandidateJSON struct {
+	Action    string  `json:"action"`
+	EVPaise   float64 `json:"ev_paise"`
+	PRecovery float64 `json:"p_recovery"`
+	CostPaise int64   `json:"cost_paise"`
+}
+
+type decisionTraceJSON struct {
+	Candidates []decisionTraceCandidateJSON `json:"candidates,omitempty"`
+	Blocked    map[string]string            `json:"blocked,omitempty"`
+}
+
 type auditEntryJSON struct {
 	Ts            string            `json:"ts"`
 	FromState     string            `json:"from_state"`
@@ -43,6 +64,33 @@ type auditEntryJSON struct {
 	CostPaise     int64             `json:"cost_paise"`
 	MessageText   string            `json:"message_text"`
 	Hops          []providerHopJSON `json:"hops"`
+	// Pointer, tagged omitempty: present only on the entry that actually
+	// compared candidate actions, absent (key omitted, not null) on every
+	// other entry (docs/API_GATEWAY.md).
+	DecisionTrace *decisionTraceJSON `json:"decision_trace,omitempty"`
+}
+
+func toDecisionTraceJSON(t *auditv1.DecisionTrace) *decisionTraceJSON {
+	if t == nil {
+		return nil
+	}
+
+	wire := &decisionTraceJSON{}
+	if len(t.GetCandidates()) > 0 {
+		wire.Candidates = make([]decisionTraceCandidateJSON, len(t.GetCandidates()))
+		for i, c := range t.GetCandidates() {
+			wire.Candidates[i] = decisionTraceCandidateJSON{
+				Action:    c.GetAction().String(),
+				EVPaise:   c.GetEvPaise(),
+				PRecovery: c.GetPRecovery(),
+				CostPaise: c.GetCostPaise(),
+			}
+		}
+	}
+	if len(t.GetBlocked()) > 0 {
+		wire.Blocked = t.GetBlocked()
+	}
+	return wire
 }
 
 type getRecordAuditResponse struct {
@@ -82,6 +130,7 @@ func toAuditEntryJSON(e *auditv1.AuditEntry) auditEntryJSON {
 		CostPaise:     e.GetCostPaise(),
 		MessageText:   e.GetMessageText(),
 		Hops:          hops,
+		DecisionTrace: toDecisionTraceJSON(e.GetDecisionTrace()),
 	}
 }
 
