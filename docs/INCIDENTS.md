@@ -1842,3 +1842,58 @@ endpoint, it is a stand-in for a different, unpaginated one, and it will
 certify a client that is broken against the real contract. Any mock for a
 paginated endpoint needs its own default page size and its own
 `next_page_token`, not an escape hatch that returns everything at once.
+
+### 2026-09-01, `in_flight_count == 0` means "not started" as well as "finished"
+
+**Status: no code change, a note for whoever polls a batch next.** Caught
+twice in one session while verifying other work, both times producing a
+confident wrong reading.
+
+**What happened.** Verifying that a batch seeded through the new
+`POST /v1/demo/batches` route gets an accuracy score, the check polled
+`GET /v1/batches/{id}/report` until `in_flight_count` reached 0, then read the
+result. It reported `accuracy: ABSENT`, `recovered: 0`, `uneconomic: 0`, which
+looked like the route had failed to write ground truth and flatly contradicted
+the implementing agent's own measurement of 93.3%.
+
+Querying Postgres directly showed the opposite: 15 ground-truth rows, and the
+batch settled at 5 recovered, 8 closed-uneconomic, 2 escalated. Re-reading the
+same report endpoint a moment later returned `93.3% over 15 records`. The
+implementation was right and the verification was wrong.
+
+**Root cause.** `in_flight_count` is computed with
+`COUNT(*) FILTER (WHERE rs.current_state = ANY($2))` over a `LEFT JOIN` from
+`record` to `record_state`. A record that has been inserted but not yet
+consumed from `raw.events` has **no `record_state` row at all**, so it matches
+neither the in-flight states nor any terminal one. It counts in nothing.
+
+So `in_flight_count == 0` is true in two completely different situations: the
+batch has finished, and the batch has not started. Polling it as a completion
+signal reads the empty report in the gap between seeding and the first
+consumer picking the records up.
+
+**Why it matters beyond one bad check.** The same shape bit a manual
+verification of the old dashboard button earlier in the same session, where
+"records accepted, nothing processed" was initially read as the button being
+broken when the decision engine had actually crashed. Anything that polls for
+"is this batch done", a test, a script, a person watching a demo, is exposed.
+
+**How to poll correctly instead.** Compare against `total_records` rather than
+trusting a zero:
+
+```
+settled = recovered + escalated + closed_uneconomic + processing_failures
+done    = (settled + in_flight_count) == total_records && in_flight_count == 0
+```
+
+That distinguishes "no records have state yet" from "every record reached a
+terminal state". Or wait for a non-zero `in_flight_count` first, then wait for
+it to return to zero.
+
+**Not fixed in code, deliberately.** `in_flight_count` is correct for what it
+says: how many records are currently in an in-flight state. The bug is in
+treating it as a completion oracle. Adding a `started_count` or a batch-level
+status would be a contract change (`docs/API_GATEWAY.md` is frozen) for a
+problem that a correct poll already solves, so this is a note rather than a
+change. If a future unit does add batch status to the contract, this entry is
+the argument for it.
