@@ -2129,3 +2129,74 @@ arrives without checking against its own type will not surface the gap.
 Worth checking, next time a frontend union looks copied from a table in a
 doc: does the doc's table claim to be the complete value set, or just the
 complete set of one particular sub-case?
+
+## 2026-09-02: the live WebSocket had never worked, and three rounds of green tests said otherwise
+
+**Symptom.** A red "Disconnected" badge in the dashboard header on a healthy
+system. Triaged as cosmetic, estimated at one hour.
+
+**What was actually wrong, in the order it was found.**
+
+Unit AG (#101) found and fixed three real defects: `subscribeToBatch` had no
+reconnect logic at all, a clean close on batch completion was reported as a
+failure, and teardown raced with the next subscription. All three were
+genuine, all three were fixed, the unit tests passed, CI was green, and the
+badge was still red.
+
+The fourth defect was the one causing the symptom. `websocket.Accept` in
+`services/api-gateway/internal/httpapi/live.go` was called without
+`OriginPatterns`, and `coder/websocket` refuses cross-origin handshakes by
+default with **HTTP 403**, before any handler logic runs. The dashboard is
+served from `http://localhost:5173` and the Gateway listens on `:8090`, so
+every browser connection had always been rejected. Measured directly:
+
+```
+Origin: http://localhost:5173   ->  403
+Origin: http://localhost:8090   ->  101 Switching Protocols
+```
+
+Note 403, not the 401 that `offersSubprotocol` returns for a bad key. The API
+key was never the problem.
+
+**So the live event stream had never functioned in any dev or demo run**, from
+the day it was built until 2026-09-02.
+
+**Fix (#106).** `WS_ALLOWED_ORIGINS`, a config-driven origin allowlist,
+defaulting to unset which means same-origin only, so production behaviour is
+unchanged for an operator who sets nothing. Set to the dashboard origin in
+`configs/demo.env`. Verified afterwards in a real browser: 379 frames
+received in twelve seconds, badge green, feed populating with real state
+transitions.
+
+**Why three rounds of review missed it.**
+
+- **The tests exercised the state machine against a fake socket.** They
+  proved reconnect, backoff and close-code handling were correct, and they
+  were correct. Nothing tested that a handshake against the real Gateway
+  could succeed, so the fact that it never had was invisible.
+- **`live_test.go` does perform real handshakes**, but from an `httptest`
+  server, which is same-origin by construction. The one condition that fails
+  in production was the one condition the test could not reproduce.
+- **A polling loop masked it.** The dashboard refreshes report and records
+  every two seconds, so every number on screen kept moving while the stream
+  was dead. This is the same lesson as the 2026-09-01 pagination bug and is
+  now the second incident where redundancy hid the failure of the path it was
+  backing up.
+- **The reviewer (me) accepted a category error.** Having verified the three
+  defects were real and fixed, I treated the unit as done. The symptom that
+  started it, a red badge, was still present and I did not go back and check
+  the original symptom against the real system.
+
+**Lessons.**
+
+- **Fixing every defect you found is not the same as fixing the symptom.**
+  Close the loop by reproducing the original report, not by confirming your
+  own changes work.
+- **A test double cannot fail the way the real dependency fails.** Where a
+  boundary has environment-specific behaviour, origin checks, TLS, auth
+  handshakes, at least one test or one manual check must cross the real
+  boundary.
+- **Verify UI changes in a real browser against the real backend before
+  calling them done.** This is now standing practice for this repo. Every
+  frontend unit since has been checked that way, and it is how #106, the
+  drawer truncation and the timeline overplotting were all found.

@@ -27,10 +27,10 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 2 | AD | Seed the World Simulator | 2h | **partial** #99, #104 |
 | 3 | AE | LLM messages leak internal vocabulary | 2h | **done** #98 |
 | 4 | AF | Empty states: infinite skeletons when no batch | 3h | **done** #101 |
-| 5 | AG | "Disconnected" badge on a healthy system | 1h | **done** #101 |
+| 5 | AG | "Disconnected" badge on a healthy system | 1h | **done** #101, #106 |
 | **P1** | | **Built already, invisible** | **~16h** | |
-| 6 | S | Surface `decision_trace` (the "why not" table) | 4h | **done** |
-| 7 | AH | Historical timeline + real vs relative time | 6h | **done** |
+| 6 | S | Surface `decision_trace` (the "why not" table) | 4h | **done** #107 |
+| 7 | AH | Historical timeline + real vs relative time | 6h | **done** #109 |
 | 8 | AI | Confidence-based LLM routing + quota banner | 4h | |
 | 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | |
 | **P2** | | **Differentiators** | **~11h** | |
@@ -40,7 +40,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 12 | AK | `/help` page from the frozen contract | 3h | |
 | 13 | AL | Misleading labels and the confusion matrix | 2h | |
 | 14 | AM | Read-only config panel | 1h | |
-| 15 | AN | Redesign the record drawer, and show real time against simulated time | 3h | **done** |
+| 15 | AN | Redesign the record drawer, and show real time against simulated time | 3h | **done** #110 |
 | **Last** | | **Phase 8 rehearsal, non-negotiable** | **~4h** | |
 
 **Explicitly skipped**: Phase 6 load testing, Phase 7 Kubernetes, Unit T
@@ -214,7 +214,19 @@ events" and "Nothing pending" in the same undifferentiated way.
 
 ### Unit AG: the "Disconnected" badge
 
-**Resolved 2026-09-02 (#101), and it was three defects, not a label bug.**
+**Resolved 2026-09-02 (#101 and #106), and it was FOUR defects, not a label
+bug.** The fourth is the one that was actually causing the red badge, and it
+was found only by driving a real browser at the real Gateway after #101 had
+already been reviewed and merged: every handshake was rejected with HTTP 403,
+because `websocket.Accept` was called without `OriginPatterns` and
+`coder/websocket` refuses cross-origin by default. The dashboard on :5173 and
+the Gateway on :8090 are different origins, so **the live stream had never
+worked in any dev or demo run**. #106 made the allowed origins config-driven
+(`WS_ALLOWED_ORIGINS`, defaulting to same-origin so production is not
+loosened) and set it in `configs/demo.env`. See `docs/INCIDENTS.md`
+2026-09-02 for why three rounds of green tests did not catch it.
+
+The first three, all real and all worth fixing on their own:
 See `docs/INCIDENTS.md` 2026-09-02. The socket had no reconnect logic at all,
 a clean close was reported as failure, and teardown raced. The fix reads the
 Gateway's actual close code: `StatusNormalClosure` (1000) means the batch
