@@ -905,12 +905,24 @@ ordered by value per hour. Detail for each is in
 > are already built and merely invisible, which makes them the best value per
 > hour in the project.
 
-- [ ] **P0, ~10h.** AC nudge messages written to a column nothing reads (134
-      composed messages unreachable through the API); AD seed the World
-      Simulator (unseeded outcomes made one run lose to the naive baseline);
-      AE LLM messages leak internal enum names into customer copy; AF infinite
-      skeleton loaders when no batch exists; AG a red "Disconnected" badge on a
-      healthy system → `docs/DEMO_READINESS.md`
+- [x] **P0, ~10h. Complete 2026-09-02, all five units merged.** AC nudge
+      messages written to a column nothing reads (134 composed messages
+      unreachable through the API), fixed by writing `message_text` onto the
+      outcome audit entry in the same transaction (#100); AD seed the World
+      Simulator, **partially fixed** (#99, then #104): rolls now derive from
+      a `roll_key` stored on GROUND_TRUTH rather than a random uuid, and
+      generation, ground truth and economics reproduce exactly, but the TRAI
+      contact-hour guardrail on a 300000x-compressed clock plus live LLM
+      sampling still move 9 records in 100. A seed does not reproduce a run
+      end to end, see `docs/DEMO_READINESS.md` Unit AD;
+      AE LLM messages leak internal enum names into customer copy, fixed with
+      a validator built from the generated proto enum maps, not just a prompt
+      instruction (#98); AF infinite skeleton loaders when no batch exists,
+      fixed with a real three-way empty/loading/loaded state and a shared
+      `EmptyState` component (#101); AG a red "Disconnected" badge on a
+      healthy system, which turned out to be three defects rather than a
+      label bug, fixed with reconnect backoff and honest close-code handling
+      (#101) → `docs/DEMO_READINESS.md`
 - [ ] **P1, ~16h.** Unit S surface `decision_trace` (the "why not the
       alternatives" table, still the highest-value single item); AH historical
       timeline plus real-vs-relative time; AI confidence-based LLM routing with

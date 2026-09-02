@@ -1897,3 +1897,129 @@ status would be a contract change (`docs/API_GATEWAY.md` is frozen) for a
 problem that a correct poll already solves, so this is a note rather than a
 change. If a future unit does add batch status to the contract, this entry is
 the argument for it.
+
+## 2026-09-02: the live event stream had no reconnect, and a clean close read as failure
+
+**Symptom.** A red "Disconnected" badge sat in the dashboard header on a
+system that was working. It was logged as a cosmetic label bug and priced at
+one hour.
+
+**What it actually was.** Three defects in `subscribeToBatch`
+(`web/src/lib/api.ts`), found only by reading the code rather than the
+symptom:
+
+1. **No reconnection logic of any kind.** Once the WebSocket closed for any
+   reason (a service restart, a proxy idle timeout, a brief network blip) it
+   stayed closed for the life of the page. No event ever streamed again.
+2. **A normal close was reported as a failure.** The Gateway closes with
+   `websocket.StatusNormalClosure` when the upstream report stream ends,
+   i.e. when the batch finishes. `ws.onclose` fired
+   `onConnectionChange(false)` unconditionally, so a successfully completed
+   run painted a red failure indicator on itself.
+3. **A teardown race.** The cleanup called `ws.close()` and then set state
+   synchronously, but `onclose` fires asynchronously afterwards and could
+   clobber the newly selected batch's state back to disconnected.
+
+**Why nobody noticed defect 1.** A separate two-second polling loop kept
+refreshing the report and records, so the numbers on screen kept moving while
+the stream itself was dead. The dashboard looked alive. This is the
+instructive part: a redundant path masked the failure of the primary one, and
+the only visible trace was a badge everyone had learned to ignore.
+
+**Fix (#101).** Branch on the close code instead of treating every close as
+identical. 1000 means the run finished: report `complete`, do not reconnect,
+because nothing more will ever arrive. Any other code reconnects with
+exponential backoff from 1s to a 30s cap, reporting `reconnecting` (amber)
+and degrading to `disconnected` (red) only after three consecutive failures,
+while still retrying underneath so it self-heals. A `closed` flag captured in
+the closure is set before `ws.close()` and checked in every handler, so a
+late callback after teardown is a no-op. The reconnect timer is cleared on
+cleanup.
+
+**Lessons.**
+
+- **A cosmetic symptom is not evidence of a cosmetic cause.** This was
+  triaged from what it looked like. Reading the code moved it from a
+  one-hour label fix to a real reliability bug, and the estimate was wrong
+  because the diagnosis was.
+- **Redundancy hides failure.** The polling loop is worth keeping, but it
+  meant a dead stream produced no visible symptom beyond a badge. Anything
+  with a silent fallback needs its own explicit health signal.
+- **`web/` still has no CI.** No typecheck, build or test job has ever run
+  against it, which is also how the records pagination bug survived. The job
+  is committed on branch `ci/frontend-checks` and needs
+  `gh auth refresh -h github.com -s workflow` to push. Until then every
+  frontend change is verified by hand and nothing catches the next one.
+
+## 2026-09-02: Unit AD shipped twice and still did not deliver reproducibility
+
+**What was claimed.** That seeding a batch makes a run reproducible, so the
+same seed gives the same recovered total.
+
+**What was true after the first fix (#99).** Nothing measurable had changed.
+The roll derived from `hash(seed, record_id, attempt_number)`, which is a
+deterministic function, but `record_id` is `uuid.NewString()` at generation
+time, fresh every run regardless of seed. The function was never fed the same
+inputs twice. Two same-seed runs still differed by Rs 153,632.
+
+**How it passed review and CI.** The unit tests asserted that `seededRand`
+returns the same output for the same inputs. That is true, and it is not the
+claim. Nobody tested the claim actually being made, which is that two runs
+with one seed produce the same result. The reviewer (me) checked the
+concurrency design closely, because that was the hard part and it was
+correct, and did not ask whether the inputs were stable. It surfaced only
+because the user asked to verify by hand on a live stack.
+
+**Second fix (#104).** Added `GROUND_TRUTH.roll_key`, derived from
+`(seed, ordinal index in batch)` and written by both `SeedBatch` and
+`scripts/batchgen`. `SimulateOutcome` keys the roll off that. Record ids stay
+random uuids deliberately: making them deterministic would collide on the
+primary key when the same seed is used twice, which had already happened
+twice on the live stack. Proven red first: 7 of 25 ordinal positions diverged
+under an identical seed before the change.
+
+**What is still not reproducible, measured on a live stack.** Two same-seed
+runs, all 100 records compared by ordinal:
+
+```
+amounts, failure codes                      0 diffs
+hidden ground truth (p, delay, true bucket) 0 diffs
+EV score and p at decision                  0 diffs
+classification (root cause bucket)          3 diffs
+final record state                          9 diffs
+```
+
+Of the 97 records that classified identically, 8 still ended differently. The
+audit trail shows the mechanism exactly: two runs produced a byte-identical
+first decision (`nudge EV 369793 paise, p=0.0900`), both nudged, both failed,
+and then one re-scored to `no permitted action has positive expected value`
+while the other re-scored to `nudge EV 143787 paise, p=0.0350` and recovered.
+The economics did not differ. The **set of permitted actions** did.
+
+**Root cause of the residual variance.** `schedule.go` enforces TRAI TCCCPR
+2018's contact-hour window, `[10:00, 21:00)` IST, against the real clock,
+while `DEMO_TIME_SCALE=300000` makes one real second about 3.5 simulated
+days. A few hundred milliseconds of ordinary scheduler jitter therefore moves
+simulated time across the window boundary and changes whether a nudge is a
+permitted action. The remaining 3 diffs are live LLM sampling at
+`LLM_SAMPLE_RATE=0.15`.
+
+Neither is a defect introduced by #99 or #104. Both are consequences of
+earlier deliberate choices: enforce a real regulatory window, and compress
+time hard enough to finish a multi-day recovery cycle in seconds. Those two
+choices are in tension, and nothing had previously forced the tension into
+the open.
+
+**Lessons.**
+
+- **Test the claim, not the function.** A test that a pure function is pure
+  will always pass and can never fail the way the system fails. Write the
+  test at the level the promise is made: two runs, one seed, same total.
+- **Verify a headline claim on the real system before recording it as done.**
+  Both a subagent and a reviewer signed this off on green CI. One live run
+  disproved it in about five minutes.
+- **Compressed time is a correctness surface, not a demo convenience.** This
+  is the second incident caused by `DEMO_TIME_SCALE` interacting with a
+  wall-clock comparison, after the RecoveryWindow escalation on 2026-08-31.
+  Any guardrail compared against a real clock needs to be audited against the
+  scale factor, not just the ones that failed loudly.
