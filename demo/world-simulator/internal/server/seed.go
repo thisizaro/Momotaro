@@ -70,6 +70,18 @@ func (s *Server) SeedBatch(ctx context.Context, req *worldsimv1.SeedBatchRequest
 	// (docs/DEMO_READINESS.md Unit AD; see Server.randFor in server.go).
 	s.seed.Store(seed)
 
+	// Each record also gets its own roll_key below (its ordinal index in
+	// this loop, formatted as decimal digits), stored in GROUND_TRUTH and
+	// used by SimulateOutcome instead of record_id. record_id itself stays
+	// uuid.NewString(), a fresh random value every run: two batches seeded
+	// with the same seed must not mint the same record.id twice, or they
+	// collide on that table's primary key. roll_key is what makes the
+	// draw reproducible instead: the ordinal index repeats across two
+	// same-seed runs even though the id does not, so
+	// hash(seed, roll_key, attempt_number) actually gets fed the same
+	// inputs twice, which hash(seed, record_id, attempt_number) (PR #99's
+	// first pass) never did.
+
 	batchID := uuid.NewString()
 	source := fmt.Sprintf("demo:%s", preset.Name)
 	if err := s.store.insertBatch(ctx, batchID, source, count); err != nil {
@@ -96,6 +108,7 @@ func (s *Server) SeedBatch(ctx context.Context, req *worldsimv1.SeedBatchRequest
 			RecoveryProbability:    rec.RecoveryProbability,
 			WrongActionProbability: rec.WrongActionProbability,
 			ResponseDelaySeconds:   rec.ResponseDelaySeconds,
+			RollKey:                fmt.Sprintf("%d", i),
 		}); err != nil {
 			return nil, fmt.Errorf("seed record %d/%d: %w", i+1, count, err)
 		}
