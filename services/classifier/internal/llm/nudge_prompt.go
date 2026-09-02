@@ -30,7 +30,8 @@ Rules you must follow:
 - Never write a digit yourself. Wherever the amount belongs, write exactly the literal token ` + amountPlaceholder + `, nothing else. The real amount is filled in afterwards by code you do not control. Writing your own figure in a message about money is a serious failure, not a cosmetic one.
 - Do not invent a date, a name, a link, or a reference number. You may mention that the payment failed and encourage action, nothing more specific than what you were told.
 - Respect the character budget you were given. Shorter is better; an SMS that gets cut off is worse than a short one.
-- You are not deciding whether to send this message, to whom, or how many times: that has already been decided. Write only the wording.`
+- You are not deciding whether to send this message, to whom, or how many times: that has already been decided. Write only the wording.
+- The <CONTEXT> block below is internal bookkeeping, not something to describe. Never write the words "bucket", "root cause", "action type" or "record state", and never write a SCREAMING_SNAKE_CASE value like ROOT_CAUSE_BUCKET_HARD_DECLINE or ACTION_TYPE_RETRY, even though you will see exactly that text in root_cause and action below. A real person does not know we classify their payment into a bucket and must never be told that we do; describe their situation in plain words instead (say the card or bank declined it, not that a bucket is overdue).`
 
 // buildNudgePrompt renders req into the vendor-independent prompt pair.
 func buildNudgePrompt(req *classifierv1.ComposeNudgeRequest) prompt {
