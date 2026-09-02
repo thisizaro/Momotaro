@@ -11,6 +11,11 @@ Ordered by what decides whether this wins. **P0 first, top to bottom.**
 > rather than accepted on report, and merged only on green CI. Per-unit
 > resolutions are recorded under each heading below. **P1 is next**, and Unit
 > S remains the highest-value single item in the list.
+>
+> **Unit AN added 2026-09-02, done.** Not in the original list: the drawer
+> outgrew its own container carrying Unit S's decision panel plus a long
+> audit trail, and the trail had no sense of the 300000x time compression at
+> all. Detail under P1 below.
 
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
@@ -35,6 +40,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 12 | AK | `/help` page from the frozen contract | 3h | |
 | 13 | AL | Misleading labels and the confusion matrix | 2h | |
 | 14 | AM | Read-only config panel | 1h | |
+| 15 | AN | Redesign the record drawer, and show real time against simulated time | 3h | **done** |
 | **Last** | | **Phase 8 rehearsal, non-negotiable** | **~4h** | |
 
 **Explicitly skipped**: Phase 6 load testing, Phase 7 Kubernetes, Unit T
@@ -387,6 +393,56 @@ Then make the absence explanatory rather than empty: for a production-sourced
 batch the report says plainly that live traffic has no answer key, which is
 precisely why the seeded batch exists alongside it. Two modes that explain each
 other.
+
+### Unit AN: redesign the record drawer, and show real time against simulated time
+
+**Done, 2026-09-02.** Added after the rest of this list was written: a judge
+opens one record and reads it, and the drawer carrying that read had grown
+past the container it was given before it carried anything.
+
+**Congestion had a concrete cause, not a vague one.** The drawer was
+`max-w-lg` (512px), sized before it carried Unit S's three-column decision
+panel, composed Hinglish message quotes, and an audit trail that can run to
+a dozen entries. Widened to `max-w-3xl` (768px), which is roomy enough that
+the decision panel's blocked-action labels (`Nudge (Update Method)`) no
+longer need to truncate; the panel's own label column moved from
+`minmax(0,7rem)` to `minmax(0,11rem)` to use the room, the only change made
+inside `DecisionTracePanel`, which otherwise keeps its approved internals:
+ranked candidates, winner marked by value, blocked actions in their own
+section. The header (record id, amount, current state) is now sticky
+(`flex flex-col` outer panel, only the trail body scrolls) so scrolling a
+long trail never loses what record is on screen. The trail itself gained a
+real spine: one continuous line down the left edge with a node per entry
+coloured by `to_state` via the same `STATE_FILL` palette `DonutChart` and
+the historical timeline already use, and each entry is its own bounded
+`.card`, so a dozen entries read as one journey through states rather than
+a stack of look-alike blocks. Repetitive metadata (`actor`, almost always
+"system"; `source`, `SOURCE_UNSPECIFIED` on most entries since most are
+plain state transitions with no composed message) is now quiet, small,
+muted text, while the two sources that actually vary, `SOURCE_LLM` and
+`SOURCE_RULES_FALLBACK`, get a small coloured badge, so which rung answered
+is visible rather than buried in a dozen identical lines. Along the way,
+`web/src/types.ts`'s `Source` type turned out to be missing
+`SOURCE_UNSPECIFIED`, the enum's real zero value and the one most entries
+actually carry on the wire (`docs/INCIDENTS.md` 2026-09-02); fixed as a
+frontend-only type correction, no backend or wire change.
+
+**Time compression is now shown per entry, not left implicit.** Each audit
+entry already carried a real timestamp; it now also shows what that instant
+represents in the 7-day recovery window (`formatSimulatedElapsed`, the same
+function and phrasing Unit AH's timeline axis already uses, so the two
+surfaces agree) and, for every entry after the first, the elapsed gap since
+the previous one in both real and simulated terms
+(`+2.3s real, +8 days simulated`), which is the genuinely useful number when
+reading a trail compressed 300000x. The gap math is new
+(`formatSimulatedGap` in `web/src/lib/demoTime.ts`), test-driven with
+hand-checkable values against `DEMO_TIME_SCALE=300000` before it was
+implemented, and reuses `simulatedElapsedMs`/`DEMO_TIME_SCALE` rather than
+a second hardcoded constant. Full reasoning in `docs/DECISIONS.md`
+2026-09-02.
+
+No backend change was needed: `audit_entry.ts` already carried real
+timestamps and the drawer already received them.
 
 ---
 

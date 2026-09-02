@@ -65,3 +65,34 @@ export function formatSimulatedElapsed(realElapsedMs: number): string {
   const simMinutes = Math.round(simMs / MS_PER_MINUTE);
   return `${simMinutes} min into the ${RECOVERY_WINDOW_DAYS}-day recovery window`;
 }
+
+function pluralize(value: number, unit: string): string {
+  return `${value} ${unit}${value === 1 ? '' : 's'}`;
+}
+
+/**
+ * Renders the simulated equivalent of a real elapsed GAP between two audit
+ * trail entries, e.g. "8 days" or "1 hour" or "5 min". Unlike
+ * formatSimulatedElapsed, this is not framed as a position in the 7-day
+ * recovery window ("day N of..."), because a gap between two entries is a
+ * duration, not a point in time; RecordDrawer composes it with the real-time
+ * equivalent (`+2.3s real, +8 days simulated`), which is the actually
+ * useful figure when reading a trail compressed by DEMO_TIME_SCALE
+ * (docs/DEMO_READINESS.md Unit AN). Shares the same day/hour rounding as
+ * formatSimulatedElapsed so the two surfaces never disagree about which
+ * side of a boundary a value falls on.
+ */
+export function formatSimulatedGap(realElapsedMs: number): string {
+  const simMs = simulatedElapsedMs(realElapsedMs);
+  const simDays = simMs / MS_PER_DAY;
+  if (simDays >= 1) {
+    const decimals = simDays < 10 ? 1 : 0;
+    return pluralize(Number(simDays.toFixed(decimals)), 'day');
+  }
+  const simHours = simMs / MS_PER_HOUR;
+  if (simHours >= 1) {
+    return pluralize(Math.round(simHours), 'hour');
+  }
+  const simMinutes = Math.round(simMs / MS_PER_MINUTE);
+  return `${simMinutes} min`;
+}

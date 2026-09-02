@@ -944,6 +944,22 @@ ordered by value per hour. Detail for each is in
       a quota-exhausted banner; AJ live production stream via a webhook CLI,
       which fills the dead event panel and makes the no-answer-key distinction
       explanatory → `docs/DEMO_READINESS.md`
+- [x] **[FRONTEND] Unit AN: redesign the record drawer, show real time
+      against simulated time.** Added after the rest of Phase 5.6 was
+      planned. Widened `max-w-lg` (512px) to `max-w-3xl` (768px), the
+      container Unit S's decision panel and the audit trail had already
+      outgrown; sticky header so a long trail never scrolls the record id,
+      amount and state out of view; the trail redrawn with a real spine,
+      one line with a node per entry coloured by `to_state`; repetitive
+      metadata (`actor`, `source: SOURCE_UNSPECIFIED`) demoted to quiet
+      text while the two sources that vary, `SOURCE_LLM` and
+      `SOURCE_RULES_FALLBACK`, get a small badge. Each entry now also shows
+      what its timestamp represents in the 7-day recovery window and the
+      elapsed gap since the previous entry in both real and simulated
+      terms, reusing `web/src/lib/demoTime.ts` (Unit AH) rather than a
+      second implementation, with a new `formatSimulatedGap` function
+      added test-first. No backend change → `docs/DEMO_READINESS.md` Unit
+      AN, `docs/DECISIONS.md` 2026-09-02.
 - [ ] **P2, ~11h.** Unit Y Razorpay payment-downtime webhooks; Unit Z real
       webhook payload, signature verification and the four-field error
       taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`, `docs/DEMO_READINESS.md`

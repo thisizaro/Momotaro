@@ -2046,3 +2046,70 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   test against a fake gRPC client and was run both red (before the mapping
   code existed) and green (after), the same TDD proof available for every
   other layer in this unit.
+
+- 2026-09-02: **The record drawer widened from `max-w-lg` (512px) to
+  `max-w-3xl` (768px) rather than a narrower estimate, judged against the
+  content rather than picked in advance (Unit AN).** 512px was sized before
+  the drawer carried Unit S's three-column decision panel, a composed
+  Hinglish message quote, and an audit trail that can run to a dozen
+  entries; at that width the decision panel's numeric columns cramped and
+  its blocked-action labels truncated (`Nudge (Update ...)`). 768px was
+  checked against the actual widest realistic content, `Nudge (Update
+  Method)` in the blocked-actions list, rather than assumed sufficient:
+  `DecisionTracePanel`'s blocked-row label column moved from
+  `minmax(0,7rem)` to `minmax(0,11rem)` to use the extra room, the one
+  change made inside that component. Its approved internals (ranked
+  candidates by EV, winner marked by value not row position, blocked
+  actions in their own section) were left untouched, as scoped.
+
+- 2026-09-02: **The record drawer's per-entry time presentation composes
+  three figures rather than adding a fourth line of the timeline's own
+  absolute-position phrasing (Unit AN).** Every entry already showed the
+  real timestamp (`formatTime`, unchanged). Added: what that instant
+  represents in the 7-day recovery window, using `formatSimulatedElapsed`
+  unmodified, the exact function and phrasing `HistoryTimeline`'s axis
+  already uses, so a judge reading both surfaces never sees them disagree;
+  and, for every entry after the trail's first, the elapsed gap since the
+  previous entry in both real and simulated terms
+  (`+2.3s real, +8 days simulated`), which the unit brief called "the
+  genuinely useful number when reading a trail" and which
+  `formatSimulatedElapsed`'s own window-relative framing does not answer
+  (`day 3.5 of the 7-day recovery window` says where an instant sits, not
+  how far apart two instants are). A new function,
+  `formatSimulatedGap` in `web/src/lib/demoTime.ts`, covers the second
+  case: same day/hour/minute rounding as `formatSimulatedElapsed` so the
+  two never disagree about which side of a boundary a value falls on, but
+  phrased as a plain duration ("8 days") rather than a window position,
+  since a gap between two entries is not itself a point in the window.
+  Built test-first against hand-checkable values keyed to
+  `DEMO_TIME_SCALE=300000`, the same discipline `formatSimulatedElapsed`'s
+  own tests already used, before any drawer code read it. It reuses
+  `simulatedElapsedMs`/`DEMO_TIME_SCALE` from the existing module rather
+  than a second hardcoded scale constant. The trail's own first entry has
+  no previous entry to gap against, so it shows the position line alone;
+  a zero-entry trail renders an explicit empty state instead of an empty
+  spine.
+
+- 2026-09-02: **Repetitive audit-entry metadata is demoted by contrast, not
+  removed, and only two `Source` values are promoted to a badge (Unit
+  AN).** `actor` (almost always `"system"`) and `source` on most entries
+  (`SOURCE_UNSPECIFIED`, since most audit entries are plain state
+  transitions with no composed message at all) render as small, low-contrast
+  text, same information, lower visual weight. `SOURCE_LLM` and
+  `SOURCE_RULES_FALLBACK`, the two values that actually vary entry to entry
+  and answer "which rung answered", get a small coloured badge instead,
+  reusing colours already in the app's vocabulary (amber, already used for
+  the LLM rationale block's `Cpu` icon; blue, already used for the
+  retry/deterministic states) rather than introducing a new hue.
+
+- 2026-09-02: **`web/src/types.ts`'s `Source` type gained a fourth value,
+  `SOURCE_UNSPECIFIED`, a frontend-only correction (Unit AN).**
+  `common.v1.Source`'s zero value was missing from the type even though
+  `api-gateway`'s `audit.go` renders it (`e.GetSource().String()`) on every
+  audit entry that never set a source, which is most entries in a trail.
+  `docs/API_GATEWAY.md` documents only the 3 values a composed message
+  actually carries and was left untouched, since it is the frozen wire
+  contract for shape, not an enumeration of which existing enum values are
+  a "real" answer versus a default; the type fix is additive, matches
+  `common.proto`'s actual 4-value enum, and needed no backend or wire
+  change. See `docs/INCIDENTS.md` 2026-09-02.
