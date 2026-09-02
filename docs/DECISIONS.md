@@ -1827,3 +1827,27 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   `recordRescore` instead, which still has no `message_text`; left alone
   since the measured defect and the demo beat are both about the sent
   message, not the failed one.
+- 2026-09-02: **Unit AD, World Simulator's outcome rolls seeded per-record,
+  not via a shared sequential stream.** `scripts/batchgen` and SeedBatch
+  were already seeded for record generation; the unseeded part was
+  `SimulateOutcome`'s Bernoulli roll (`rand.go`'s `randSource`,
+  auto-seeded `math/rand/v2` globals, one shared draw sequence across every
+  concurrent gRPC call). A mutex-guarded `*rand.Rand` would still be
+  nondeterministic in the sense that matters: which record consumes which
+  draw from the stream depends on goroutine scheduling order, not on the
+  request. Instead, each roll derives from `hash(seed, record_id,
+  attempt_number)` (`seededRand` in `rand.go`), so a record's own roll is
+  reproducible independent of concurrency, ordering, or what else was in
+  flight. The seed itself lives on `Server` as an `atomic.Int64`
+  (`server.go`'s `randFor`), set once by `SeedBatch` (`seed.go`) from the
+  same seed already threaded through `POST /v1/demo/batches`, so one seed
+  reproduces both the generated batch and its outcome rolls. Before any
+  batch is seeded through that RPC, `s.seed` is zero and every roll falls
+  through to the old unseeded `realRand{}`, so `scripts/batchgen` and
+  anything writing straight to Postgres are unaffected, matching
+  `docs/DEMO_READINESS.md`'s "keep unseeded as the default."
+  Known gap, accepted rather than fixed: `s.seed` is server-wide, not
+  per-batch, so seeding a second batch while an earlier one is still
+  in-flight reseeds its rolls too. Closing that needs a seed column
+  alongside `GROUND_TRUTH`, not attempted here because the intended demo
+  workflow seeds one batch and lets it play out before seeding the next.

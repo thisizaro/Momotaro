@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -28,6 +29,10 @@ type Server struct {
 	store *store
 	queue *queue
 	rng   randSource
+	// seed is 0 until SeedBatch (POST /v1/demo/batches) resolves one; see
+	// randFor below. atomic because SeedBatch writes it from one gRPC call
+	// while SimulateOutcome reads it from many others, concurrently.
+	seed  atomic.Int64
 	clock clock.Clock
 	// scale applies config.Common.Scale: every wall-clock delay in this
 	// service goes through it, so DEMO_TIME_SCALE compresses a nudge's
@@ -60,6 +65,32 @@ func New(pool *pgxpkg.Pool, redisClient *redis.Client, clk clock.Clock, scale fu
 	}
 }
 
+// randFor returns the draw source for one record's one outcome roll.
+// Before any batch has been seeded through SeedBatch, s.seed is still its
+// zero value and every call falls through to s.rng, realRand{} in
+// production: exactly the unseeded behaviour this had before Unit AD, so
+// scripts/batchgen and any record written straight into Postgres are
+// unaffected. Once SeedBatch has resolved a seed
+// (docs/DEMO_READINESS.md Unit AD; POST /v1/demo/batches's seed, echoed
+// back on the response even when auto-picked), every subsequent roll for
+// any record derives from it instead, so the whole run, batch generation
+// and outcome rolls together, reproduces from that one seed. See rand.go's
+// seededRand for why the derivation is per-record rather than a shared
+// sequential stream.
+//
+// One known gap: seeding a second batch overwrites s.seed, so rolls for a
+// still-in-flight earlier batch would then derive from the new seed
+// instead of the one they started under. Acceptable for a DEMO ONLY
+// component whose intended usage is one seeded batch played out at a time
+// (docs/DECISIONS.md 2026-09-02); a per-batch seed stored alongside
+// GROUND_TRUTH would close it if that ever becomes a real workflow.
+func (s *Server) randFor(recordID string, attemptNumber int32) randSource {
+	if seed := s.seed.Load(); seed != 0 {
+		return seededRand{seed: seed, recordID: recordID, attemptNumber: attemptNumber}
+	}
+	return s.rng
+}
+
 // SimulateOutcome rolls the record's hidden recoverability profile against
 // action. A retry (or any other synchronous action) answers immediately.
 // A nudge with a nonzero response delay answers PENDING and schedules the
@@ -82,7 +113,7 @@ func (s *Server) SimulateOutcome(ctx context.Context, req *worldsimv1.SimulateOu
 		return nil, err
 	}
 
-	success := rollOutcome(s.rng, action, rp.Profile)
+	success := rollOutcome(s.randFor(recordID, req.GetAttemptNumber()), action, rp.Profile)
 	scaledDelay := s.scale(time.Duration(rp.Profile.ResponseDelaySeconds) * time.Second)
 
 	if isNudge(action) && scaledDelay > 0 {
