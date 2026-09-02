@@ -25,7 +25,7 @@ func (realRand) Float64() float64 { return rand.Float64() }
 
 // seededRand is the seeded source, once POST /v1/demo/batches has resolved
 // a seed (Server.randFor). Its Float64 derives one deterministic draw from
-// a batch seed, a record id and an attempt number, rather than advancing a
+// a batch seed, a roll key and an attempt number, rather than advancing a
 // shared PRNG sequence.
 //
 // SimulateOutcome runs behind gRPC, so calls for different records
@@ -36,12 +36,21 @@ func (realRand) Float64() float64 { return rand.Float64() }
 // seed would then roll the same set of outcomes but hand them to
 // different records depending on timing, which is not reproducible in any
 // sense that matters for a demo. Keying the draw off
-// (seed, record_id, attempt_number) instead makes every record's roll
+// (seed, roll_key, attempt_number) instead makes every record's roll
 // reproducible on its own terms: replaying the same seed against the same
-// record and attempt always produces the same draw, no matter what else
+// roll key and attempt always produces the same draw, no matter what else
 // was in flight, or in what order, when it happened. That is the only
 // form of "seeded" that survives concurrency, which is why it is used
 // here instead of a mutex-guarded *rand.Rand.
+//
+// rollKey is deliberately not the record's own id. A record's id must stay
+// a fresh uuid.NewString() every run, or two batches seeded with the same
+// seed would mint the identical id twice and collide on GROUND_TRUTH's
+// primary key. rollKey is instead a value SeedBatch chooses at generation
+// time from (seed, ordinal index within the batch) and stores in
+// GROUND_TRUTH (docs/DEMO_READINESS.md Unit AD, seed.go), so it is the one
+// that actually repeats, by construction, across two runs of the same
+// seed -- which is the entire point of "seeded" here.
 //
 // Each value is used for exactly one Float64() call in production
 // (rollOutcome rolls a single Bernoulli trial per SimulateOutcome), so
@@ -49,16 +58,17 @@ func (realRand) Float64() float64 { return rand.Float64() }
 // discards its own generator, which needs no mutex.
 type seededRand struct {
 	seed          int64
-	recordID      string
+	rollKey       string
 	attemptNumber int32
 }
 
 func (s seededRand) Float64() float64 {
 	h := fnv.New128a()
-	// ":" never appears in a UUID record_id or a formatted int64, so this
-	// is a safe, simple delimiter (same reasoning queue.go's
+	// ":" never appears in a roll key (decimal digits, or a UUID
+	// record_id on the pre-migration fallback path) or a formatted int64,
+	// so this is a safe, simple delimiter (same reasoning queue.go's
 	// delayedOutcome.member gives for its own use of ':').
-	fmt.Fprintf(h, "%d:%s:%d", s.seed, s.recordID, s.attemptNumber)
+	fmt.Fprintf(h, "%d:%s:%d", s.seed, s.rollKey, s.attemptNumber)
 	sum := h.Sum(nil)
 	seed1 := binary.BigEndian.Uint64(sum[0:8])
 	seed2 := binary.BigEndian.Uint64(sum[8:16])

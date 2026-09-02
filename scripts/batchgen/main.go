@@ -99,10 +99,19 @@ func main() {
 		); err != nil {
 			log.Fatalf("insert record %d: %v", i, err)
 		}
+		// roll_key is the loop's own ordinal index, formatted as decimal
+		// digits, exactly what SeedBatch's own loop uses
+		// (demo/world-simulator/internal/server/seed.go). World Simulator's
+		// SimulateOutcome keys its outcome roll off this rather than
+		// record_id (docs/DEMO_READINESS.md Unit AD): record_id must stay a
+		// fresh uuid every run, but roll_key is what makes the roll
+		// reproducible from -seed, so this tool has to write the same value
+		// SeedBatch does to keep a batchgen-seeded batch's rolls reproducible
+		// too, not just its record shape.
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
-			VALUES ($1, $2, $3, $4, $5)`,
-			recordID, rec.TrueBucket.String(), rec.RecoveryProbability, rec.WrongActionProbability, rec.ResponseDelaySeconds,
+			INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds, roll_key)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			recordID, rec.TrueBucket.String(), rec.RecoveryProbability, rec.WrongActionProbability, rec.ResponseDelaySeconds, fmt.Sprintf("%d", i),
 		); err != nil {
 			log.Fatalf("insert ground_truth %d: %v", i, err)
 		}

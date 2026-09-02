@@ -42,6 +42,12 @@ var errNoGroundTruth = errors.New("no ground truth for record")
 type recordProfile struct {
 	FailureCode string
 	Profile     groundTruthProfile
+	// RollKey is what SimulateOutcome now keys its roll off (see rand.go's
+	// seededRand), instead of the record's own id. Set at generation time
+	// from (seed, ordinal index within the batch) by SeedBatch and
+	// scripts/batchgen; empty for any row written before migration 00007,
+	// which the caller falls back to record_id for.
+	RollKey string
 }
 
 func (s *store) loadRecordProfile(ctx context.Context, recordID string) (recordProfile, error) {
@@ -50,11 +56,11 @@ func (s *store) loadRecordProfile(ctx context.Context, recordID string) (recordP
 		trueBucket string
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT r.failure_code, gt.true_bucket, gt.recovery_probability, gt.wrong_action_probability, gt.response_delay_seconds
+		SELECT r.failure_code, gt.true_bucket, gt.recovery_probability, gt.wrong_action_probability, gt.response_delay_seconds, gt.roll_key
 		FROM record r
 		JOIN ground_truth gt ON gt.record_id = r.id
 		WHERE r.id = $1`, recordID,
-	).Scan(&rp.FailureCode, &trueBucket, &rp.Profile.RecoveryProbability, &rp.Profile.WrongActionProbability, &rp.Profile.ResponseDelaySeconds)
+	).Scan(&rp.FailureCode, &trueBucket, &rp.Profile.RecoveryProbability, &rp.Profile.WrongActionProbability, &rp.Profile.ResponseDelaySeconds, &rp.RollKey)
 	if err != nil {
 		if errors.Is(err, pgxpkg.ErrNoRows) {
 			return recordProfile{}, fmt.Errorf("%w: %s", errNoGroundTruth, recordID)
@@ -91,6 +97,13 @@ type seedRecord struct {
 	RecoveryProbability    float64
 	WrongActionProbability float64
 	ResponseDelaySeconds   int32
+	// RollKey is the value SimulateOutcome's roll derives from instead of
+	// RecordID (docs/DEMO_READINESS.md Unit AD). SeedBatch sets this to the
+	// record's ordinal index within the batch, formatted as decimal
+	// digits: reproducible across two batches seeded with the same seed,
+	// unlike RecordID, which must stay a fresh uuid on every run so two
+	// same-seed batches never collide on this table's primary key.
+	RollKey string
 }
 
 // insertSeedRecord writes r's RECORD row and its GROUND_TRUTH row, mirroring
@@ -106,9 +119,9 @@ func (s *store) insertSeedRecord(ctx context.Context, r seedRecord) error {
 		return fmt.Errorf("insert record %s: %w", r.RecordID, err)
 	}
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds)
-		VALUES ($1, $2, $3, $4, $5)`,
-		r.RecordID, r.TrueBucket, r.RecoveryProbability, r.WrongActionProbability, r.ResponseDelaySeconds,
+		INSERT INTO ground_truth (record_id, true_bucket, recovery_probability, wrong_action_probability, response_delay_seconds, roll_key)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		r.RecordID, r.TrueBucket, r.RecoveryProbability, r.WrongActionProbability, r.ResponseDelaySeconds, r.RollKey,
 	); err != nil {
 		return fmt.Errorf("insert ground_truth %s: %w", r.RecordID, err)
 	}

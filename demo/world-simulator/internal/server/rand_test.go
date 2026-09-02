@@ -8,30 +8,30 @@ import "testing"
 // with no Postgres/Redis, since neither depends on store or queue.
 
 func TestSeededRandIsDeterministicForTheSameInputs(t *testing.T) {
-	a := seededRand{seed: 42, recordID: "rec-1", attemptNumber: 1}
-	b := seededRand{seed: 42, recordID: "rec-1", attemptNumber: 1}
+	a := seededRand{seed: 42, rollKey: "rec-1", attemptNumber: 1}
+	b := seededRand{seed: 42, rollKey: "rec-1", attemptNumber: 1}
 	if a.Float64() != b.Float64() {
-		t.Error("same seed, record_id and attempt_number: want identical draws, got different")
+		t.Error("same seed, roll key and attempt_number: want identical draws, got different")
 	}
 }
 
 func TestSeededRandDrawsDifferForDifferentInputs(t *testing.T) {
-	base := seededRand{seed: 42, recordID: "rec-1", attemptNumber: 1}.Float64()
+	base := seededRand{seed: 42, rollKey: "rec-1", attemptNumber: 1}.Float64()
 
-	if got := (seededRand{seed: 43, recordID: "rec-1", attemptNumber: 1}).Float64(); got == base {
+	if got := (seededRand{seed: 43, rollKey: "rec-1", attemptNumber: 1}).Float64(); got == base {
 		t.Error("different seed: want a different draw, got the same")
 	}
-	if got := (seededRand{seed: 42, recordID: "rec-2", attemptNumber: 1}).Float64(); got == base {
-		t.Error("different record_id: want a different draw, got the same")
+	if got := (seededRand{seed: 42, rollKey: "rec-2", attemptNumber: 1}).Float64(); got == base {
+		t.Error("different roll key: want a different draw, got the same")
 	}
-	if got := (seededRand{seed: 42, recordID: "rec-1", attemptNumber: 2}).Float64(); got == base {
+	if got := (seededRand{seed: 42, rollKey: "rec-1", attemptNumber: 2}).Float64(); got == base {
 		t.Error("different attempt_number: want a different draw, got the same")
 	}
 }
 
 func TestSeededRandDrawIsInTheUnitInterval(t *testing.T) {
 	for i := int64(0); i < 500; i++ {
-		f := (seededRand{seed: i, recordID: "rec", attemptNumber: 1}).Float64()
+		f := (seededRand{seed: i, rollKey: "rec", attemptNumber: 1}).Float64()
 		if f < 0 || f >= 1 {
 			t.Fatalf("seed %d: Float64() = %v, want [0,1)", i, f)
 		}
@@ -43,7 +43,7 @@ func TestSeededRandDrawIsInTheUnitInterval(t *testing.T) {
 // records' rolls happen concurrently, and a shared sequential stream
 // (even mutex-guarded) would make the result depend on goroutine
 // scheduling order rather than on the request. Deriving each draw from
-// (seed, record_id, attempt_number) alone means running the same set of
+// (seed, roll_key, attempt_number) alone means running the same set of
 // draws twice, in two different concurrent orders, produces the exact
 // same per-record results both times.
 func TestSeededRandIsDeterministicUnderConcurrentDraws(t *testing.T) {
@@ -58,7 +58,7 @@ func TestSeededRandIsDeterministicUnderConcurrentDraws(t *testing.T) {
 		out := make(chan result, len(recordIDs))
 		for _, id := range recordIDs {
 			go func(id string) {
-				out <- result{id, (seededRand{seed: seed, recordID: id, attemptNumber: 3}).Float64()}
+				out <- result{id, (seededRand{seed: seed, rollKey: id, attemptNumber: 3}).Float64()}
 			}(id)
 		}
 		m := make(map[string]float64, len(recordIDs))
@@ -92,7 +92,7 @@ func TestServerRandForUsesSeededDerivationOnceSeeded(t *testing.T) {
 	s := &Server{rng: fixedRand(0.99)}
 	s.seed.Store(42)
 
-	want := (seededRand{seed: 42, recordID: "rec-1", attemptNumber: 1}).Float64()
+	want := (seededRand{seed: 42, rollKey: "rec-1", attemptNumber: 1}).Float64()
 	if got := s.randFor("rec-1", 1).Float64(); got != want {
 		t.Errorf("randFor once seeded = %v, want %v (seededRand's own derivation)", got, want)
 	}

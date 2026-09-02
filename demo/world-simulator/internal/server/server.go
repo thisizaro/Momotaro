@@ -78,15 +78,26 @@ func New(pool *pgxpkg.Pool, redisClient *redis.Client, clk clock.Clock, scale fu
 // seededRand for why the derivation is per-record rather than a shared
 // sequential stream.
 //
+// rollKey, not the record's own id: SimulateOutcome passes rp.RollKey
+// (loaded from GROUND_TRUTH, see recordProfile in store.go), a value
+// SeedBatch chose from (seed, ordinal index) at generation time, which is
+// what actually repeats across two batches seeded with the same seed.
+// record_id itself is a fresh uuid.NewString() every run, on purpose --
+// two same-seed batches must not mint the same one twice, or they collide
+// on GROUND_TRUTH's primary key -- so keying the roll off record_id
+// (PR #99's first pass) fed seededRand a different input every run even
+// though the seed matched, and the "deterministic function of its inputs"
+// never actually got the same inputs twice.
+//
 // One known gap: seeding a second batch overwrites s.seed, so rolls for a
 // still-in-flight earlier batch would then derive from the new seed
 // instead of the one they started under. Acceptable for a DEMO ONLY
 // component whose intended usage is one seeded batch played out at a time
 // (docs/DECISIONS.md 2026-09-02); a per-batch seed stored alongside
 // GROUND_TRUTH would close it if that ever becomes a real workflow.
-func (s *Server) randFor(recordID string, attemptNumber int32) randSource {
+func (s *Server) randFor(rollKey string, attemptNumber int32) randSource {
 	if seed := s.seed.Load(); seed != 0 {
-		return seededRand{seed: seed, recordID: recordID, attemptNumber: attemptNumber}
+		return seededRand{seed: seed, rollKey: rollKey, attemptNumber: attemptNumber}
 	}
 	return s.rng
 }
@@ -113,7 +124,15 @@ func (s *Server) SimulateOutcome(ctx context.Context, req *worldsimv1.SimulateOu
 		return nil, err
 	}
 
-	success := rollOutcome(s.randFor(recordID, req.GetAttemptNumber()), action, rp.Profile)
+	// rp.RollKey is empty only for a GROUND_TRUTH row written before
+	// migration 00007 added the column; recordID is a safe fallback there
+	// (the old, unfixed behaviour), never a problem in the unseeded case
+	// since randFor ignores its argument entirely when s.seed is 0.
+	rollKey := rp.RollKey
+	if rollKey == "" {
+		rollKey = recordID
+	}
+	success := rollOutcome(s.randFor(rollKey, req.GetAttemptNumber()), action, rp.Profile)
 	scaledDelay := s.scale(time.Duration(rp.Profile.ResponseDelaySeconds) * time.Second)
 
 	if isNudge(action) && scaledDelay > 0 {
