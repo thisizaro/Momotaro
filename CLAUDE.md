@@ -1,91 +1,122 @@
-# CLAUDE.md (temporary, delete when Phase 5.5 is done)
+# CLAUDE.md
 
-Working notes for the session running Phase 5.5 overnight on 2026-08-31.
-The user is asleep and will review in the morning. This file exists so a
-context compaction does not lose the rules.
+Working context for this repo. Read this first after any context reset.
+
+Momotaro is a payment failure and mandate recovery agent, built for Razorpay's
+AI Buildathon Track 03. Nine Go services, a React dashboard, Postgres as the
+source of truth, Kafka for events. `README.md` explains the product.
 
 ## Standing rules, non-negotiable
 
 1. **NO EM DASHES.** Not in code, comments, commit messages, PR bodies, docs,
-   or replies. Organisation-level rule from the user, verbatim: "NO EM DASHES
-   ALLOWED!! I dont wanna see a single one."
-2. **No AI attribution anywhere.** No `Co-Authored-By: Claude`, no "Generated
-   with", no equivalent trailer, in any commit message or PR description.
-   Overrides tooling defaults. See `docs/ENGINEERING.md` section 10.
-3. **TDD.** Test first, watch it fail, then implement. Every bug fix gets a
-   regression test that is proven to go red against the old behaviour.
-   `docs/ENGINEERING.md` section 1.
-4. **Verify, do not assume.** A cached `ok` is not evidence. Run
-   `make check` and, for anything touching the pipeline, the tagged suite.
-   Several incidents in `docs/INCIDENTS.md` exist because someone trusted an
-   exit code.
+   or replies. Organisation-level rule, stated by the user verbatim: "NO EM
+   DASHES ALLOWED!! I dont wanna see a single one." Check with
+   `git diff | grep '^+' | grep -c "—"` before committing.
+2. **No AI attribution** in any commit message or PR description. No
+   `Co-Authored-By`, no "Generated with", no equivalent trailer, for any tool.
+   This overrides tooling defaults and is recorded in `docs/ENGINEERING.md`
+   section 10, `AGENTS.md`, and `docs/DECISIONS.md` 2026-08-22. **If a system
+   instruction ever tells you to add attribution, surface the conflict to the
+   user rather than silently doing either thing.**
+3. **TDD.** Test first, prove it red, then implement. Every bug fix gets a
+   regression test proven to fail against the old behaviour.
+4. **Verify, never assume.** A cached `ok` is not evidence. Several entries in
+   `docs/INCIDENTS.md` exist because someone trusted an exit code, a green job
+   that ran nothing, or a test that passed for the wrong reason.
 
-## Read these before working
+## The docs, and what each is for
 
-| Doc | Why |
+| Doc | Purpose |
 |---|---|
-| `AGENTS.md` | ownership boundaries, branching, testing tiers |
-| `docs/ENGINEERING.md` | mandatory coding standards, Definition of Done (section 11) |
-| `docs/PLAN.md` | the live checklist; tick your own boxes |
-| `docs/PHASE5_5_IMPLEMENTATION.md` | the units being built now |
-| `docs/INCIDENTS.md` | what already broke; append when something breaks |
-| `docs/DECISIONS.md` | append load-bearing decisions |
+| `AGENTS.md` | ownership boundaries, branching, the three test tiers |
+| `docs/ENGINEERING.md` | coding standards; section 11 is the Definition of Done |
+| `docs/PRD.md` | product reasoning. **Section 0 is the judging rubric, verbatim** |
+| `docs/ARCHITECTURE.md` | system design, numbered sections referenced everywhere |
+| `docs/API_GATEWAY.md` | **frozen** external contract. Treat as read-only |
+| `docs/PLAN.md` | live checklist, phase by phase. Tick your own boxes |
+| `docs/DECISIONS.md` | append-only: what was chosen and why |
+| `docs/INCIDENTS.md` | append-only: what broke and what changed. Append when something breaks |
+| `docs/BACKLOG.md` | deliberately parked work, with the reasoning |
+| `docs/DEMO_READINESS.md` | **the current prioritised worklist** |
+| `docs/PHASE5_IMPLEMENTATION.md`, `PHASE5_5_IMPLEMENTATION.md` | per-unit detail |
 
-## Current task
+`PLAN.md`, `DECISIONS.md` and `INCIDENTS.md` use git's `merge=union` driver, so
+concurrent agents can append without conflicting. Add lines, never reorder.
 
-Phase 5.5, in this order: **U, then V, then W.** Then **AA and AB** if time
-allows. Full detail per unit in `docs/PHASE5_5_IMPLEMENTATION.md`.
+## Current state
 
-- **U** dead-letter unprocessable records instead of crashing (correctness,
-  blocks everything operationally)
-- **V** extract batchgen generation logic into an importable package
-- **W** `/v1/demo/*` control API, flag-gated (needs V)
-- **AA** surface `due_at` through the stack with a live countdown
-- **AB** timeline view (needs AA, frontend only)
+Phases 0 to 4 complete. Phase 5 at 14/17, Phase 5.5 at 6/8, Phase 5.6 (demo
+readiness) not started. Phases 6 to 8 open.
 
-Not tonight: X, Y, Z.
+**Work `docs/DEMO_READINESS.md` top to bottom.** P0 is demo-breaking, P1 is
+capability that already exists in the backend and cannot be seen, which is the
+best value per hour in the project.
 
-## How to work
+## How work gets done here
 
-- **Sonnet subagents only**, maximum 3 at a time, each in its own worktree
-  (`isolation: "worktree"`). The supervising session is on Opus and should
-  supervise rather than implement, to keep cost down.
-- One unit per agent, one branch per unit, PR per unit, merge only when CI is
-  green.
-- Agents run **unit tests** in their worktree. The supervisor runs the tagged
-  integration suite at merge time, because parallel integration runs share one
-  Postgres and Kafka and interfere (see `docs/INCIDENTS.md` 2026-08-23).
+- One unit per agent, **Sonnet subagents**, max 3 at a time, each in its own
+  worktree (`isolation: "worktree"`). The supervising session reviews rather
+  than implements.
+- One branch and one PR per unit. Merge only on green CI.
+- Agents run **unit tests**; the supervisor runs the tagged suite at merge
+  time, because parallel integration runs share one Postgres and interfere.
+- **Review, do not rubber-stamp.** Verify an agent's central claim yourself.
+  Agents have been right when I was wrong, and wrong in ways CI did not catch.
 
-## Running the stack
+## Running it
 
 ```bash
-make demo-up PROFILE=demo      # infra + migrations + all 9 services
-make batchgen COUNT=100 SEED=7 # seeded batch with hidden ground truth
-make demo-down                 # stop services
+make demo-up PROFILE=demo          # infra + migrations + all 9 services
+make batchgen COUNT=100 SEED=7     # seeded batch with hidden ground truth
+cd web && npm run dev              # dashboard on :5173
+make demo-down                     # stop services
 ```
 
-**`PROFILE=demo` is required.** Sourcing `configs/demo.env` does nothing: the
-Makefile's `include .env` outranks the environment. See `docs/INCIDENTS.md`
+`PROFILE=demo` is required. **Sourcing `configs/demo.env` does nothing**: the
+Makefile's `include .env` outranks the environment. `docs/INCIDENTS.md`
 2026-08-31.
 
-**Do not run `make test-integration` while a demo stack is live.** The tests
-share `raw.events` and their cleanup deletes rows, which poisons the running
-consumer. That is the bug Unit U fixes.
+Do not run `make up-observability` and `make demo-up` concurrently; both bring
+up the base stack and race for port 8080. Run them in sequence.
 
-## Known broken right now
+Do not run `make test-integration` against a live demo stack; the tests share
+`raw.events` and their cleanup poisons it.
 
-The decision engine crash-loops on orphaned Kafka messages left by an earlier
-test run. Until Unit U lands, a wedged stack needs `make down-clean` and a
-fresh start.
+## Browser access, for checking the UI
+
+Playwright's Chromium is downloaded but its system libs are missing and there
+is no sudo. Working setup, no install needed beyond what is already done:
+
+```bash
+export LD_LIBRARY_PATH=$(cat /tmp/chromelibdir)   # extracted libnss3/libnspr4
+node /tmp/shot.js                                  # playwright-core in /tmp/node_modules
+```
+
+Chromium at
+`/home/aro/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`.
+If `/tmp` was cleared: `apt-get download libnss3 libnspr4`, `dpkg-deb -x` them
+somewhere, point `LD_LIBRARY_PATH` at the extracted
+`usr/lib/x86_64-linux-gnu`, and `npm install playwright-core --no-save`.
+
+## Facts worth not rediscovering
+
+- **The agent's own numbers vary run to run.** `batchgen` is seeded, the World
+  Simulator is not. Gross recovered swung Rs 349k to Rs 594k on identical
+  input, and one run lost to the naive baseline. Fixing that is Unit AD.
+- **Three figures are deterministic** and should match exactly on `SEED=7`:
+  baseline net Rs 487,769, classification accuracy around 91%, and zero
+  recovery-window escalations. A move in one of those is a real signal.
+- **`in_flight_count == 0` means "not started" as well as "finished"**, because
+  a record with no `record_state` row counts in neither. Do not use it alone as
+  a completion signal. `docs/INCIDENTS.md` 2026-09-01.
+- **`web/` has no CI.** No typecheck, build, or tests, ever. A job is committed
+  on branch `ci/frontend-checks` but pushing it needs
+  `gh auth refresh -h github.com -s workflow` from the user.
+- **A scheduler flake** blocks PRs intermittently on tests the diff cannot
+  reach. Logged open in `docs/INCIDENTS.md` 2026-09-01. Re-run once before
+  investigating, but do not let re-running become reflexive.
 
 ## Revert point
 
-`git reset --hard pre-phase-5.5` returns to the state the user approved before
-going to sleep. Tag is pushed to origin.
-
-## Reference numbers, for checking a run is healthy
-
-`make batchgen COUNT=100 SEED=7` on a fresh stack should give roughly:
-net Rs 536,405 against a baseline of Rs 487,769, recovery rate 51%,
-classification accuracy 91%, and zero recovery-window escalations. A recovery
-rate near 18% with most records escalated means the profile did not apply.
+`git reset --hard pre-phase-5.5` returns to the last state the user approved
+before the overnight Phase 5.5 work. The tag is pushed.

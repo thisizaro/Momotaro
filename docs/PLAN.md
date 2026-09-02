@@ -894,6 +894,36 @@ ordered by value per hour. Detail for each is in
       immediately. Turns the scheduling policy from a claim in a doc into a
       shape on a chart → `docs/PHASE5_5_IMPLEMENTATION.md` Unit AB
 
+## Phase 5.6: Demo readiness
+
+> **Prioritised list with full detail: `docs/DEMO_READINESS.md`.** Found on
+> 2026-09-02 by running the product end to end and reading the dashboard in a
+> real browser, rather than by planning. Everything there is either a confirmed
+> defect or a capability that already exists in the backend and cannot be seen.
+>
+> Work it top to bottom. P0 items are demo-breaking or embarrassing; P1 items
+> are already built and merely invisible, which makes them the best value per
+> hour in the project.
+
+- [ ] **P0, ~10h.** AC nudge messages written to a column nothing reads (134
+      composed messages unreachable through the API); AD seed the World
+      Simulator (unseeded outcomes made one run lose to the naive baseline);
+      AE LLM messages leak internal enum names into customer copy; AF infinite
+      skeleton loaders when no batch exists; AG a red "Disconnected" badge on a
+      healthy system → `docs/DEMO_READINESS.md`
+- [ ] **P1, ~16h.** Unit S surface `decision_trace` (the "why not the
+      alternatives" table, still the highest-value single item); AH historical
+      timeline plus real-vs-relative time; AI confidence-based LLM routing with
+      a quota-exhausted banner; AJ live production stream via a webhook CLI,
+      which fills the dead event panel and makes the no-answer-key distinction
+      explanatory → `docs/DEMO_READINESS.md`
+- [ ] **P2, ~11h.** Unit Y Razorpay payment-downtime webhooks; Unit Z real
+      webhook payload, signature verification and the four-field error
+      taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`, `docs/DEMO_READINESS.md`
+- [ ] **P3, ~6h.** AK `/help` page from the frozen contract; AL misleading
+      labels and the partial confusion matrix; AM read-only config panel
+      → `docs/DEMO_READINESS.md`
+
 ## Phase 6: Load testing & performance validation
 
 - [ ] `scripts/loadgen` built, synthetic mode default (no real LLM calls)
