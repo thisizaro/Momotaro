@@ -796,11 +796,19 @@ ordered by value per hour. Detail for each is in
 - [x] **Unit R: `make demo-up` / `make demo-down`**, plus correct `README.md`'s
       demo section, which currently documents a method Unit Q proves does
       nothing → `docs/PHASE5_IMPLEMENTATION.md` Unit R
-- [ ] **Unit S: surface `decision_trace`.** Written by Unit M, populated, and
+- [x] **Unit S: surface `decision_trace`.** Written by Unit M, populated, and
       read by nothing: no proto, no route, no component. The EV candidate
       ranking and guardrail refusal reasons are the "every money action
       explainable" artifact and are currently invisible
-      → `docs/PHASE5_IMPLEMENTATION.md` Unit S
+      → `docs/PHASE5_IMPLEMENTATION.md` Unit S. **Done**: added a typed
+      `DecisionTrace` message to `AuditEntry` rather than passing through
+      the raw JSONB column as a string; documented it on the frozen
+      `docs/API_GATEWAY.md` contract first, per that document's own "fix it
+      here first" rule; wired the Audit store and Gateway to read and map
+      it; and built an always-visible "why this action" panel under each
+      decision entry, ranked candidates first (winner marked, derived by
+      value rather than by parsing `reason`), guardrail-blocked actions in
+      their own separate section → `docs/DECISIONS.md` 2026-09-02.
 - [ ] **Unit T: re-measure after P, then decide on the three modelling
       questions** (memoryless outcomes reward spam; one
       `wrong_action_probability` for every wrong action; escalation costs
@@ -924,7 +932,9 @@ ordered by value per hour. Detail for each is in
       label bug, fixed with reconnect backoff and honest close-code handling
       (#101) → `docs/DEMO_READINESS.md`
 - [ ] **P1, ~16h.** Unit S surface `decision_trace` (the "why not the
-      alternatives" table, still the highest-value single item); AH historical
+      alternatives" table, still the highest-value single item), **done**
+      2026-09-02, see `docs/PLAN.md`'s own Unit S line above and
+      `docs/DECISIONS.md` 2026-09-02; AH historical
       timeline plus real-vs-relative time; AI confidence-based LLM routing with
       a quota-exhausted banner; AJ live production stream via a webhook CLI,
       which fills the dead event panel and makes the no-answer-key distinction

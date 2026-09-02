@@ -24,7 +24,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 4 | AF | Empty states: infinite skeletons when no batch | 3h | **done** #101 |
 | 5 | AG | "Disconnected" badge on a healthy system | 1h | **done** #101 |
 | **P1** | | **Built already, invisible** | **~16h** | |
-| 6 | S | Surface `decision_trace` (the "why not" table) | 4h | |
+| 6 | S | Surface `decision_trace` (the "why not" table) | 4h | **done** |
 | 7 | AH | Historical timeline + real vs relative time | 6h | |
 | 8 | AI | Confidence-based LLM routing + quota banner | 4h | |
 | 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | |
@@ -251,6 +251,18 @@ retry #4         blocked: retry budget 3 of 3 used
 borrowed from Track 01's wording because Track 03 implies it without saying it
 as crisply). This is the artifact that proves it, and the expensive half is
 already done.
+
+**Done, 2026-09-02.** Turned out to be five pieces, in dependency order: the
+frozen `docs/API_GATEWAY.md` contract documented first (its own rule requires
+fixing the document before implementing against it), a typed
+`audit.v1.DecisionTrace` proto message (a `Candidate` repeated field plus a
+`blocked` map, not a passthrough of the raw JSONB string), the Audit store
+decoding the nullable column, the Gateway mapping it field for field, and an
+always-visible panel under each decision entry: candidates ranked by EV with
+the winner marked (derived from the value, the same rule
+`economics.BestOf` uses server side, not by parsing the free-text `reason`),
+guardrail-blocked actions kept in their own separate section rather than
+mixed into the ranking. Full reasoning in `docs/DECISIONS.md` 2026-09-02.
 
 ### Unit AH: historical timeline, and real vs relative time
 

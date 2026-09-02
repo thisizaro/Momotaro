@@ -29,7 +29,9 @@ Stated once, applies to every endpoint below.
    ends in `_paise`**. Never a float, never a bare `amount`. This matches
    `docs/ENGINEERING.md` section 8's rule for the internal system and closes
    gap 2 from the pre-freeze audit (the old draft mixed `at_risk_amount` with
-   `amount_paise` in different endpoints).
+   `amount_paise` in different endpoints). One documented exception:
+   `decision_trace.candidates[].ev_paise` on the audit trail entry below is a
+   float, because it is a probability-weighted expectation, not money held.
 2. **Enums are serialized as their full proto constant name**, e.g.
    `"RECORD_STATE_RETRY_SCHEDULED"`, `"ROOT_CAUSE_BUCKET_HARD_DECLINE"`,
    `"ACTION_TYPE_RETRY"`, `"OUTCOME_SUCCESS"`, `"SOURCE_LLM"`. Never a
@@ -365,6 +367,58 @@ frontend "first entry has no `from_state`" branch is dead code, don't write
 one. `hops` is empty on a transition that followed no classification.
 `rationale`, `message_text` are empty strings, never omitted, when not
 applicable, so the frontend can render them unconditionally.
+
+**`decision_trace`, present only on the entry that actually compared
+alternatives.** Mirrors `audit.v1.DecisionTrace`. Decision Engine attaches it
+to the one step that left `RECORD_STATE_SCORING`, the single instant a
+comparison among candidate actions happened; every other entry, including
+one produced by an outright escalation that never reached scoring, has no
+`decision_trace` key at all. This is the same "missing key means no answer"
+rule `accuracy` and `baseline_comparison` already use above, not a null or a
+zeroed-out object, because there is no zero value for "no comparison
+happened" that is distinguishable from "one candidate was compared and
+turned out empty":
+```json
+"decision_trace": {
+  "candidates": [
+    { "action": "ACTION_TYPE_RETRY", "ev_paise": -625, "cost_paise": 625, "p_recovery": 0 },
+    { "action": "ACTION_TYPE_NUDGE_METHOD_UPDATE", "ev_paise": -29, "cost_paise": 29, "p_recovery": 0 },
+    { "action": "ACTION_TYPE_NUDGE_REMINDER", "ev_paise": 870.76, "cost_paise": 35, "p_recovery": 0.12 }
+  ],
+  "blocked": {
+    "ACTION_TYPE_NUDGE_REMINDER": "contact cooldown active: last contact 73.169551ms ago, cooldown is 288ms"
+  }
+}
+```
+`candidates` is every permitted action Decision Engine actually scored, in
+guardrail order, not sorted by value; a client that wants the best one first
+sorts by `ev_paise` descending itself. `blocked` maps the full enum name of
+a refused action (Wire convention 2) to the guardrail's own reason string,
+and is a JSON object keyed by action, never an array, since at most one
+reason is ever recorded per action. `candidates` and `blocked` are each
+independently absent (key omitted, not an empty array or `{}`) when there
+is nothing of that kind to show: an entry where every permitted action was
+scored and none was blocked has `candidates` only, and an entry where the
+guardrails refused every action before anything was scored has `blocked`
+only.
+
+`ev_paise` is the one field on this whole document that is a JSON number
+rather than an integer paise value, the single documented exception to Wire
+convention 1: it is a probability-weighted expectation, not money anyone
+holds (`services/decision-engine/internal/economics/score.go`), so it is a
+float and can be negative or fractional, exactly as computed. `cost_paise`
+on each candidate is real money spent and stays an integer paise value like
+every other `_paise` field on this document.
+
+**Which candidate won is derived, not a separate field.** It is whichever
+candidate has the highest `ev_paise` that is also strictly greater than
+zero, ties resolved to whichever comes first in `candidates`, the exact rule
+`economics.BestOf` applies server-side. If no candidate clears zero, nothing
+was chosen even though `candidates` is non-empty; the record moved to
+`RECORD_STATE_CLOSED_UNECONOMIC` instead, and a client should mark no
+candidate as chosen in that case. `reason` on the same entry names the
+winner in prose for a human reading the raw trail, but it is not a machine
+contract, a client must not parse it to find the winner.
 
 **Not yet on this response, needed before Unit L's provenance UI is
 complete**: `ev_score_at_decision` and `p_recovery_at_decision` per entry.

@@ -52,6 +52,42 @@ message AuditEntry {
   // failover covered for it. These hops are what make a fallback visible in
   // the trail (docs/PHASE3_IMPLEMENTATION.md Unit E).
   repeated common.v1.ProviderHop hops = 11;
+  // Every candidate action Decision Engine priced, and every action the
+  // guardrails refused, for the one step that actually left SCORING (the
+  // single instant a comparison among alternatives happened). Unset on
+  // every other entry, including a direct escalation that never reached
+  // scoring at all: there is no zero value for "no comparison happened"
+  // that would not be confused with "one was compared and it was empty"
+  // (docs/API_GATEWAY.md, GET /v1/records/{record_id}/audit,
+  // docs/PHASE5_IMPLEMENTATION.md Unit M/S).
+  DecisionTrace decision_trace = 12;
+}
+
+// DecisionTrace is the "why not the alternatives" record: every permitted
+// action's expected value alongside every refused action's guardrail
+// reason, so the audit trail can answer "why this action, and not one of
+// the others" (docs/PRD.md section 0, "every money action explainable").
+// A typed message rather than a raw JSON passthrough of the persisted
+// audit_entry.decision_trace column, so the wire contract is explicit and a
+// client never parses a string to find the numbers (docs/DECISIONS.md).
+message DecisionTrace {
+  message Candidate {
+    common.v1.ActionType action = 1;
+    // Deliberately a double, not paise: a probability-weighted expectation
+    // is not money anyone holds, and can be negative or fractional
+    // (services/decision-engine/internal/economics/score.go).
+    double ev_paise = 2;
+    double p_recovery = 3;
+    int64 cost_paise = 4;
+  }
+  // Every action the guardrails permitted, scored, in the order the
+  // guardrails produced them, not sorted by value.
+  repeated Candidate candidates = 1;
+  // Every action the guardrails refused, keyed by the action's full enum
+  // name (a proto3 map key cannot itself be an enum), mapped to the
+  // guardrail's own reason string. At most one reason is ever recorded per
+  // action, so a map rather than a repeated pair.
+  map<string, string> blocked = 2;
 }
 
 message GetRecordAuditRequest {

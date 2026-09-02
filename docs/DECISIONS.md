@@ -1912,3 +1912,61 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   authoritative is the point of running it in CI, and an install that
   silently accepts a drifting dependency tree would not have caught the
   mismatch at all.
+
+- 2026-09-02: **`decision_trace` is a typed proto message, `DecisionTrace`
+  with a nested `Candidate`, not a passthrough of the raw JSON string
+  already sitting in the `audit_entry.decision_trace` column (Unit S).** The
+  column's own comment already calls the JSON shape informal, self-describing
+  storage, not a contract; a typed message makes the wire contract explicit
+  in the proto file instead of leaving a client to infer it from an example,
+  and it removes an entire class of bug (a client parsing the JSON string
+  itself, or worse, the raw text landing on screen when a caller forgets to
+  parse it, both of which have happened elsewhere in this project with
+  informally-shaped columns). Field types follow the existing Go types
+  exactly rather than reinventing them: `ev_paise` is a `double`, matching
+  `economics.Score.EVPaise`, because it is a probability-weighted
+  expectation, not money anyone holds, and can be negative or fractional;
+  `cost_paise` stays an `int64`, real money. `blocked` stays a
+  `map<string, string>` keyed by the action's full enum name rather than
+  `common.v1.ActionType`, because proto3 map keys must be an integral type
+  or string, never an enum; the map value only ever needs to be looked up by
+  that string in practice (the frontend renders the key as a label and the
+  value as prose), so no information is lost by keeping it a string.
+
+- 2026-09-02: **`GET /v1/records/{record_id}/audit` gained a `decision_trace`
+  field on each entry, editing the frozen `docs/API_GATEWAY.md` contract
+  (Unit S).** The freeze document says plainly that finding it wrong or
+  ambiguous after the freeze date is a bug in the document, to be fixed
+  there first; `decision_trace` was simply never in it, since nothing read
+  the column when the document was written. The field is present only on
+  the one audit entry that actually left `RECORD_STATE_SCORING`, using the
+  same "missing key means no answer" convention the document's own
+  `BatchReport.accuracy` and `baseline_comparison` fields already
+  established, rather than a null value or an empty object; there is no
+  zero value for "no comparison happened" that would not be confused with
+  "one candidate was compared and it happened to be empty". Within the
+  object, `candidates` and `blocked` are each independently omitted when
+  empty for the same reason, one level down. `ev_paise` is documented as
+  the one field on the whole contract that breaks Wire convention 1 (money
+  as integer paise): it is copied from `economics.Score.EVPaise`, which is
+  deliberately a float because it is an expectation, not a stored payment.
+  Which candidate "won" is deliberately not a separate wire field: a client
+  derives it with the same rule `economics.BestOf` uses server side
+  (highest `ev_paise` above zero, ties broken by position in the
+  `candidates` array as given), documented explicitly so a client does not
+  try to parse the free-text `reason` field to find the winner instead.
+
+- 2026-09-02: **The decision-trace panel's "which action won" logic lives in
+  a small pure function, `pickWinningCandidate`
+  (`web/src/lib/decisionTrace.ts`), not in the component and not by reading
+  `entry.reason`.** `reason` on the winning entry happens to name the action
+  in prose today, but `docs/API_GATEWAY.md` says outright that it is not a
+  machine contract, so a frontend that parsed it would be one backend
+  wording change away from silently marking the wrong row as chosen.
+  Re-deriving the winner from `candidates` with the exact same rule
+  `economics.BestOf` applies (highest positive EV, first-in-array on a tie)
+  keeps the two implementations provably in agreement without sharing code
+  across the Go/TypeScript boundary, and is unit-tested against a case
+  where sorting by EV for display would pick a different tie-break than the
+  correct first-in-list rule, to keep the two concerns (ranking for display,
+  choosing the winner) from silently collapsing into one.
