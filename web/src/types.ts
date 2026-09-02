@@ -144,6 +144,21 @@ export interface RecordSummary {
    * not by due_at alone.
    */
   due_at: string;
+  /**
+   * RFC3339 timestamp of this record's earliest audit entry (when it was
+   * first classified), empty string only in the brief real window before
+   * that entry exists yet. Unlike due_at, this is always in the past, or
+   * absent: it is what the historical timeline (docs/API_GATEWAY.md Unit
+   * AH) plots, since due_at alone goes empty the moment a run finishes.
+   */
+  first_action_at: string;
+  /**
+   * RFC3339 timestamp of the most recent Decision Engine transition for
+   * this record (a retry, a nudge, a recovery, an escalation, or an
+   * uneconomic close), empty string until the Decision Engine has acted on
+   * it at least once. Same empty-string-for-absent convention as due_at.
+   */
+  last_action_at: string;
 }
 
 export interface BatchRecordsResponse {

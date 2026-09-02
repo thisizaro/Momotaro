@@ -152,14 +152,16 @@ func (s *Server) ListBatchRecords(ctx context.Context, req *reportingv1.ListBatc
 	records := make([]*reportingv1.RecordSummary, len(rows))
 	for i, r := range rows {
 		records[i] = &reportingv1.RecordSummary{
-			RecordId:     r.RecordID,
-			Type:         commonv1.RecordType(commonv1.RecordType_value[r.Type]),
-			AmountPaise:  r.AmountPaise,
-			CurrentState: commonv1.RecordState(commonv1.RecordState_value[r.CurrentState]),
-			Bucket:       commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[r.Bucket]),
-			AttemptCount: r.AttemptCount,
-			SpendPaise:   r.SpendPaise,
-			DueAt:        dueAtTimestamp(r.DueAt),
+			RecordId:      r.RecordID,
+			Type:          commonv1.RecordType(commonv1.RecordType_value[r.Type]),
+			AmountPaise:   r.AmountPaise,
+			CurrentState:  commonv1.RecordState(commonv1.RecordState_value[r.CurrentState]),
+			Bucket:        commonv1.RootCauseBucket(commonv1.RootCauseBucket_value[r.Bucket]),
+			AttemptCount:  r.AttemptCount,
+			SpendPaise:    r.SpendPaise,
+			DueAt:         optionalTimestamp(r.DueAt),
+			FirstActionAt: optionalTimestamp(r.FirstActionAt),
+			LastActionAt:  optionalTimestamp(r.LastActionAt),
 		}
 	}
 
@@ -194,12 +196,13 @@ func encodePageToken(offset int32) string {
 	return strconv.Itoa(int(offset))
 }
 
-// dueAtTimestamp converts a nullable record_state.due_at into the proto
-// wire representation: nil stays nil (proto3 message fields are naturally
-// optional), never a zero-value Timestamp, so the Gateway's "absent means
-// not scheduled" rule (docs/API_GATEWAY.md) has something unambiguous to
-// key off.
-func dueAtTimestamp(t *time.Time) *timestamppb.Timestamp {
+// optionalTimestamp converts a nullable *time.Time (record_state.due_at,
+// record_state.last_action_at, or MIN(audit_entry.ts) for first_action_at)
+// into the proto wire representation: nil stays nil (proto3 message fields
+// are naturally optional), never a zero-value Timestamp, so the Gateway's
+// "absent means no answer" rule (docs/API_GATEWAY.md) has something
+// unambiguous to key off for all three RecordSummary timestamp fields.
+func optionalTimestamp(t *time.Time) *timestamppb.Timestamp {
 	if t == nil {
 		return nil
 	}

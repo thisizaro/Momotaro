@@ -284,7 +284,9 @@ Response:
       "bucket": "ROOT_CAUSE_BUCKET_TRANSIENT_BANK",
       "attempt_count": 2,
       "spend_paise": 50,
-      "due_at": ""
+      "due_at": "",
+      "first_action_at": "2026-08-29T14:00:05Z",
+      "last_action_at": "2026-08-29T14:03:11Z"
     }
   ],
   "next_page_token": "",
@@ -313,6 +315,42 @@ nothing left to schedule. The dashboard tells these apart by
 `current_state`, not by `due_at` alone: `RECORD_STATE_NUDGED` with an empty
 `due_at` renders "awaiting customer", any other state with an empty
 `due_at` renders "not scheduled".
+
+**`first_action_at` and `last_action_at`, added for Unit AH's historical
+timeline.** `due_at` is the only time field this endpoint had before, and it
+is always in the future or absent, useless the moment a run finishes and a
+judge wants to look back at what happened. These two are always in the past
+(or absent), and together are cheap enough to add here rather than needing a
+new endpoint:
+
+- `first_action_at` is the timestamp of this record's earliest audit entry,
+  i.e. when it was first classified and left `RECORD_STATE_NEW`. Computed
+  server-side as `MIN(audit_entry.ts)` for the record, using the same
+  `audit_entry_record_idx (record_id, ts)` index the audit trail route
+  already relies on, one correlated subquery per page of results, not one
+  request per record. Absent only in the brief real window between
+  ingestion and that first classification, before any `audit_entry` row
+  exists for the record yet.
+- `last_action_at` mirrors `record_state.last_action_at`
+  (`migrations/00001_initial_schema.sql`) directly, already written by the
+  Decision Engine on every transition it makes (a retry, a nudge, a
+  recovery, an escalation, or an uneconomic close), so this is a zero-cost
+  addition: the column already existed, nothing new is computed for it.
+  Absent until the Decision Engine has acted on the record at least once,
+  i.e. before `record_state` has a row for it.
+
+**Both follow the exact `due_at` convention above: empty string when
+absent, never omitted, never null.** Not the `decision_trace`-style
+"missing key means no answer" convention used elsewhere on this document,
+because these two are scalar timestamp fields already governed by wire
+convention 6 (no `omitempty`, ever), the same category `due_at` is already
+in, not optional nested objects like `accuracy` or `decision_trace` where
+an empty object would be ambiguous with a genuine empty result. A rejected
+alternative was a compact per-record array of every audit-entry timestamp,
+which the historical timeline does not need: a first/last pair is enough to
+draw a duration and a most-recent-outcome marker per record, and an array
+would mean shipping N timestamps per record instead of 2 for a chart that
+only ever reads the two extremes (`docs/DECISIONS.md`).
 
 ### `GET /v1/records/{record_id}/audit`
 

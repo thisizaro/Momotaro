@@ -89,6 +89,34 @@ func seedRecordStateWithDueAt(ctx context.Context, t *testing.T, pool *pgxpkg.Po
 	}
 }
 
+// seedRecordStateWithLastActionAt inserts a RECORD_STATE row for recordID
+// with an explicit last_action_at, for the historical-timeline tests
+// (docs/DEMO_READINESS.md Unit AH). Kept separate from seedRecordState for
+// the same reason seedRecordStateWithDueAt is: only these tests care about
+// the extra column.
+func seedRecordStateWithLastActionAt(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID, state, bucket string, attemptCount int, lastActionAt time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO record_state (record_id, current_state, root_cause_bucket, attempt_count, last_action_at) VALUES ($1, $2, $3, $4, $5)`,
+		recordID, state, bucket, attemptCount, lastActionAt); err != nil {
+		t.Fatalf("seed record_state with last_action_at: %v", err)
+	}
+}
+
+// seedAuditEntry inserts one AUDIT_ENTRY row for recordID, for the
+// historical-timeline tests (Unit AH): first_action_at is derived from
+// MIN(audit_entry.ts), so exercising that field needs real rows in this
+// table, not just record_state.
+func seedAuditEntry(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID, batchID string, ts time.Time, fromState, toState string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, actor)
+		VALUES ($1, $2, $3, $4, $5, 'test', 'system')`,
+		recordID, batchID, ts, fromState, toState); err != nil {
+		t.Fatalf("seed audit_entry: %v", err)
+	}
+}
+
 // seedAttempt inserts one INTERVENTION_ATTEMPT row for recordID.
 func seedAttempt(ctx context.Context, t *testing.T, pool *pgxpkg.Pool, recordID string, attemptNumber int, actionType, outcome string, costPaise int64) {
 	t.Helper()

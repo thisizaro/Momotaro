@@ -1,33 +1,9 @@
-import { STATE_DOT_COLORS, STATE_LABELS } from '@/lib/format';
+import { STATE_DOT_COLORS, STATE_FILL, STATE_LABELS, STATE_ORDER } from '@/lib/format';
 import type { RecordState, RecordSummary } from '@/types';
 
 interface Props {
   records: RecordSummary[];
 }
-
-const STATE_ORDER: RecordState[] = [
-  'RECORD_STATE_NEW',
-  'RECORD_STATE_SCORING',
-  'RECORD_STATE_RETRY_SCHEDULED',
-  'RECORD_STATE_RETRYING',
-  'RECORD_STATE_NUDGE_SCHEDULED',
-  'RECORD_STATE_NUDGED',
-  'RECORD_STATE_RECOVERED',
-  'RECORD_STATE_ESCALATED',
-  'RECORD_STATE_CLOSED_UNECONOMIC',
-];
-
-const STATE_FILL: Record<RecordState, string> = {
-  RECORD_STATE_NEW: '#cbd5e1',
-  RECORD_STATE_SCORING: '#f59e0b',
-  RECORD_STATE_RETRY_SCHEDULED: '#60a5fa',
-  RECORD_STATE_RETRYING: '#3b82f6',
-  RECORD_STATE_NUDGE_SCHEDULED: '#22d3ee',
-  RECORD_STATE_NUDGED: '#06b6d4',
-  RECORD_STATE_RECOVERED: '#10b981',
-  RECORD_STATE_ESCALATED: '#f43f5e',
-  RECORD_STATE_CLOSED_UNECONOMIC: '#94a3b8',
-};
 
 export function StateDistribution({ records }: Props) {
   const counts = STATE_ORDER.reduce((acc, s) => {
