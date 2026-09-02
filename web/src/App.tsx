@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Shield, FlaskConical, LayoutDashboard, SlidersHorizontal } from 'lucide-react';
 import { api, USE_MOCK } from '@/lib/api';
+import type { LiveConnectionStatus } from '@/lib/api';
 import type {
   BatchReport,
   BatchSummary,
@@ -9,6 +10,7 @@ import type {
   RecordAuditResponse,
   RecordSummary,
 } from '@/types';
+import { EmptyState } from '@/components/EmptyState';
 import { MetricsGrid } from '@/components/MetricsGrid';
 import { DonutChart } from '@/components/DonutChart';
 import { RecoveryBar } from '@/components/RecoveryBar';
@@ -29,7 +31,11 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
-type ConnectionState = 'connecting' | 'live' | 'disconnected';
+// 'connecting' is the state before the socket has had a chance to open at
+// all; api.subscribeToBatch never reports it, App sets it itself right
+// before subscribing. Everything after that comes straight from
+// LiveConnectionStatus (lib/api.ts).
+type ConnectionState = 'connecting' | LiveConnectionStatus;
 type View = 'dashboard' | 'demo';
 
 function App() {
@@ -104,7 +110,7 @@ function App() {
     unsubscribeRef.current = api.subscribeToBatch(
       activeBatchId,
       (update: BatchUpdate) => setUpdates((prev) => [...prev, update]),
-      (connected) => setConnectionState(connected ? 'live' : 'disconnected'),
+      (status) => setConnectionState(status),
     );
 
     // Poll for updated report/records every 2 seconds
@@ -151,11 +157,14 @@ function App() {
     }
   }, []);
 
-  const isLive = connectionState === 'live';
   const connectionLabel = !activeBatchId
     ? 'Idle'
     : connectionState === 'live'
     ? 'Streaming'
+    : connectionState === 'reconnecting'
+    ? 'Reconnecting...'
+    : connectionState === 'complete'
+    ? 'Complete'
     : connectionState === 'disconnected'
     ? 'Disconnected'
     : 'Connecting...';
@@ -163,6 +172,10 @@ function App() {
     ? 'bg-slate-300'
     : connectionState === 'live'
     ? 'bg-emerald-500 pulse-dot'
+    : connectionState === 'reconnecting'
+    ? 'bg-amber-400 pulse-dot'
+    : connectionState === 'complete'
+    ? 'bg-emerald-500'
     : connectionState === 'disconnected'
     ? 'bg-rose-400'
     : 'bg-amber-400 pulse-dot';
@@ -247,6 +260,16 @@ function App() {
 
         {recordsTruncated && <RecordsTruncatedBanner loaded={records.length} total={recordsTotalCount} />}
 
+        {!activeBatchId ? (
+          <EmptyState
+            size="hero"
+            icon={SlidersHorizontal}
+            title="No batch selected yet"
+            description="Seed a batch from Demo Controls to watch failures get classified, retried and recovered in real time."
+            action={{ label: 'Go to Demo Controls', onClick: () => setView('demo'), icon: SlidersHorizontal }}
+          />
+        ) : (
+        <>
         {/* Metrics */}
         {report ? (
           <MetricsGrid report={report} />
@@ -324,7 +347,7 @@ function App() {
         {/* Live feed + classification accuracy */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2">
-            <LiveFeed updates={updates} live={isLive} />
+            <LiveFeed updates={updates} connectionState={connectionState} />
           </div>
           <div className="card p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-4">Classification Accuracy</h3>
@@ -383,6 +406,8 @@ function App() {
 
         {/* Records table */}
         <RecordsTable records={records} onSelect={handleSelectRecord} />
+        </>
+        )}
         </>
         )}
       </main>
