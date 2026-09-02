@@ -38,6 +38,7 @@ source of truth, Kafka for events. `README.md` explains the product.
 | `docs/INCIDENTS.md` | append-only: what broke and what changed. Append when something breaks |
 | `docs/BACKLOG.md` | deliberately parked work, with the reasoning |
 | `docs/DEMO_READINESS.md` | **the current prioritised worklist** |
+| `docs/PANEL_BRIEF.md` | how to explain the system: formulas, flow, likely panel questions |
 | `docs/PHASE5_IMPLEMENTATION.md`, `PHASE5_5_IMPLEMENTATION.md` | per-unit detail |
 
 `PLAN.md`, `DECISIONS.md` and `INCIDENTS.md` use git's `merge=union` driver, so
