@@ -250,6 +250,48 @@ func TestSchedulerComposesNudgeMessageBeforeExecutingANudgeAction(t *testing.T) 
 	}
 }
 
+// Unit AC (docs/DEMO_READINESS.md): the composed nudge text must also land
+// on audit_entry.message_text, the column Audit's GetRecordAudit actually
+// selects. Before this fix, the message reached intervention_attempt (the
+// Executor's own table) but not the audit trail, so the drawer's Nudged
+// entry never showed the Hinglish wording that was really sent.
+func TestSchedulerWritesComposedMessageOntoTheOutcomeAuditEntry(t *testing.T) {
+	pool := testPool(t)
+	dlqProducer, dlqTopic, auditTopic := testProducer(t)
+	ctx := context.Background()
+	_, recordID := seedRecord(ctx, t, pool)
+	seedScheduled(ctx, t, pool, recordID, commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED, commonv1.ActionType_ACTION_TYPE_NUDGE_REMINDER, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_ABANDONMENT, time.Now().Add(-time.Minute))
+
+	const wantMessage = "Aapka payment abhi bhi pending hai, jaldi complete kariye!"
+	classifier := &fakeClassifier{nudgeResp: &classifierv1.ComposeNudgeResponse{
+		Message: wantMessage,
+		Source:  commonv1.Source_SOURCE_LLM,
+	}}
+	executor := &fakeExecutor{resp: &executorv1.ExecuteResponse{Outcome: commonv1.Outcome_OUTCOME_PENDING}}
+	sched := NewScheduler(pool, classifier, executor, dlqProducer, clock.New(), testEconomics(t), schedulerTestConfig(dlqTopic, auditTopic))
+
+	if err := sched.tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	// "awaiting delayed outcome" (decideAfterExecute, state.go) is
+	// recordOutcome's own entry, distinct from the scheduler's earlier
+	// "scheduler claimed due record" entry: a claimed nudge-scheduled
+	// record already reads NUDGED -> NUDGED (claimedState, state.go)
+	// before Execute even runs, so to_state alone cannot tell the two
+	// apart.
+	var messageText string
+	if err := pool.QueryRow(ctx, `
+		SELECT message_text FROM audit_entry WHERE record_id=$1 AND reason=$2`,
+		recordID, "awaiting delayed outcome",
+	).Scan(&messageText); err != nil {
+		t.Fatalf("query audit_entry: %v", err)
+	}
+	if messageText != wantMessage {
+		t.Errorf("audit_entry.message_text = %q, want %q, the text Execute actually sent", messageText, wantMessage)
+	}
+}
+
 // A retry never needs composed wording: only a nudge sends anything a
 // customer reads.
 func TestSchedulerDoesNotComposeNudgeForARetryAction(t *testing.T) {

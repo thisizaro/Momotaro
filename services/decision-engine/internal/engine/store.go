@@ -265,7 +265,17 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 // recordOutcome persists the result of executing a claimed record's pending
 // action: the new state, the bumped attempt_count, and the audit entry for
 // this transition, in one transaction.
-func (s *store) recordOutcome(ctx context.Context, c claimedRecord, toState commonv1.RecordState, reason string, attemptNumber int, costPaise int64, now time.Time) error {
+//
+// messageText is the composed nudge Execute actually sent ("" for a
+// non-nudge action), written onto this same audit entry rather than left
+// only on intervention_attempt. Before docs/DEMO_READINESS.md Unit AC, the
+// Executor recorded the message on its own table but nothing wrote the
+// audit_entry column the drawer reads, so 134 composed messages sat in the
+// database unreachable through the API. Duplicating the value here follows
+// the same pattern attempt_number and cost_paise already use on this row:
+// a self-contained trail that answers "what happened" without a join back
+// to the table that owns the action.
+func (s *store) recordOutcome(ctx context.Context, c claimedRecord, toState commonv1.RecordState, reason string, attemptNumber int, costPaise int64, messageText string, now time.Time) error {
 	return pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			UPDATE record_state SET current_state=$1, attempt_count=$2, last_action_at=$3, updated_at=$3 WHERE record_id=$4`,
@@ -276,9 +286,9 @@ func (s *store) recordOutcome(ctx context.Context, c claimedRecord, toState comm
 		// No source here either: this is Execute's outcome, not a
 		// classification, so there is no LLM/rules provenance to record.
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, actor, attempt_number, cost_paise)
-			VALUES ($1, $2, $3, $4, $5, $6, 'system', $7, $8)`,
-			c.RecordID, c.BatchID, now, c.ClaimedState.String(), toState.String(), reason, attemptNumber, costPaise,
+			INSERT INTO audit_entry (record_id, batch_id, ts, from_state, to_state, reason, actor, attempt_number, cost_paise, message_text)
+			VALUES ($1, $2, $3, $4, $5, $6, 'system', $7, $8, $9)`,
+			c.RecordID, c.BatchID, now, c.ClaimedState.String(), toState.String(), reason, attemptNumber, costPaise, messageText,
 		); err != nil {
 			return fmt.Errorf("insert outcome audit_entry for %s: %w", c.RecordID, err)
 		}
