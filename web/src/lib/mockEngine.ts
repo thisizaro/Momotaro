@@ -866,7 +866,7 @@ export class MockEngine {
       demo_time_scale: 300000,
       max_retries: 3,
       max_contacts: 3,
-      contact_cooldown_seconds: 24 * 60 * 60,
+      contact_cooldown_ms: Math.round((24 * 60 * 60 * 1000) / 300000), // scaled like the real demo profile, ~288ms
       recovery_window_seconds: 7 * 24 * 60 * 60,
       llm_sample_rate: 0.15,
       route_confidence_threshold: 0.8,

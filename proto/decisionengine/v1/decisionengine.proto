@@ -104,7 +104,17 @@ message GetAgentConfigResponse {
   // Guardrails, docs/PRD.md section 11 (engine.GuardrailConfig).
   int32 max_retries = 2;
   int32 max_contacts = 3;
-  int64 contact_cooldown_seconds = 4;
+  // contact_cooldown_ms is milliseconds, not seconds, because this is the
+  // ALREADY-SCALED value actually enforced (guardrailsFrom in
+  // cmd/main.go runs it through cfg.Scale before storing it), and at
+  // DEMO_TIME_SCALE=300000 a 24h configured cooldown enforces at ~288ms.
+  // Reporting it in whole seconds truncated that to 0, which read as "no
+  // cooldown enforced" when a real one was, found verifying Unit AM
+  // (docs/INCIDENTS.md 2026-09-03). recovery_window_seconds needs no such
+  // care: RecoveryWindow is deliberately never scaled, see this message's
+  // Guardrails comment above and guardrailsFrom's own comment in
+  // cmd/main.go, so it stays a large whole number of seconds.
+  int64 contact_cooldown_ms = 4;
   int64 recovery_window_seconds = 5;
   // LLM routing, this service's own config (services/decision-engine/cmd/main.go).
   double llm_sample_rate = 6;

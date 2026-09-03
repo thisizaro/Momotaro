@@ -362,8 +362,14 @@ func TestGetAgentConfigReturnsTheConfiguredValuesVerbatim(t *testing.T) {
 	if resp.GetMaxContacts() != 3 {
 		t.Errorf("MaxContacts = %d, want 3", resp.GetMaxContacts())
 	}
-	if resp.GetContactCooldownSeconds() != int64((24 * time.Hour).Seconds()) {
-		t.Errorf("ContactCooldownSeconds = %d, want %d", resp.GetContactCooldownSeconds(), int64((24 * time.Hour).Seconds()))
+	// Milliseconds, not seconds: GetAgentConfig reports whatever
+	// Guardrails.ContactCooldown already holds verbatim, and in production
+	// that is the post-Scale value (guardrailsFrom, cmd/main.go), a
+	// sub-second duration at a real demo's compression factor. Reporting
+	// in whole seconds silently truncated that to 0
+	// (docs/INCIDENTS.md 2026-09-03).
+	if resp.GetContactCooldownMs() != (24 * time.Hour).Milliseconds() {
+		t.Errorf("ContactCooldownMs = %d, want %d", resp.GetContactCooldownMs(), (24 * time.Hour).Milliseconds())
 	}
 	if resp.GetRecoveryWindowSeconds() != int64((7 * 24 * time.Hour).Seconds()) {
 		t.Errorf("RecoveryWindowSeconds = %d, want %d", resp.GetRecoveryWindowSeconds(), int64((7 * 24 * time.Hour).Seconds()))

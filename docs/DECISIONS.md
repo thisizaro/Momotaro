@@ -2743,3 +2743,21 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
 
   `docs/API_GATEWAY.md` "GET /v1/demo/config", `docs/DEMO_READINESS.md`
   Unit AM.
+
+- 2026-09-03: **`GetAgentConfig`'s `contact_cooldown` field is milliseconds,
+  not seconds, corrected after Unit AM merged its first pass.** The field
+  reports the ALREADY-SCALED value actually enforced
+  (`guardrailsFrom(cfg)` in `cmd/main.go` runs the raw `CONTACT_COOLDOWN`
+  through `cfg.Scale` before storing it), which is correct and deliberate:
+  the whole point of this route is to show what is really happening, not
+  the nominal config. But encoding a sub-second scaled duration as whole
+  `int64` seconds truncates it to `0`, and `0` reads as "no cooldown
+  enforced" when a real ~288ms one is. Verified live: `GET /v1/demo/config`
+  against the running demo profile returned
+  `"contact_cooldown_seconds": 0` before this fix, on a deployment whose
+  `.env` sets `CONTACT_COOLDOWN=24h`. Same shape as the timeline's "day
+  3347 of the 7-day recovery window" (`docs/INCIDENTS.md` 2026-09-03): a
+  value that is correct in its native form becomes misleading once
+  truncated to a coarse unit at extreme scale. `recovery_window_seconds`
+  needed no equivalent fix, since `RecoveryWindow` is deliberately never
+  scaled and stays a large whole number regardless of `DEMO_TIME_SCALE`.

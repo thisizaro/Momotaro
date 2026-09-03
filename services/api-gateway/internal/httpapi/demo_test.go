@@ -270,7 +270,7 @@ func TestGetDemoConfigSuccess(t *testing.T) {
 		DemoTimeScale:                    300000,
 		MaxRetries:                       3,
 		MaxContacts:                      3,
-		ContactCooldownSeconds:           86400,
+		ContactCooldownMs:                86400,
 		RecoveryWindowSeconds:            604800,
 		LlmSampleRate:                    0.15,
 		RouteConfidenceThreshold:         0.6,
@@ -295,8 +295,8 @@ func TestGetDemoConfigSuccess(t *testing.T) {
 	if resp.MaxRetries != 3 || resp.MaxContacts != 3 {
 		t.Errorf("MaxRetries/MaxContacts = %d/%d, want 3/3", resp.MaxRetries, resp.MaxContacts)
 	}
-	if resp.ContactCooldownSeconds != 86400 {
-		t.Errorf("ContactCooldownSeconds = %d, want 86400", resp.ContactCooldownSeconds)
+	if resp.ContactCooldownMs != 86400 {
+		t.Errorf("ContactCooldownMs = %d, want 86400", resp.ContactCooldownMs)
 	}
 	if resp.RecoveryWindowSeconds != 604800 {
 		t.Errorf("RecoveryWindowSeconds = %d, want 604800", resp.RecoveryWindowSeconds)

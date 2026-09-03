@@ -158,7 +158,7 @@ type getDemoConfigResponse struct {
 	DemoTimeScale                    float64 `json:"demo_time_scale"`
 	MaxRetries                       int32   `json:"max_retries"`
 	MaxContacts                      int32   `json:"max_contacts"`
-	ContactCooldownSeconds           int64   `json:"contact_cooldown_seconds"`
+	ContactCooldownMs                int64   `json:"contact_cooldown_ms"`
 	RecoveryWindowSeconds            int64   `json:"recovery_window_seconds"`
 	LLMSampleRate                    float64 `json:"llm_sample_rate"`
 	RouteConfidenceThreshold         float64 `json:"route_confidence_threshold"`
@@ -186,7 +186,7 @@ func (h *Handler) getDemoConfig(w http.ResponseWriter, r *http.Request) {
 		DemoTimeScale:                    resp.GetDemoTimeScale(),
 		MaxRetries:                       resp.GetMaxRetries(),
 		MaxContacts:                      resp.GetMaxContacts(),
-		ContactCooldownSeconds:           resp.GetContactCooldownSeconds(),
+		ContactCooldownMs:                resp.GetContactCooldownMs(),
 		RecoveryWindowSeconds:            resp.GetRecoveryWindowSeconds(),
 		LLMSampleRate:                    resp.GetLlmSampleRate(),
 		RouteConfidenceThreshold:         resp.GetRouteConfidenceThreshold(),

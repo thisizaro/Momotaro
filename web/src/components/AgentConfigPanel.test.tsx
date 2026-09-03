@@ -12,7 +12,7 @@ function makeConfig(overrides: Partial<DemoConfigResponse> = {}): DemoConfigResp
     demo_time_scale: 300000,
     max_retries: 3,
     max_contacts: 3,
-    contact_cooldown_seconds: 86400,
+    contact_cooldown_ms: 288, // scaled like the real demo profile, not raw seconds
     recovery_window_seconds: 604800,
     llm_sample_rate: 0.15,
     route_confidence_threshold: 0.8,
@@ -74,7 +74,7 @@ describe('AgentConfigPanel', () => {
       demo_time_scale: 0,
       max_retries: 0,
       max_contacts: 0,
-      contact_cooldown_seconds: 0,
+      contact_cooldown_ms: 0,
       recovery_window_seconds: 0,
       llm_sample_rate: 0,
       route_confidence_threshold: 0,

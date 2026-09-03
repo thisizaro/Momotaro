@@ -85,7 +85,7 @@ export function AgentConfigPanel({ config, error, onRetry }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-4">
             <ConfigGroup title="Time compression">
               <ConfigRow label="Simulated speed" value={`${(config.demo_time_scale ?? 0).toLocaleString('en-US')}x real time`} />
-              <ConfigRow label="Contact cooldown" value={formatDuration((config.contact_cooldown_seconds ?? 0) * 1000)} />
+              <ConfigRow label="Contact cooldown" value={formatDuration(config.contact_cooldown_ms ?? 0)} />
               <ConfigRow label="Recovery window" value={formatDuration((config.recovery_window_seconds ?? 0) * 1000)} />
             </ConfigGroup>
 

@@ -792,7 +792,7 @@ Unlike every other route in this section, this one proxies the **Decision
 Engine**, not World Simulator, via `GetAgentConfig`
 (`proto/decisionengine/v1/decisionengine.proto`): the Decision Engine is
 the service that actually loaded, validated and (for `contact_cooldown_
-seconds`) applied `DEMO_TIME_SCALE` to these values, so the Gateway proxies
+ms`) applied `DEMO_TIME_SCALE` to these values, so the Gateway proxies
 them rather than re-reading `os.Getenv` on its own and risking the two
 copies drifting apart, the same class of bug `docs/INCIDENTS.md`
 2026-09-03 already describes happening between a tracked default and a
@@ -804,7 +804,7 @@ Response:
   "demo_time_scale": 300000,
   "max_retries": 3,
   "max_contacts": 3,
-  "contact_cooldown_seconds": 86400,
+  "contact_cooldown_ms": 288,
   "recovery_window_seconds": 604800,
   "llm_sample_rate": 0.15,
   "route_confidence_threshold": 0.6,
@@ -813,13 +813,19 @@ Response:
   "downtime_max_unresolved_hold_seconds": 21600
 }
 ```
-`contact_cooldown_seconds` is already scaled by `demo_time_scale` (it is
-what the Decision Engine actually enforces); `recovery_window_seconds` is
-deliberately not scaled, the same asymmetry `docs/DECISIONS.md` 2026-08-31
-documents for the guardrails themselves. `downtime_max_unresolved_hold_
-seconds` has no backing environment variable at all, it is a Go constant
-(`engine.DowntimeMaxUnresolvedHold`), included because it is a real bound
-the agent operates under regardless.
+`contact_cooldown_ms` is already scaled by `demo_time_scale` (it is what
+the Decision Engine actually enforces), and is reported in **milliseconds,
+not seconds**: at this deployment's `demo_time_scale` of 300000, a 24 hour
+configured cooldown enforces at roughly 288ms, and an earlier version of
+this route reported it as whole seconds, which truncated that to `0` and
+read as "no cooldown enforced" when a real one was
+(`docs/INCIDENTS.md` 2026-09-03). `recovery_window_seconds` carries no
+such risk and stays whole seconds: it is deliberately not scaled, the same
+asymmetry `docs/DECISIONS.md` 2026-08-31 documents for the guardrails
+themselves, and a 7 day window has no sub-second precision to lose.
+`downtime_max_unresolved_hold_seconds` has no backing environment variable
+at all, it is a Go constant (`engine.DowntimeMaxUnresolvedHold`), included
+because it is a real bound the agent operates under regardless.
 
 **Deliberately absent: `LLM_PROVIDER_CHAIN`.** It is owned by the
 Classifier, not the Decision Engine, and this endpoint does not add a

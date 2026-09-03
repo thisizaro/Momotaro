@@ -360,7 +360,12 @@ export interface DemoConfigResponse {
   demo_time_scale: number;
   max_retries: number;
   max_contacts: number;
-  contact_cooldown_seconds: number;
+  // Milliseconds, not seconds: this is the value already scaled by
+  // DEMO_TIME_SCALE and actually enforced (docs/DECISIONS.md, Unit AM
+  // correction). At a 300000x compression a 24h configured cooldown
+  // enforces at roughly 288ms; reporting that as whole seconds truncated
+  // to 0 and read as "no cooldown", see docs/INCIDENTS.md 2026-09-03.
+  contact_cooldown_ms: number;
   recovery_window_seconds: number;
   llm_sample_rate: number;
   route_confidence_threshold: number;

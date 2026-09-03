@@ -171,7 +171,7 @@ func (s *Server) GetAgentConfig(ctx context.Context, req *decisionenginev1.GetAg
 		DemoTimeScale:                    s.cfg.DemoTimeScale,
 		MaxRetries:                       int32(s.cfg.Guardrails.MaxRetries),
 		MaxContacts:                      int32(s.cfg.Guardrails.MaxContacts),
-		ContactCooldownSeconds:           int64(s.cfg.Guardrails.ContactCooldown.Seconds()),
+		ContactCooldownMs:                s.cfg.Guardrails.ContactCooldown.Milliseconds(),
 		RecoveryWindowSeconds:            int64(s.cfg.Guardrails.RecoveryWindow.Seconds()),
 		LlmSampleRate:                    s.cfg.LLMSampleRate,
 		RouteConfidenceThreshold:         s.cfg.RouteConfidenceThreshold,
