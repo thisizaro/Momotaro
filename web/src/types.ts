@@ -127,6 +127,14 @@ export interface BatchReport {
   closed_uneconomic_count: number;
   closed_uneconomic_paise: number;
   processing_failure_count: number;
+  /**
+   * Records that wanted a live model call and did not get one: Groq's free
+   * tier or the classifier's own breaker said no, or the Decision Engine's
+   * LLM_SAMPLE_RATE ceiling was already spent for this batch. Always
+   * present, defaulting to 0, never the missing-key convention accuracy
+   * and baseline_comparison use below (docs/API_GATEWAY.md, Unit AI).
+   */
+  llm_quota_exhausted_count: number;
   by_root_cause: Partial<Record<RootCauseBucket, RootCauseBreakdown>>;
   by_intervention: Partial<Record<ActionType, InterventionBreakdown>>;
   /** Absent (not null/zeroed) when the batch has no GROUND_TRUTH. */

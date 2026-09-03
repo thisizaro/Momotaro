@@ -22,19 +22,26 @@ import (
 // real zero"), so those two alone use a pointer with omitempty.
 
 type batchReportResponse struct {
-	BatchID                string                       `json:"batch_id"`
-	TotalRecords           int32                        `json:"total_records"`
-	InFlightCount          int32                        `json:"in_flight_count"`
-	AtRiskPaise            int64                        `json:"at_risk_paise"`
-	RecoveredPaise         int64                        `json:"recovered_paise"`
-	InterventionSpendPaise int64                        `json:"intervention_spend_paise"`
-	NetRecoveredPaise      int64                        `json:"net_recovered_paise"`
-	CostPerRupeeRecovered  float64                      `json:"cost_per_rupee_recovered"`
-	RecoveryRate           float64                      `json:"recovery_rate"`
-	EscalatedCount         int32                        `json:"escalated_count"`
-	ClosedUneconomicCount  int32                        `json:"closed_uneconomic_count"`
-	ClosedUneconomicPaise  int64                        `json:"closed_uneconomic_paise"`
-	ProcessingFailureCount int32                        `json:"processing_failure_count"`
+	BatchID                string  `json:"batch_id"`
+	TotalRecords           int32   `json:"total_records"`
+	InFlightCount          int32   `json:"in_flight_count"`
+	AtRiskPaise            int64   `json:"at_risk_paise"`
+	RecoveredPaise         int64   `json:"recovered_paise"`
+	InterventionSpendPaise int64   `json:"intervention_spend_paise"`
+	NetRecoveredPaise      int64   `json:"net_recovered_paise"`
+	CostPerRupeeRecovered  float64 `json:"cost_per_rupee_recovered"`
+	RecoveryRate           float64 `json:"recovery_rate"`
+	EscalatedCount         int32   `json:"escalated_count"`
+	ClosedUneconomicCount  int32   `json:"closed_uneconomic_count"`
+	ClosedUneconomicPaise  int64   `json:"closed_uneconomic_paise"`
+	ProcessingFailureCount int32   `json:"processing_failure_count"`
+	// LlmQuotaExhaustedCount is docs/API_GATEWAY.md's Unit AI addition:
+	// records that wanted a live model call and did not get one (Groq's
+	// free tier or the classifier's own breaker said no, or the Decision
+	// Engine's LLM_SAMPLE_RATE ceiling was already spent). Always present,
+	// defaulting to 0 like ProcessingFailureCount above, never the
+	// missing-key convention Accuracy/BaselineComparison use.
+	LlmQuotaExhaustedCount int32                        `json:"llm_quota_exhausted_count"`
 	ByRootCause            map[string]bucketStatsJSON   `json:"by_root_cause"`
 	ByIntervention         map[string]interventionStats `json:"by_intervention"`
 	Accuracy               *classificationAccuracyJSON  `json:"accuracy,omitempty"`
@@ -137,6 +144,7 @@ func toBatchReportResponse(r *reportingv1.BatchReport) batchReportResponse {
 		ClosedUneconomicCount:  r.GetClosedUneconomicCount(),
 		ClosedUneconomicPaise:  r.GetClosedUneconomicPaise(),
 		ProcessingFailureCount: r.GetProcessingFailureCount(),
+		LlmQuotaExhaustedCount: r.GetLlmQuotaExhaustedCount(),
 		ByRootCause:            byRootCause,
 		ByIntervention:         byIntervention,
 		GeneratedAt:            formatTimestamp(r.GetGeneratedAt()),

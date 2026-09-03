@@ -22,6 +22,7 @@ import { RecordDrawer } from '@/components/RecordDrawer';
 import { BatchSelector } from '@/components/BatchSelector';
 import { ErrorBanner } from '@/components/ErrorBanner';
 import { RecordsTruncatedBanner } from '@/components/RecordsTruncatedBanner';
+import { LlmQuotaBanner } from '@/components/LlmQuotaBanner';
 import { BaselineComparisonCard } from '@/components/BaselineComparison';
 import { InvariantsPanel } from '@/components/InvariantsPanel';
 import { ConfusionMatrix } from '@/components/ConfusionMatrix';
@@ -259,6 +260,7 @@ function App() {
         )}
 
         {recordsTruncated && <RecordsTruncatedBanner loaded={records.length} total={recordsTotalCount} />}
+        {report && <LlmQuotaBanner count={report.llm_quota_exhausted_count} />}
 
         {!activeBatchId ? (
           <EmptyState

@@ -92,10 +92,21 @@ type serviceConfig struct {
 	RecoveryWindow  time.Duration
 
 	// LLMSampleRate is LLM_SAMPLE_RATE (docs/PHASE3_IMPLEMENTATION.md Unit
-	// H): the fraction of records sampled deterministically for a live
-	// model call rather than force_rules_only. Default 0.0, so every
-	// existing test and every default run stays free of outbound LLM calls.
+	// H, reinterpreted by docs/DEMO_READINESS.md Unit AI): a ceiling on the
+	// fraction of ALL classified records that ever reach a live model, not
+	// a selector of which ones do (see RouteConfidenceThreshold below for
+	// that). Default 0.0, so every existing test and every default run
+	// stays free of outbound LLM calls.
 	LLMSampleRate float64
+
+	// RouteConfidenceThreshold is LLM_ROUTE_CONFIDENCE_THRESHOLD
+	// (docs/DEMO_READINESS.md Unit AI): a record is only offered to a live
+	// model when the deterministic rules engine's own confidence for it is
+	// below this. Default 0.0, so a deployment that never sets it routes
+	// nothing to a live model (services/decision-engine/internal/engine's
+	// Config field of the same name explains why 0.0 can never be
+	// satisfied by a real confidence value).
+	RouteConfidenceThreshold float64
 
 	// ClassifyConfidenceThreshold is CLASSIFY_CONFIDENCE_THRESHOLD
 	// (docs/PHASE3_IMPLEMENTATION.md Unit G): below this, a classification
@@ -180,6 +191,8 @@ func loadConfig() (serviceConfig, error) {
 
 		LLMSampleRate: l.Float("LLM_SAMPLE_RATE", 0.0),
 
+		RouteConfidenceThreshold: l.Float("LLM_ROUTE_CONFIDENCE_THRESHOLD", 0.0),
+
 		ClassifyConfidenceThreshold: l.Float("CLASSIFY_CONFIDENCE_THRESHOLD", 0.0),
 
 		KafkaLagPollInterval: l.Duration("KAFKA_LAG_POLL_INTERVAL", 30*time.Second),
@@ -198,6 +211,12 @@ func loadConfig() (serviceConfig, error) {
 	// intended as "3 in 10" would otherwise sample the whole batch.
 	if cfg.LLMSampleRate < 0 || cfg.LLMSampleRate > 1 {
 		return cfg, fmt.Errorf("LLM_SAMPLE_RATE must be in [0,1], got %v", cfg.LLMSampleRate)
+	}
+	// Same reasoning as LLM_SAMPLE_RATE just above: this is compared
+	// against a confidence value, which is always in [0,1], so anything
+	// outside that range could only be a typo.
+	if cfg.RouteConfidenceThreshold < 0 || cfg.RouteConfidenceThreshold > 1 {
+		return cfg, fmt.Errorf("LLM_ROUTE_CONFIDENCE_THRESHOLD must be in [0,1], got %v", cfg.RouteConfidenceThreshold)
 	}
 	// Confidence itself is documented as always in [0,1] (classifier.proto,
 	// enforced by the classifier's own validate.go), so a threshold outside
@@ -326,6 +345,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		TimeScale:                   cfg.DemoTimeScale,
 		Guardrails:                  guardrailsFrom(cfg),
 		LLMSampleRate:               cfg.LLMSampleRate,
+		RouteConfidenceThreshold:    cfg.RouteConfidenceThreshold,
 		ClassifyConfidenceThreshold: cfg.ClassifyConfidenceThreshold,
 	}
 	eng := engine.New(pool,

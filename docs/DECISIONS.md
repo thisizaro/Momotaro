@@ -2205,3 +2205,108 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   width unless told not to shrink; widening `w-16` alone would have raised
   the threshold at which the same wrap recurs for a larger EV rather than
   removing the failure mode.
+
+- 2026-09-03: **Unit AI routes a record to a live model by the deterministic
+  rules engine's own confidence, not by a random sample of `record_id`, and
+  keeps `LLM_SAMPLE_RATE` only as a ceiling on total live calls.** Before
+  this, `sampledForLLM` (Phase 3 Unit H) hashed `record_id` against
+  `LLM_SAMPLE_RATE` and called it "sampling": a random 15% got a live model
+  call regardless of whether the record needed one. `ARCHITECTURE.md`
+  section 17 already named the intended design ("route by ambiguity, call
+  the model when the deterministic table is not confident"), and the rules
+  engine already returns a `Confidence` on every response
+  (`rules/actions.go`'s `bucketToAction` table, 0.00 for the unknown-code
+  path up to 1.00 for `RISK_HOLD`), so the fix was to actually read it.
+  `clients.classify` (`services/decision-engine/internal/engine/clients.go`)
+  now always places a rules-only "peek" call first
+  (`force_rules_only=true`; the rules rung does no I/O and cannot fail, so
+  this costs nothing but one gRPC round trip) and only places a second,
+  full-chain call when that answer's `Confidence` is below the new
+  `LLM_ROUTE_CONFIDENCE_THRESHOLD` (`CLASSIFY_CONFIDENCE_THRESHOLD`, the
+  pre-existing threshold in `engine.go`, is a different knob entirely: it
+  decides whether to escalate AFTER classification, not whether to spend a
+  call before one). Threshold set to 0.80 in `configs/demo.env`, chosen by
+  reading the actual confidence table rather than picking a round number:
+  `TRANSIENT_BANK` (0.90), `HARD_DECLINE` (0.85), `INSUFFICIENT_FUNDS` and
+  `ABANDONMENT` (0.80 each) and `RISK_HOLD` (1.00) stay rules-only, since
+  the rail told us plainly what happened; `USER_ACTION_NEEDED` (0.70, the
+  broadest bucket by the table's own comment), `OVERDUE` (0.75, no
+  technical failure to point at) and the unknown-code path (0.00) are the
+  genuinely ambiguous cases sent to a live model, budget permitting. The
+  code default is 0.0, so an unconfigured deployment routes nothing to a
+  live model, matching `LLM_SAMPLE_RATE`'s own zero-value default: a
+  threshold of 0.0 can never be satisfied because confidence is never
+  negative.
+
+  **The streaming tradeoff.** `LLM_SAMPLE_RATE` had to keep meaning
+  something, because Groq's free tier is 30 RPM and a seeded batch is
+  consumed in seconds; the brief's own framing was "keep it as a ceiling,
+  not a selector." The Decision Engine consumes `raw.events` as a stream,
+  one record at a time, and never sees the whole batch before deciding, so
+  there is no list to rank by ambiguity and take the top N% of without
+  buffering the batch first, which would give up streaming to get it.
+  Considered and rejected: buffer a window of records and rank it before
+  classifying, which trades the one property a streaming pipeline exists
+  for (bounded per-record latency, no batch boundary to wait on) for a
+  ranking quality this demo does not need. Chosen instead: `llmBudget`
+  (`llm_budget.go`), a running ratio under one mutex. Every `classify` call
+  reports itself exactly once, via `consider(eligible)`, whether or not
+  confidence judged it ambiguous, because the ceiling bounds a fraction of
+  every record processed, not only the ambiguous ones; a call is granted
+  only when doing so would keep `llmCalls/total` at or under the rate. This
+  is greedy (it spends the moment it can afford to) and provably never
+  exceeds the ceiling (`TestLLMBudgetNeverExceedsRateAtAnyPoint`,
+  `services/decision-engine/internal/engine/llm_budget_test.go`, checked as
+  a running invariant across 10,000 records, not only at the end). The
+  honest cost of this simplicity: ordering bias. A batch that is mostly
+  ambiguous spends its whole ceiling on the earliest such records and later
+  ones fall back to rules even though nothing about them is less ambiguous;
+  a full-batch rank would not have this bias, at the cost of not streaming
+  at all. For a demo-scale batch this is an acceptable, stated tradeoff, not
+  a silent one. A second, smaller cost: a transient RPC failure that
+  triggers `classifyWithRetry`'s retry re-runs the whole `classify` call,
+  including the confidence peek, so a retried record can call
+  `llmBudget.consider` more than once for what is really one record. This
+  does not let the ceiling be exceeded (`consider` never grants more than
+  the rate allows regardless of how many times it is called) and only
+  matters on the rare transient-failure path, so it was accepted rather
+  than threaded through as extra state across retries.
+
+  **Decision ordering is unchanged.** Routing only changes which records the
+  model gets to see; `engine.go`'s `decide` still reads only `Bucket` off
+  whichever response won (rules-only or live), never `RecommendedAction`,
+  and the economics scorer still prices from the prior table keyed on that
+  bucket. A live model call was never allowed to choose an action or a
+  budget, and this change does not touch that boundary.
+
+- 2026-09-03: **Quota exhaustion (budget-denied or provider-denied) is
+  surfaced as one count, `BatchReport.llm_quota_exhausted_count`, computed
+  from the same `provider_hops` audit trail column that already recorded
+  `rate_limited` and `circuit_open`, rather than a new column or a new
+  event type (Unit AI).** The one new fact this change introduces, that the
+  Decision Engine's own sampling ceiling denied a call, is recorded the
+  same way: `clients.go` appends a `sample_budget:exhausted` hop to the
+  rules-only response it already has, so exhaustion from three different
+  causes (Groq's free-tier throttling, the classifier's own breaker already
+  open, or the Decision Engine's ceiling already spent) lands in one place
+  Reporting already reads, instead of three. The counting rule itself,
+  `llmQuotaExhausted` (`services/reporting/internal/server/exhaustion.go`),
+  is a small pure function over decoded hops, unit-tested without a
+  database; the SQL and `hopcodec.Decode` plumbing around it
+  (`llmQuotaExhaustedCount`, `store.go`) follows this project's existing
+  "do not mock what you own" convention for anything that does need
+  Postgres, filtering on `from_state = RECORD_STATE_NEW` because
+  `provider_hops` is only ever written on a record's first classification,
+  never on a re-score (`recordRescore` leaves it `NULL` on purpose,
+  `store.go`'s own comment). `docs/API_GATEWAY.md` documents the field
+  before this implementation, per its own frozen-document rule and the
+  precedent Units S (#107) and AH (#109) already set for editing it
+  honestly rather than silently diverging: always present, defaulting to 0,
+  not the "missing key means no answer" convention `accuracy` and
+  `baseline_comparison` use, because nothing about this field depends on
+  `GROUND_TRUTH` existing. The dashboard renders it as `LlmQuotaBanner`, a
+  quiet slate note that renders nothing at all at count 0, deliberately not
+  the amber `AlertTriangle` styling `RecordsTruncatedBanner` uses: a
+  free-tier quota being spent is a normal operating condition on this
+  project's stated cost posture, not a fault to flag, and dressing it as one
+  would misstate what actually happened.

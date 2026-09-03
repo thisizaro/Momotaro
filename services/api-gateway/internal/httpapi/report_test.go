@@ -124,6 +124,36 @@ func TestGetBatchReportProxiesAndTranslatesFieldForField(t *testing.T) {
 	}
 }
 
+// TestGetBatchReportIncludesLLMQuotaExhaustedCount proves
+// llm_quota_exhausted_count (docs/API_GATEWAY.md, Unit AI) is proxied
+// through field for field like every other always-present count on this
+// response, not dropped and not folded into the accuracy/baseline_comparison
+// "missing key" convention: it has no GROUND_TRUTH dependency.
+func TestGetBatchReportIncludesLLMQuotaExhaustedCount(t *testing.T) {
+	rep := &fakeReporting{reportResp: &reportingv1.GetBatchReportResponse{
+		Report: &reportingv1.BatchReport{
+			BatchId:                "batch-1",
+			LlmQuotaExhaustedCount: 12,
+		},
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/batches/batch-1/report", nil)
+	req.Header.Set("X-API-Key", testAPIKey)
+	rr := httptest.NewRecorder()
+	newHandlerWithReporting(rep).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["llm_quota_exhausted_count"] != float64(12) {
+		t.Errorf("llm_quota_exhausted_count = %v, want 12", got["llm_quota_exhausted_count"])
+	}
+}
+
 // TestGetBatchReportIncludesAccuracyAndBaselineComparisonWhenPresent is the
 // other half of the absent-vs-present contract: when Reporting DOES return
 // them, the Gateway must not drop them, and must not require a zero

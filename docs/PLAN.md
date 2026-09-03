@@ -984,6 +984,34 @@ ordered by value per hour. Detail for each is in
       that repeats the immediately previous entry's rationale verbatim,
       keeping it when it differs or when the repeat is not consecutive →
       `docs/DEMO_READINESS.md` Unit AO, `docs/DECISIONS.md` 2026-09-02.
+- [x] **Unit AI: route LLM calls by confidence, keep `LLM_SAMPLE_RATE` as a
+      ceiling, and surface quota exhaustion.** Done 2026-09-03. `clients.go`
+      now always asks the deterministic rules engine first
+      (`force_rules_only=true`, free, cannot fail) and only places a second,
+      live-model call when that answer's `Confidence` is below the new
+      `LLM_ROUTE_CONFIDENCE_THRESHOLD` (default 0.0, so an unconfigured
+      deployment routes nothing to a live model, same shape as
+      `LLM_SAMPLE_RATE`'s own zero default); `configs/demo.env` sets it to
+      0.80, chosen by reading `rules/actions.go`'s actual confidence table
+      rather than a round number. The old hash-of-`record_id` `sampledForLLM`
+      (Phase 3 Unit H) is deleted; `LLM_SAMPLE_RATE` is reinterpreted as a
+      running-ratio ceiling (`llm_budget.go`'s `llmBudget`, ratio computed
+      over every classified record, not only the ambiguous ones) rather than
+      a selector, because the Decision Engine consumes `raw.events` as a
+      stream and never sees a whole batch to rank before deciding. An
+      ambiguous record denied by the ceiling still gets the rules answer, now
+      tagged with a `sample_budget:exhausted` hop. Reporting counts, per
+      batch, every record whose first classification carries a
+      `rate_limited`, `circuit_open` or `exhausted` hop
+      (`services/reporting/internal/server/exhaustion.go`) as
+      `llm_quota_exhausted_count` on `BatchReport`, documented in
+      `docs/API_GATEWAY.md` before implementation per its own frozen-doc
+      rule, proxied through the Gateway field-for-field, and rendered as a
+      quiet slate `LlmQuotaBanner` (hidden entirely at 0) rather than an
+      alarm. Decision ordering is unchanged: routing only changes which
+      records the model gets to see, `engine.go`'s `decide` still reads only
+      `Bucket` off the winning response → `docs/DEMO_READINESS.md` Unit AI,
+      `docs/DECISIONS.md` 2026-09-03.
 - [ ] **P2, ~11h.** Unit Y Razorpay payment-downtime webhooks; Unit Z real
       webhook payload, signature verification and the four-field error
       taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`, `docs/DEMO_READINESS.md`

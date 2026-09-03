@@ -53,6 +53,44 @@ func TestLoadConfigAcceptsBoundaryLLMSampleRates(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDefaultRouteConfidenceThresholdIsZero(t *testing.T) {
+	validEnv(t)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.RouteConfidenceThreshold != 0 {
+		t.Errorf("default RouteConfidenceThreshold = %v, want 0 (a threshold of 0 can never be satisfied by a real confidence value, so every existing deploy routes nothing to a live model)", cfg.RouteConfidenceThreshold)
+	}
+}
+
+// Out-of-range values must fail at startup, same reasoning as
+// LLM_SAMPLE_RATE above: this is compared against a confidence, always in
+// [0,1], so anything else can only be a typo.
+func TestLoadConfigRejectsOutOfRangeRouteConfidenceThreshold(t *testing.T) {
+	for _, bad := range []string{"3", "-0.1", "1.5"} {
+		t.Run(bad, func(t *testing.T) {
+			validEnv(t)
+			t.Setenv("LLM_ROUTE_CONFIDENCE_THRESHOLD", bad)
+			if _, err := loadConfig(); err == nil {
+				t.Errorf("loadConfig accepted LLM_ROUTE_CONFIDENCE_THRESHOLD=%s, want a startup error", bad)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsBoundaryRouteConfidenceThresholds(t *testing.T) {
+	for _, good := range []string{"0", "1", "0.8", "0.5"} {
+		t.Run(good, func(t *testing.T) {
+			validEnv(t)
+			t.Setenv("LLM_ROUTE_CONFIDENCE_THRESHOLD", good)
+			if _, err := loadConfig(); err != nil {
+				t.Errorf("loadConfig rejected LLM_ROUTE_CONFIDENCE_THRESHOLD=%s: %v", good, err)
+			}
+		})
+	}
+}
+
 // The regression test for docs/INCIDENTS.md 2026-08-31: DEMO_TIME_SCALE must
 // not shrink the recovery window.
 //

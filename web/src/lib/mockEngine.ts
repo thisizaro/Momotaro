@@ -981,6 +981,10 @@ export class MockEngine {
       closed_uneconomic_count,
       closed_uneconomic_paise,
       processing_failure_count: 0,
+      // No persisted signal exists in the mock for this either, same as
+      // processing_failure_count above: it comes from provider hops the
+      // mock never generates (docs/API_GATEWAY.md, Unit AI).
+      llm_quota_exhausted_count: 0,
       by_root_cause,
       by_intervention,
       accuracy,
