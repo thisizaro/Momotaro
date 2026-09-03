@@ -2454,3 +2454,60 @@ was right and the threshold was wrong.
   an expensive dependency, not only the one the limit was written for.
 - **A unit that is correct at demo scale can be nonsense at another scale.**
   The time framing was not wrong, it was unbounded.
+
+## 2026-09-03: TestGatewayReportRoutesAndLiveRelay fails reading the live WebSocket message, on a clean `main` too
+
+**Symptom, while verifying Unit AM** (`docs/DEMO_READINESS.md`, the
+read-only config panel). `go test -race -count=1 -tags=e2e ./test/e2e/...`
+consistently fails one test:
+
+```
+--- FAIL: TestGatewayReportRoutesAndLiveRelay (73.13s)
+    gateway_report_test.go:143: read live update: failed to read JSON
+                                 message: failed to get reader: context
+                                 deadline exceeded
+```
+
+The rest of the package passes silently (no other test's log printed, and
+the batch itself is submitted, classified and scheduled fine before the
+failure: `record classified and scheduled ... state=RECORD_STATE_
+RETRY_SCHEDULED` appears in the log immediately before the timeout). Two
+back-to-back runs on this unit's branch both failed identically, so it is
+not a one-off flake on this branch.
+
+**Checked before assuming it was pre-existing.** Ran the identical command
+against a clean `main` checkout in a separate `git worktree` (no changes
+from this unit present at all): same failure, same line, same timeout.
+This unit's diff (`GetAgentConfig` on the Decision Engine, `GET
+/v1/demo/config` on the Gateway, the new `AgentConfigPanel` section) never
+touches `audit.events` publishing, `Reporting.StreamBatchUpdates`, or the
+Gateway's WebSocket relay (`live.go`), so this is not something this unit
+introduced.
+
+**Status: open, not fixed here.** Left as a report only, the same posture
+`docs/INCIDENTS.md` 2026-09-01's scheduler-flake entry takes: whoever next
+touches the live-relay path should treat this as a real regression to
+chase, not retry past. Every other e2e test in the package (`TestWalking
+SkeletonReachesRecovered`, `TestCrashSafetyDecisionEngineRestart`,
+`TestFallbackFromFailedLLMToRules`, `TestBatchCorrectnessInvariants`,
+`TestSmokeBatchReachesExpectedTerminalStates`,
+`TestSubmitEventIdempotencyDeduplicatesRecord`,
+`TestSubmitBatchResubmitCreatesIndependentRecords`) was confirmed passing
+on this unit's branch, run explicitly rather than assumed from the
+package-level `FAIL`.
+
+**Lesson.** A package-level `FAIL` is not evidence that a diff broke
+something; the one failing test has to be isolated and checked against an
+unmodified `main` before concluding either way. Trusting a red package
+result at face value here would have meant chasing a bug in code this unit
+never touched.
+
+**A second test, `TestSmokeBatchReachesExpectedTerminalStates`, also failed
+once** in a run that exercised several tests back to back under `-race`,
+with every one of its subtests individually reported `PASS` and no
+assertion failure printed, the shape of a resource-contention flake under
+`-race` running several full nine-process stacks concurrently, matching
+`docs/INCIDENTS.md` 2026-09-01's already-documented scheduler flake. Run
+alone it passed cleanly (51.22s, all seven subtests green). Not
+re-investigated further per that entry's own guidance: re-run once, do not
+let re-running become reflexive.
