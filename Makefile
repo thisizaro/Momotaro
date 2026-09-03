@@ -229,6 +229,32 @@ GATEWAY_URL ?= http://localhost:8090
 loadgen:
 	go run ./scripts/loadgen -gateway-url $(GATEWAY_URL) -rate $(RATE) $(if $(EVENTS),-count $(EVENTS),-duration $(DURATION))
 
+## check-env: report variables present in .env.example but missing from
+## .env. Three units in a row (Y, Z, and the LLM routing pair) added a
+## newly-required variable and broke a stack that had been working, because
+## .env is gitignored and cannot be updated by a PR. This makes the drift
+## visible in one command instead of as a fatal at startup.
+##
+## Informational, never fails: some keys in .env.example are optional with
+## defaults and some are deliberately set only in configs/demo.env, so
+## exiting nonzero here would cry wolf and train everyone to ignore it.
+check-env:
+	@test -f .env || { echo "no .env: cp .env.example .env"; exit 1; }
+	@missing=$$(comm -23 \
+		<(grep -oE '^[A-Z_][A-Z0-9_]*=' .env.example | tr -d '=' | sort -u) \
+		<(grep -oE '^[A-Z_][A-Z0-9_]*=' .env         | tr -d '=' | sort -u)); \
+	if [ -n "$$missing" ]; then \
+		echo "in .env.example but not in your .env:"; \
+		echo "$$missing" | sed 's/^/  /'; \
+		echo ""; \
+		echo "Some of these are optional with defaults, and some are set by"; \
+		echo "configs/demo.env under PROFILE=demo. Check .env.example's own"; \
+		echo "comments before copying any of them across. A service that"; \
+		echo "needs one will refuse to start and name it."; \
+	else \
+		echo ".env has every key .env.example does"; \
+	fi
+
 ## up: start local infra (postgres, redis, kafka, kafka ui)
 up:
 	docker compose up -d

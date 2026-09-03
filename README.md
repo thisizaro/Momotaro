@@ -203,6 +203,21 @@ Two symptoms of a misconfigured run, both seen for real: a recovery rate near
 batch has no ground truth, so it came from the dashboard button rather than
 `make batchgen`.
 
+### If a service refuses to start naming a variable
+
+`.env` is gitignored, so a PR that adds a newly required variable updates
+`.env.example` and cannot touch your `.env`. Three units in a row have done
+this and broken a stack that had been working.
+
+```bash
+make check-env    # lists keys in .env.example that your .env lacks
+```
+
+It never fails the build: some of those keys are optional with defaults, and
+some are set only by `configs/demo.env` under `PROFILE=demo`. Read
+`.env.example`'s comments before copying one across. Any service that truly
+needs one refuses to start and names it in the error.
+
 ### Fill the Live Event Stream with real production traffic
 
 ```bash
