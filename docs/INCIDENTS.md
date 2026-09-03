@@ -2283,3 +2283,51 @@ just the one being worked in at the time. `l.Str` (required) is still the
 right call for a cross-service address an unconditional production route
 depends on, see `docs/DECISIONS.md`; the gap was in the three call sites,
 not in requiring the value.
+
+## 2026-09-03: a regression test read the gitignored `.env`, green locally and red on every CI runner
+
+The same PR as the entry directly above this one (`DECISION_ENGINE_ADDR`
+made required with three call sites not catching up) added a test to guard
+against it happening again: `TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr`
+merged the real `.env` with the `run-api-gateway` recipe's own overrides and
+called `loadConfig` against the result. It passed on the machine that wrote
+it. CI failed both `build-test` and `integration` immediately:
+
+```
+--- FAIL: TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr (0.00s)
+    makefile_test.go:148: open /home/runner/work/Momotaro/Momotaro/.env:
+    no such file or directory
+```
+
+`.env` is gitignored (`AGENTS.md`: "the real `.env` is gitignored, never
+committed"), so it exists on every developer machine that has ever run
+`make demo-up` and on none of CI's. A test built and run against a local
+checkout with a real `.env` present cannot see this failure mode at all,
+which is precisely why it shipped.
+
+**This is the mirror image of the 2026-09-02 WebSocket origin-check
+incident above, not a new class of bug.** That one was a test suite passing
+in CI because CI could not reproduce a production-only condition (a
+cross-origin browser request). This one is a test passing on a developer
+machine because a developer machine has a file CI does not. Same shape,
+opposite direction: **whether a test's result depends on which environment
+it runs in is itself worth asking, independent of whether the test looks
+correct.**
+
+**Fix.** `envFromDotFile`, and the one test that used it, were pointed at
+`.env.example` instead, which is tracked and carries the same values for
+every field `loadConfig` needs (diffed to confirm; the two files differ only
+in real secrets `.env` fills in that `loadConfig` never reads, and in a few
+comment blocks). This gives equivalent coverage while running everywhere,
+which is why it was chosen over the simpler fix of skipping the test when
+`.env` is absent: a test that runs in CI beats one that documents why it
+cannot. Verified by moving the real `.env` aside and running the entire
+suite (`go test ./...`) with it genuinely absent, matching CI's own
+condition exactly rather than assuming the fix worked.
+
+**Lesson.** A test that reaches for a real config file rather than a
+checked-in fixture inherits that file's own guarantees, or lack of them.
+`.env` has none: gitignored by design, so its presence is a property of the
+machine, not the repository. Anything a test needs to see should be a
+tracked file (`.env.example`, here) or something the test constructs itself,
+never a file whose entire purpose is to hold values nobody commits.

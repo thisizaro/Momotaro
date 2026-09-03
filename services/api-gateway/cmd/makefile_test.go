@@ -29,6 +29,13 @@ func repoRootForMakefileTest(t *testing.T) string {
 // deliberately simple (no quoting, no export, no variable expansion): that
 // is exactly the shape docs/ENGINEERING.md section 5 and the Makefile's own
 // `include .env` both assume this repo's .env files have.
+//
+// Deliberately never pointed at the real `.env`: that file is gitignored
+// (AGENTS.md: "the real .env is gitignored, never committed"), so it does
+// not exist on a CI runner, and a test that opens it is green on a
+// developer machine and red everywhere else (docs/INCIDENTS.md 2026-09-03).
+// `.env.example` is tracked, carries the same real placeholder values for
+// every var loadConfig needs, and is what every test in this file uses.
 func envFromDotFile(t *testing.T, path string) map[string]string {
 	t.Helper()
 	f, err := os.Open(path)
@@ -136,16 +143,19 @@ func TestRunAPIGatewayRecipeItselfSetsDecisionEngineAddr(t *testing.T) {
 }
 
 // TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr is the broad half: builds
-// the SAME environment `make run-api-gateway` actually runs with (`.env`'s
-// exports, overridden by the recipe's own command-line assignments) and
-// calls the real loadConfig against it, so any field required at startup
-// that ends up missing from BOTH sources, not just this one, fails one fast
-// `go test` rather than nine slow e2e ones the way this incident's harness
-// gap did.
+// the environment `make run-api-gateway` runs with in practice (`.env`'s
+// exports, overridden by the recipe's own command-line assignments), using
+// the tracked `.env.example` as the stand-in for `.env` (see
+// envFromDotFile's own comment on why, docs/INCIDENTS.md 2026-09-03: a test
+// that reads the real, gitignored `.env` is green locally and red on every
+// CI runner, since the file does not exist there at all), and calls the
+// real loadConfig against it, so any field required at startup that ends up
+// missing from BOTH sources, not just this one, fails one fast `go test`
+// rather than nine slow e2e ones the way this incident's harness gap did.
 func TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr(t *testing.T) {
 	root := repoRootForMakefileTest(t)
 
-	env := envFromDotFile(t, filepath.Join(root, ".env"))
+	env := envFromDotFile(t, filepath.Join(root, ".env.example"))
 	for k, v := range envFromMakeRecipe(t, filepath.Join(root, "Makefile"), "run-api-gateway") {
 		env[k] = v // the recipe's own assignments win, matching real `make`/shell precedence
 	}
@@ -155,7 +165,7 @@ func TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr(t *testing.T) {
 	}
 
 	if _, err := loadConfig(); err != nil {
-		t.Fatalf("loadConfig with the environment `make run-api-gateway` actually provides: %v", err)
+		t.Fatalf("loadConfig with .env.example merged with the environment `make run-api-gateway` actually provides: %v", err)
 	}
 }
 
