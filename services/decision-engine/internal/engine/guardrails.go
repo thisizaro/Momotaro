@@ -241,7 +241,7 @@ type downtimeStatus struct {
 	End        *time.Time // nil while the downtime is ongoing (Razorpay's own null-while-ongoing shape)
 }
 
-// downtimeMaxUnresolvedHold caps how long an UNPLANNED downtime (Scheduled
+// DowntimeMaxUnresolvedHold caps how long an UNPLANNED downtime (Scheduled
 // false, End nil) can hold a retry back without a payment.downtime.resolved
 // event ever arriving. A SCHEDULED downtime needs no such cap: Razorpay
 // publishes its End up front, so that timestamp alone bounds it once it
@@ -254,7 +254,7 @@ type downtimeStatus struct {
 // no in-memory timer to lose). Six hours comfortably covers a real
 // unscheduled outage without leaving a record parked for the length of a
 // working day on a signal that may itself have gone silent.
-const downtimeMaxUnresolvedHold = 6 * time.Hour
+const DowntimeMaxUnresolvedHold = 6 * time.Hour
 
 // downtimeBlocksRetry reports whether d is, right now, an active downtime
 // that should hold RETRY back, and if so, the human-readable reason the
@@ -272,7 +272,7 @@ func downtimeBlocksRetry(d downtimeStatus, now time.Time) (string, bool) {
 		if !now.Before(*d.End) {
 			return "", false // a scheduled downtime's own published end has passed
 		}
-	} else if !now.Before(d.Begin.Add(downtimeMaxUnresolvedHold)) {
+	} else if !now.Before(d.Begin.Add(DowntimeMaxUnresolvedHold)) {
 		return "", false // the safety valve: no resolved event, but this has run long enough
 	}
 	return fmt.Sprintf("bank downtime active: %s %s, severity %s", d.Method, d.Instrument, d.Severity), true

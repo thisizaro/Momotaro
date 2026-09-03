@@ -156,6 +156,13 @@ func (h *Handler) Routes() http.Handler {
 		authenticated.HandleFunc("GET /v1/demo/scenarios", h.listDemoScenarios)
 		authenticated.HandleFunc("GET /v1/demo/world", h.getDemoWorldState)
 		authenticated.HandleFunc("POST /v1/demo/inject-poison", h.injectDemoPoison)
+		// Proxies the Decision Engine, not worldsim, but still gated on
+		// h.worldsim != nil: this route's existence follows the same
+		// DEMO_CONTROLS_ENABLED flag as every route above it
+		// (docs/API_GATEWAY.md "GET /v1/demo/config"), and h.worldsim is
+		// already this Handler's signal for whether that flag was set,
+		// EnableDemoControls is called for both.
+		authenticated.HandleFunc("GET /v1/demo/config", h.getDemoConfig)
 	}
 
 	mux := http.NewServeMux()

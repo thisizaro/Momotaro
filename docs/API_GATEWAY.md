@@ -691,10 +691,14 @@ exists but is locked.
 
 Every route here is a thin proxy onto World Simulator's own gRPC surface
 (`proto/worldsim/v1/worldsim.proto`), the same way every other route in
-this document proxies onto Ingestion, Reporting or Audit. The Gateway
-never gains a database handle for these: batch seeding, in particular, is
-implemented on World Simulator because only a `demo/` component may ever
-write `GROUND_TRUTH` (`ARCHITECTURE.md` section 6).
+this document proxies onto Ingestion, Reporting or Audit, with one
+exception: `GET /v1/demo/config` proxies the Decision Engine instead
+(`proto/decisionengine/v1/decisionengine.proto`'s `GetAgentConfig`), because
+that is the service that actually loaded and validated the values it
+returns. The Gateway never gains a database handle for these: batch
+seeding, in particular, is implemented on World Simulator because only a
+`demo/` component may ever write `GROUND_TRUTH` (`ARCHITECTURE.md` section
+6).
 
 ### `POST /v1/demo/batches`
 
@@ -772,6 +776,56 @@ Response:
 Both ids are freshly generated and deliberately never written to Postgres;
 `record_id` is what the Decision Engine's consumer dead-letters within a
 few seconds of the call.
+
+### `GET /v1/demo/config`
+
+**docs/DEMO_READINESS.md Unit AM.** The read-only config panel: shows what
+the agent is bounded by, fixed at process startup and never adjustable
+through this or any other route. There are more environment variables in
+this deployment than are returned here (`.env.example` currently has 60,
+none of them adjustable at runtime); this endpoint answers with the
+behavioral subset worth showing (timings, limits, thresholds), never a
+secret, credential, or connection string, and never a claim of being a full
+environment dump.
+
+Unlike every other route in this section, this one proxies the **Decision
+Engine**, not World Simulator, via `GetAgentConfig`
+(`proto/decisionengine/v1/decisionengine.proto`): the Decision Engine is
+the service that actually loaded, validated and (for `contact_cooldown_
+seconds`) applied `DEMO_TIME_SCALE` to these values, so the Gateway proxies
+them rather than re-reading `os.Getenv` on its own and risking the two
+copies drifting apart, the same class of bug `docs/INCIDENTS.md`
+2026-09-03 already describes happening between a tracked default and a
+real environment. See `docs/DECISIONS.md` for the full reasoning.
+
+Response:
+```json
+{
+  "demo_time_scale": 300000,
+  "max_retries": 3,
+  "max_contacts": 3,
+  "contact_cooldown_seconds": 86400,
+  "recovery_window_seconds": 604800,
+  "llm_sample_rate": 0.15,
+  "route_confidence_threshold": 0.6,
+  "classify_confidence_threshold": 0.4,
+  "nudge_max_chars": 160,
+  "downtime_max_unresolved_hold_seconds": 21600
+}
+```
+`contact_cooldown_seconds` is already scaled by `demo_time_scale` (it is
+what the Decision Engine actually enforces); `recovery_window_seconds` is
+deliberately not scaled, the same asymmetry `docs/DECISIONS.md` 2026-08-31
+documents for the guardrails themselves. `downtime_max_unresolved_hold_
+seconds` has no backing environment variable at all, it is a Go constant
+(`engine.DowntimeMaxUnresolvedHold`), included because it is a real bound
+the agent operates under regardless.
+
+**Deliberately absent: `LLM_PROVIDER_CHAIN`.** It is owned by the
+Classifier, not the Decision Engine, and this endpoint does not add a
+second cross-service call or a duplicated copy of the Classifier's own
+config parsing to reach it. Left out rather than read independently, see
+`docs/DECISIONS.md`.
 
 ### `GET /v1/help`
 

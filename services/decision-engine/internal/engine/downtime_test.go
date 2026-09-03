@@ -75,7 +75,7 @@ func TestScheduledDowntimeStillBlocksBeforeItsEnd(t *testing.T) {
 // downtime with no end and no resolved event must not hold a record forever.
 func TestUnplannedDowntimeExpiresAfterTheMaxUnresolvedHold(t *testing.T) {
 	d := activeDowntime()
-	d.Begin = testNow.Add(-downtimeMaxUnresolvedHold - time.Minute)
+	d.Begin = testNow.Add(-DowntimeMaxUnresolvedHold - time.Minute)
 
 	if _, blocked := downtimeBlocksRetry(d, testNow); blocked {
 		t.Error("want unblocked: past the max-unresolved-hold safety valve with no resolved event")
@@ -84,7 +84,7 @@ func TestUnplannedDowntimeExpiresAfterTheMaxUnresolvedHold(t *testing.T) {
 
 func TestUnplannedDowntimeStillBlocksInsideTheMaxUnresolvedHold(t *testing.T) {
 	d := activeDowntime()
-	d.Begin = testNow.Add(-downtimeMaxUnresolvedHold + time.Minute)
+	d.Begin = testNow.Add(-DowntimeMaxUnresolvedHold + time.Minute)
 
 	if _, blocked := downtimeBlocksRetry(d, testNow); !blocked {
 		t.Error("want blocked: still inside the safety-valve window")

@@ -37,17 +37,49 @@ type resumer interface {
 	RecordDowntimeEvent(ctx context.Context, evt engine.DowntimeEvent) error
 }
 
+// ConfigSnapshot is the behavioral subset of this service's own config that
+// GetAgentConfig returns (docs/DEMO_READINESS.md Unit AM): the guardrail and
+// LLM-routing values cmd/main.go loaded and validated at startup, captured
+// once rather than re-read per request, since every one of them is fixed
+// for the process's lifetime. This is what makes the RPC a pure read with
+// nothing to fail: no Postgres, no I/O, just the values this process was
+// started with.
+//
+// LLM_PROVIDER_CHAIN is deliberately absent, see decisionengine.proto's
+// GetAgentConfigResponse doc comment and docs/DECISIONS.md: it belongs to
+// the Classifier, not this service.
+type ConfigSnapshot struct {
+	// DemoTimeScale is DEMO_TIME_SCALE (internal/platform/config), loaded
+	// identically by every service in this repo.
+	DemoTimeScale float64
+	// Guardrails is exactly what cmd/main.go's guardrailsFrom(cfg) built and
+	// handed to the engine and the scheduler, so this can never show a
+	// value other than the one actually enforced (ContactCooldown already
+	// scaled by DemoTimeScale, RecoveryWindow deliberately not, see
+	// guardrailsFrom's own comment).
+	Guardrails engine.GuardrailConfig
+	// LLMSampleRate, RouteConfidenceThreshold, ClassifyConfidenceThreshold,
+	// NudgeMaxChars: this service's own LLM-routing config
+	// (services/decision-engine/cmd/main.go).
+	LLMSampleRate               float64
+	RouteConfidenceThreshold    float64
+	ClassifyConfidenceThreshold float64
+	NudgeMaxChars               int32
+}
+
 // Server implements decisionenginev1.DecisionEngineServiceServer.
 type Server struct {
 	decisionenginev1.UnimplementedDecisionEngineServiceServer
 
 	resumer resumer
+	cfg     ConfigSnapshot
 	log     *slog.Logger
 }
 
-// New returns a Server that resumes nudges via r. log must not be nil.
-func New(r resumer, log *slog.Logger) *Server {
-	return &Server{resumer: r, log: log}
+// New returns a Server that resumes nudges via r and answers GetAgentConfig
+// from cfg. log must not be nil.
+func New(r resumer, cfg ConfigSnapshot, log *slog.Logger) *Server {
+	return &Server{resumer: r, cfg: cfg, log: log}
 }
 
 // ReportDelayedOutcome validates the request and delegates to
@@ -126,4 +158,25 @@ func (s *Server) ReportDowntimeEvent(ctx context.Context, req *decisionenginev1.
 		return nil, fmt.Errorf("record downtime event %s: %w", req.GetDowntimeId(), err)
 	}
 	return &decisionenginev1.ReportDowntimeEventResponse{Applied: true}, nil
+}
+
+// GetAgentConfig answers docs/DEMO_READINESS.md Unit AM: it never touches
+// the resumer, Postgres, or anything else that could fail, because s.cfg is
+// already the exact values this process validated at startup. There is
+// nothing to validate on the request (it carries no fields) and nothing
+// that can fail here beyond context cancellation, which the gRPC framework
+// already handles.
+func (s *Server) GetAgentConfig(ctx context.Context, req *decisionenginev1.GetAgentConfigRequest) (*decisionenginev1.GetAgentConfigResponse, error) {
+	return &decisionenginev1.GetAgentConfigResponse{
+		DemoTimeScale:                    s.cfg.DemoTimeScale,
+		MaxRetries:                       int32(s.cfg.Guardrails.MaxRetries),
+		MaxContacts:                      int32(s.cfg.Guardrails.MaxContacts),
+		ContactCooldownSeconds:           int64(s.cfg.Guardrails.ContactCooldown.Seconds()),
+		RecoveryWindowSeconds:            int64(s.cfg.Guardrails.RecoveryWindow.Seconds()),
+		LlmSampleRate:                    s.cfg.LLMSampleRate,
+		RouteConfidenceThreshold:         s.cfg.RouteConfidenceThreshold,
+		ClassifyConfidenceThreshold:      s.cfg.ClassifyConfidenceThreshold,
+		NudgeMaxChars:                    s.cfg.NudgeMaxChars,
+		DowntimeMaxUnresolvedHoldSeconds: int64(engine.DowntimeMaxUnresolvedHold.Seconds()),
+	}, nil
 }

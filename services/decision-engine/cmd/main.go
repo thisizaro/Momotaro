@@ -394,10 +394,25 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		executorv1.NewExecutorServiceClient(executorConn),
 		dlqProducer, clock.New(), model, schedCfg)
 
-	// The only inbound gRPC call this service answers: ReportDelayedOutcome,
+	// agentConfig is what GetAgentConfig hands back (docs/DEMO_READINESS.md
+	// Unit AM): Guardrails is exactly guardrailsFrom(cfg), the same value
+	// already passed to engCfg and schedCfg above, so the config the
+	// dashboard shows can never drift from the config actually enforced
+	// (docs/DECISIONS.md).
+	agentConfig := server.ConfigSnapshot{
+		DemoTimeScale:               cfg.DemoTimeScale,
+		Guardrails:                  guardrailsFrom(cfg),
+		LLMSampleRate:               cfg.LLMSampleRate,
+		RouteConfidenceThreshold:    cfg.RouteConfidenceThreshold,
+		ClassifyConfidenceThreshold: cfg.ClassifyConfidenceThreshold,
+		NudgeMaxChars:               cfg.NudgeMaxChars,
+	}
+
+	// The only inbound gRPC calls this service answers: ReportDelayedOutcome,
 	// for an outcome that resolves after the request that started it has
-	// already returned (docs/PHASE5_IMPLEMENTATION.md Unit A). Everything
-	// else about this service's work arrives on raw.events, below.
+	// already returned (docs/PHASE5_IMPLEMENTATION.md Unit A), and
+	// GetAgentConfig, a pure read of agentConfig above. Everything else
+	// about this service's work arrives on raw.events, below.
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 	if err != nil {
 		return fmt.Errorf("listen on grpc port %d: %w", cfg.GRPCPort, err)
@@ -407,7 +422,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		interceptors.UnaryServerRequireDeadline(),
 		interceptors.UnaryServerMetrics(m),
 	))
-	decisionenginev1.RegisterDecisionEngineServiceServer(grpcServer, server.New(scheduler, log))
+	decisionenginev1.RegisterDecisionEngineServiceServer(grpcServer, server.New(scheduler, agentConfig, log))
 	grpcServeErr := make(chan error, 1)
 	go func() {
 		log.Info("grpc server listening", "port", cfg.GRPCPort)

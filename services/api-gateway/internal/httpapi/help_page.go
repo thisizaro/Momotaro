@@ -80,6 +80,7 @@ func helpSections() []helpSection {
 				[2]string{"GET", "/v1/demo/scenarios"},
 				[2]string{"GET", "/v1/demo/world"},
 				[2]string{"POST", "/v1/demo/inject-poison"},
+				[2]string{"GET", "/v1/demo/config"},
 			),
 		},
 	}
