@@ -5,6 +5,7 @@ import type {
   BatchUpdate,
   DemoBatchRequest,
   DemoBatchResponse,
+  DemoConfigResponse,
   DemoInjectPoisonResponse,
   DemoScenario,
   DemoScenariosResponse,
@@ -361,5 +362,10 @@ export const api = {
   async injectPoison(): Promise<DemoInjectPoisonResponse> {
     if (USE_MOCK) return mockEngine.injectPoison();
     return demoRequest<DemoInjectPoisonResponse>('/v1/demo/inject-poison', { method: 'POST' });
+  },
+
+  async getDemoConfig(): Promise<DemoConfigResponse> {
+    if (USE_MOCK) return mockEngine.getDemoConfig();
+    return demoRequest<DemoConfigResponse>('/v1/demo/config');
   },
 };

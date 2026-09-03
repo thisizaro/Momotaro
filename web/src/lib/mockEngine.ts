@@ -9,6 +9,7 @@ import type {
   BatchUpdate,
   DemoBatchRequest,
   DemoBatchResponse,
+  DemoConfigResponse,
   DemoInjectPoisonResponse,
   DemoScenario,
   DemoWorldResponse,
@@ -851,6 +852,28 @@ export class MockEngine {
    */
   async injectPoison(): Promise<DemoInjectPoisonResponse> {
     return { record_id: uuid(), batch_id: uuid() };
+  }
+
+  /**
+   * Mock stand-in for `GET /v1/demo/config` (docs/DEMO_READINESS.md Unit
+   * AM). Mirrors `configs/demo.env` layered on `.env.example`'s own
+   * defaults, the values this repo actually ships a demo with, so the
+   * mock reads the same as the real Gateway rather than an arbitrary
+   * placeholder set.
+   */
+  async getDemoConfig(): Promise<DemoConfigResponse> {
+    return {
+      demo_time_scale: 300000,
+      max_retries: 3,
+      max_contacts: 3,
+      contact_cooldown_ms: Math.round((24 * 60 * 60 * 1000) / 300000), // scaled like the real demo profile, ~288ms
+      recovery_window_seconds: 7 * 24 * 60 * 60,
+      llm_sample_rate: 0.15,
+      route_confidence_threshold: 0.8,
+      classify_confidence_threshold: 0.0,
+      nudge_max_chars: 160,
+      downtime_max_unresolved_hold_seconds: 6 * 60 * 60,
+    };
   }
 
   async getBatchReport(batch_id: string): Promise<BatchReport> {

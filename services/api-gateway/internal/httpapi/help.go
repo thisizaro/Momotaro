@@ -51,6 +51,7 @@ var helpRoutes = []helpRoute{
 	{"GET", "/v1/demo/scenarios", authDemo, "List the demo scenario presets and what each one is built to show."},
 	{"GET", "/v1/demo/world", authDemo, "The World Simulator's live state: every delayed outcome still queued and when it is due."},
 	{"POST", "/v1/demo/inject-poison", authDemo, "Publish one raw.events message for a record id that was never inserted, to demonstrate the dead-letter path live."},
+	{"GET", "/v1/demo/config", authDemo, "Read-only: the guardrail and LLM-routing values the agent is bounded by, fixed at process startup."},
 }
 
 // help answers GET /v1/help. Unauthenticated on purpose: a caller who does

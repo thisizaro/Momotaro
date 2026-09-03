@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	decisionenginev1 "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1"
 	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -77,6 +78,7 @@ func TestDemoRoutesNotRegisteredWhenDisabled(t *testing.T) {
 		{http.MethodGet, "/v1/demo/scenarios"},
 		{http.MethodGet, "/v1/demo/world"},
 		{http.MethodPost, "/v1/demo/inject-poison"},
+		{http.MethodGet, "/v1/demo/config"},
 	}
 	for _, tc := range cases {
 		rec := doRequest(h, tc.method, tc.path, testAPIKey, `{}`)
@@ -96,6 +98,7 @@ func TestDemoRoutesRegisteredWhenEnabledStillRequireAPIKey(t *testing.T) {
 		{http.MethodGet, "/v1/demo/scenarios"},
 		{http.MethodGet, "/v1/demo/world"},
 		{http.MethodPost, "/v1/demo/inject-poison"},
+		{http.MethodGet, "/v1/demo/config"},
 	}
 	for _, tc := range cases {
 		rec := doRequest(h, tc.method, tc.path, "", `{}`)
@@ -248,5 +251,78 @@ func TestInjectDemoPoisonPropagatesUnavailableAs502(t *testing.T) {
 	rec := doRequest(h, http.MethodPost, "/v1/demo/inject-poison", testAPIKey, "")
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+}
+
+// newHandlerWithDemoConfig wires a fakeDecisionEngine in addition to the
+// worldsim fake, which every other demo test above leaves nil because
+// GET /v1/demo/config is the only demo route that ever calls it
+// (docs/DEMO_READINESS.md Unit AM: it proxies the Decision Engine, not
+// World Simulator).
+func newHandlerWithDemoConfig(d *fakeDecisionEngine) *Handler {
+	h := New(&fakeIngestion{}, &fakeReporting{}, &fakeAudit{}, d, testAPIKey, 2*time.Second, 0, 0)
+	h.EnableDemoControls(&fakeWorldSimulator{})
+	return h
+}
+
+func TestGetDemoConfigSuccess(t *testing.T) {
+	fake := &fakeDecisionEngine{configResp: &decisionenginev1.GetAgentConfigResponse{
+		DemoTimeScale:                    300000,
+		MaxRetries:                       3,
+		MaxContacts:                      3,
+		ContactCooldownMs:                86400,
+		RecoveryWindowSeconds:            604800,
+		LlmSampleRate:                    0.15,
+		RouteConfidenceThreshold:         0.6,
+		ClassifyConfidenceThreshold:      0.4,
+		NudgeMaxChars:                    160,
+		DowntimeMaxUnresolvedHoldSeconds: 21600,
+	}}
+	h := newHandlerWithDemoConfig(fake).Routes()
+
+	rec := doRequest(h, http.MethodGet, "/v1/demo/config", testAPIKey, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp getDemoConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.DemoTimeScale != 300000 {
+		t.Errorf("DemoTimeScale = %v, want 300000", resp.DemoTimeScale)
+	}
+	if resp.MaxRetries != 3 || resp.MaxContacts != 3 {
+		t.Errorf("MaxRetries/MaxContacts = %d/%d, want 3/3", resp.MaxRetries, resp.MaxContacts)
+	}
+	if resp.ContactCooldownMs != 86400 {
+		t.Errorf("ContactCooldownMs = %d, want 86400", resp.ContactCooldownMs)
+	}
+	if resp.RecoveryWindowSeconds != 604800 {
+		t.Errorf("RecoveryWindowSeconds = %d, want 604800", resp.RecoveryWindowSeconds)
+	}
+	if resp.LLMSampleRate != 0.15 {
+		t.Errorf("LLMSampleRate = %v, want 0.15", resp.LLMSampleRate)
+	}
+	if resp.RouteConfidenceThreshold != 0.6 {
+		t.Errorf("RouteConfidenceThreshold = %v, want 0.6", resp.RouteConfidenceThreshold)
+	}
+	if resp.ClassifyConfidenceThreshold != 0.4 {
+		t.Errorf("ClassifyConfidenceThreshold = %v, want 0.4", resp.ClassifyConfidenceThreshold)
+	}
+	if resp.NudgeMaxChars != 160 {
+		t.Errorf("NudgeMaxChars = %d, want 160", resp.NudgeMaxChars)
+	}
+	if resp.DowntimeMaxUnresolvedHoldSeconds != 21600 {
+		t.Errorf("DowntimeMaxUnresolvedHoldSeconds = %d, want 21600", resp.DowntimeMaxUnresolvedHoldSeconds)
+	}
+}
+
+func TestGetDemoConfigPropagatesUnavailableAs502(t *testing.T) {
+	fake := &fakeDecisionEngine{configErr: context.DeadlineExceeded}
+	h := newHandlerWithDemoConfig(fake).Routes()
+	rec := doRequest(h, http.MethodGet, "/v1/demo/config", testAPIKey, "")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502, body=%s", rec.Code, rec.Body.String())
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	decisionenginev1 "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1"
 	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
 )
 
@@ -146,4 +147,51 @@ func (h *Handler) injectDemoPoison(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, injectDemoPoisonResponse{RecordID: resp.GetRecordId(), BatchID: resp.GetBatchId()})
+}
+
+// getDemoConfigResponse is the read-only config panel (docs/DEMO_READINESS.md
+// Unit AM): the behavioral subset of this deployment's config worth showing,
+// never a secret, credential, or connection string. Every value here is
+// fixed at process startup and cannot be changed through this or any other
+// route.
+type getDemoConfigResponse struct {
+	DemoTimeScale                    float64 `json:"demo_time_scale"`
+	MaxRetries                       int32   `json:"max_retries"`
+	MaxContacts                      int32   `json:"max_contacts"`
+	ContactCooldownMs                int64   `json:"contact_cooldown_ms"`
+	RecoveryWindowSeconds            int64   `json:"recovery_window_seconds"`
+	LLMSampleRate                    float64 `json:"llm_sample_rate"`
+	RouteConfidenceThreshold         float64 `json:"route_confidence_threshold"`
+	ClassifyConfidenceThreshold      float64 `json:"classify_confidence_threshold"`
+	NudgeMaxChars                    int32   `json:"nudge_max_chars"`
+	DowntimeMaxUnresolvedHoldSeconds int64   `json:"downtime_max_unresolved_hold_seconds"`
+}
+
+// getDemoConfig is the one route in this file that proxies the Decision
+// Engine, not World Simulator: that is the service that actually loaded
+// and validated these values, and proxying it is what keeps this panel
+// from ever showing a number that differs from what is actually enforced
+// (docs/API_GATEWAY.md "GET /v1/demo/config", docs/DECISIONS.md). It never
+// reads os.Getenv itself.
+func (h *Handler) getDemoConfig(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), h.callTimeout)
+	defer cancel()
+
+	resp, err := h.decisionEngine.GetAgentConfig(ctx, &decisionenginev1.GetAgentConfigRequest{})
+	if err != nil {
+		writeGRPCError(w, err, "DECISION_ENGINE_UNAVAILABLE")
+		return
+	}
+	writeJSON(w, http.StatusOK, getDemoConfigResponse{
+		DemoTimeScale:                    resp.GetDemoTimeScale(),
+		MaxRetries:                       resp.GetMaxRetries(),
+		MaxContacts:                      resp.GetMaxContacts(),
+		ContactCooldownMs:                resp.GetContactCooldownMs(),
+		RecoveryWindowSeconds:            resp.GetRecoveryWindowSeconds(),
+		LLMSampleRate:                    resp.GetLlmSampleRate(),
+		RouteConfidenceThreshold:         resp.GetRouteConfidenceThreshold(),
+		ClassifyConfidenceThreshold:      resp.GetClassifyConfidenceThreshold(),
+		NudgeMaxChars:                    resp.GetNudgeMaxChars(),
+		DowntimeMaxUnresolvedHoldSeconds: resp.GetDowntimeMaxUnresolvedHoldSeconds(),
+	})
 }

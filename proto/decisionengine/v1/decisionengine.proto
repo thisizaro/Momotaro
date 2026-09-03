@@ -26,6 +26,18 @@ service DecisionEngineService {
   // Gateway (POST /v1/webhooks/payment-downtime) is the only caller, the
   // same shape as a real Razorpay webhook landing on this RPC in production.
   rpc ReportDowntimeEvent(ReportDowntimeEventRequest) returns (ReportDowntimeEventResponse);
+
+  // Returns the guardrail and LLM-routing values this service loaded and
+  // validated at startup (docs/DEMO_READINESS.md Unit AM), so the API
+  // Gateway's GET /v1/demo/config can proxy them instead of re-reading
+  // os.Getenv independently, which risks drifting from what is actually
+  // enforced if either copy's parsing or defaulting ever changes
+  // (docs/INCIDENTS.md 2026-09-03: this project has hit config drift
+  // between two copies of the same setting three times already). Every
+  // value returned here is fixed for the lifetime of the process: none of
+  // it is adjustable through this RPC or any other, it is read-only by
+  // construction, not merely by convention.
+  rpc GetAgentConfig(GetAgentConfigRequest) returns (GetAgentConfigResponse);
 }
 
 message ReportDelayedOutcomeRequest {
@@ -68,4 +80,50 @@ message ReportDowntimeEventRequest {
 
 message ReportDowntimeEventResponse {
   bool applied = 1;
+}
+
+// GetAgentConfigRequest takes no arguments: this always returns the one
+// config this process loaded at startup, never a per-caller view of it.
+message GetAgentConfigRequest {}
+
+// GetAgentConfigResponse is the behavioral subset of this service's config
+// worth showing on the Demo Controls page (docs/DEMO_READINESS.md Unit AM):
+// timings, limits and thresholds, never a secret or a connection string.
+// Every duration is whole seconds, matching this file's own begin_unix/
+// end_unix convention of plain integers over google.protobuf.Duration.
+//
+// LLM_PROVIDER_CHAIN is deliberately absent: it belongs to the Classifier,
+// not this service, and reaching it from here would mean either a second
+// cross-service call or a duplicated copy of the Classifier's own parsing,
+// which is exactly the kind of drift this RPC exists to avoid causing
+// elsewhere. See docs/DECISIONS.md.
+message GetAgentConfigResponse {
+  // demo_time_scale is DEMO_TIME_SCALE (internal/platform/config), loaded
+  // identically by every service in this repo.
+  double demo_time_scale = 1;
+  // Guardrails, docs/PRD.md section 11 (engine.GuardrailConfig).
+  int32 max_retries = 2;
+  int32 max_contacts = 3;
+  // contact_cooldown_ms is milliseconds, not seconds, because this is the
+  // ALREADY-SCALED value actually enforced (guardrailsFrom in
+  // cmd/main.go runs it through cfg.Scale before storing it), and at
+  // DEMO_TIME_SCALE=300000 a 24h configured cooldown enforces at ~288ms.
+  // Reporting it in whole seconds truncated that to 0, which read as "no
+  // cooldown enforced" when a real one was, found verifying Unit AM
+  // (docs/INCIDENTS.md 2026-09-03). recovery_window_seconds needs no such
+  // care: RecoveryWindow is deliberately never scaled, see this message's
+  // Guardrails comment above and guardrailsFrom's own comment in
+  // cmd/main.go, so it stays a large whole number of seconds.
+  int64 contact_cooldown_ms = 4;
+  int64 recovery_window_seconds = 5;
+  // LLM routing, this service's own config (services/decision-engine/cmd/main.go).
+  double llm_sample_rate = 6;
+  double route_confidence_threshold = 7;
+  double classify_confidence_threshold = 8;
+  int32 nudge_max_chars = 9;
+  // downtime_max_unresolved_hold_seconds is engine.DowntimeMaxUnresolvedHold:
+  // a Go constant, not an env var, but a real bound the agent operates
+  // under, so it is included even though it has no environment variable
+  // backing it.
+  int64 downtime_max_unresolved_hold_seconds = 10;
 }

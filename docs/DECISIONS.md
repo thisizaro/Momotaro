@@ -2684,3 +2684,80 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
 
   `docs/API_GATEWAY.md` "POST /v1/webhooks/payment-failed",
   `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z.
+
+- 2026-09-03: **The read-only config panel (Unit AM) proxies the Decision
+  Engine's own `GetAgentConfig` RPC rather than having the Gateway re-read
+  `os.Getenv` independently.** Every prior config-surfacing unit in this
+  project (S's `decision_trace`, AH's `RecordSummary` timestamps, AI's
+  `llm_quota_exhausted_count`, Y's downtime state) worked the same way: the
+  owning service computes or validates the value, and the Gateway proxies
+  it through a thin route, never re-deriving it. The alternative
+  considered, and rejected, was the Gateway loading `.env`/`os.Getenv`
+  itself for `DEMO_TIME_SCALE`, `MAX_RETRIES`, `MAX_CONTACTS`,
+  `CONTACT_COOLDOWN`, `RECOVERY_WINDOW`, `LLM_SAMPLE_RATE`,
+  `LLM_ROUTE_CONFIDENCE_THRESHOLD` and `CLASSIFY_CONFIDENCE_THRESHOLD`: two
+  independent copies of the same parsing and defaulting logic can drift
+  silently, which is exactly the class of bug `docs/INCIDENTS.md`
+  2026-09-03 ("a newly required variable breaks every existing .env, three
+  times running") already describes happening to this project between a
+  tracked default and a real environment. A second, structurally identical
+  risk is `ContactCooldown` being scaled by `DEMO_TIME_SCALE` while
+  `RecoveryWindow` deliberately is not (`docs/DECISIONS.md` 2026-08-31): a
+  Gateway re-implementing that asymmetry from scratch is one accidental
+  `Scale()` call away from showing a cooldown that does not match what is
+  actually enforced. Proxying `GetAgentConfig` sidesteps both risks by
+  construction: the response is built from `guardrailsFrom(cfg)`, the
+  exact struct `services/decision-engine/cmd/main.go` already hands to
+  both the engine and the scheduler, so there is only ever one copy of
+  this logic to get right.
+
+  `GetAgentConfig` was added to `proto/decisionengine/v1/decisionengine.proto`
+  as a third RPC alongside `ReportDelayedOutcome` and `ReportDowntimeEvent`,
+  following that file's existing style: durations are returned as whole
+  seconds (matching the file's own `begin_unix`/`end_unix` convention over
+  `google.protobuf.Duration`), and the request takes no arguments since
+  there is exactly one config per process, never a per-caller view of it.
+  `engine.downtimeMaxUnresolvedHold` (a Go constant, not an env var) was
+  exported to `DowntimeMaxUnresolvedHold` so the RPC could return it too;
+  it is a real bound the agent operates under regardless of whether an
+  environment variable backs it.
+
+  **`LLM_PROVIDER_CHAIN` is deliberately left out.** It is owned by the
+  Classifier, not the Decision Engine, and reaching it cleanly from this
+  RPC would have meant either a second cross-service call (Gateway to
+  Classifier, a new dependency this route does not otherwise need) or a
+  duplicated copy of the Classifier's own config parsing sitting in the
+  Decision Engine, which is exactly the kind of drift this whole unit
+  exists to avoid causing somewhere else. Left out rather than read
+  independently: accuracy over completeness. The panel's own copy says so
+  plainly, not just this doc.
+
+  **The honest-count note.** `.env.example` was counted fresh with
+  `grep -cE '^[A-Z_][A-Z0-9_]*=' .env.example`: **60** variables today, not
+  the 56 an earlier draft of `docs/DEMO_READINESS.md` stated (that number
+  had drifted as the file grew since it was written). The panel states the
+  real count once, plainly, and says explicitly that what it lists is the
+  behavioral subset worth knowing, not a full environment dump: no secret,
+  credential or connection string is ever returned by `GetAgentConfig` or
+  shown on the panel.
+
+  `docs/API_GATEWAY.md` "GET /v1/demo/config", `docs/DEMO_READINESS.md`
+  Unit AM.
+
+- 2026-09-03: **`GetAgentConfig`'s `contact_cooldown` field is milliseconds,
+  not seconds, corrected after Unit AM merged its first pass.** The field
+  reports the ALREADY-SCALED value actually enforced
+  (`guardrailsFrom(cfg)` in `cmd/main.go` runs the raw `CONTACT_COOLDOWN`
+  through `cfg.Scale` before storing it), which is correct and deliberate:
+  the whole point of this route is to show what is really happening, not
+  the nominal config. But encoding a sub-second scaled duration as whole
+  `int64` seconds truncates it to `0`, and `0` reads as "no cooldown
+  enforced" when a real ~288ms one is. Verified live: `GET /v1/demo/config`
+  against the running demo profile returned
+  `"contact_cooldown_seconds": 0` before this fix, on a deployment whose
+  `.env` sets `CONTACT_COOLDOWN=24h`. Same shape as the timeline's "day
+  3347 of the 7-day recovery window" (`docs/INCIDENTS.md` 2026-09-03): a
+  value that is correct in its native form becomes misleading once
+  truncated to a coarse unit at extreme scale. `recovery_window_seconds`
+  needed no equivalent fix, since `RecoveryWindow` is deliberately never
+  scaled and stays a large whole number regardless of `DEMO_TIME_SCALE`.

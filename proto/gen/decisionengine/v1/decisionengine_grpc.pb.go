@@ -29,6 +29,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	DecisionEngineService_ReportDelayedOutcome_FullMethodName = "/momotaro.decisionengine.v1.DecisionEngineService/ReportDelayedOutcome"
 	DecisionEngineService_ReportDowntimeEvent_FullMethodName  = "/momotaro.decisionengine.v1.DecisionEngineService/ReportDowntimeEvent"
+	DecisionEngineService_GetAgentConfig_FullMethodName       = "/momotaro.decisionengine.v1.DecisionEngineService/GetAgentConfig"
 )
 
 // DecisionEngineServiceClient is the client API for DecisionEngineService service.
@@ -46,6 +47,17 @@ type DecisionEngineServiceClient interface {
 	// Gateway (POST /v1/webhooks/payment-downtime) is the only caller, the
 	// same shape as a real Razorpay webhook landing on this RPC in production.
 	ReportDowntimeEvent(ctx context.Context, in *ReportDowntimeEventRequest, opts ...grpc.CallOption) (*ReportDowntimeEventResponse, error)
+	// Returns the guardrail and LLM-routing values this service loaded and
+	// validated at startup (docs/DEMO_READINESS.md Unit AM), so the API
+	// Gateway's GET /v1/demo/config can proxy them instead of re-reading
+	// os.Getenv independently, which risks drifting from what is actually
+	// enforced if either copy's parsing or defaulting ever changes
+	// (docs/INCIDENTS.md 2026-09-03: this project has hit config drift
+	// between two copies of the same setting three times already). Every
+	// value returned here is fixed for the lifetime of the process: none of
+	// it is adjustable through this RPC or any other, it is read-only by
+	// construction, not merely by convention.
+	GetAgentConfig(ctx context.Context, in *GetAgentConfigRequest, opts ...grpc.CallOption) (*GetAgentConfigResponse, error)
 }
 
 type decisionEngineServiceClient struct {
@@ -76,6 +88,16 @@ func (c *decisionEngineServiceClient) ReportDowntimeEvent(ctx context.Context, i
 	return out, nil
 }
 
+func (c *decisionEngineServiceClient) GetAgentConfig(ctx context.Context, in *GetAgentConfigRequest, opts ...grpc.CallOption) (*GetAgentConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAgentConfigResponse)
+	err := c.cc.Invoke(ctx, DecisionEngineService_GetAgentConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DecisionEngineServiceServer is the server API for DecisionEngineService service.
 // All implementations must embed UnimplementedDecisionEngineServiceServer
 // for forward compatibility.
@@ -91,6 +113,17 @@ type DecisionEngineServiceServer interface {
 	// Gateway (POST /v1/webhooks/payment-downtime) is the only caller, the
 	// same shape as a real Razorpay webhook landing on this RPC in production.
 	ReportDowntimeEvent(context.Context, *ReportDowntimeEventRequest) (*ReportDowntimeEventResponse, error)
+	// Returns the guardrail and LLM-routing values this service loaded and
+	// validated at startup (docs/DEMO_READINESS.md Unit AM), so the API
+	// Gateway's GET /v1/demo/config can proxy them instead of re-reading
+	// os.Getenv independently, which risks drifting from what is actually
+	// enforced if either copy's parsing or defaulting ever changes
+	// (docs/INCIDENTS.md 2026-09-03: this project has hit config drift
+	// between two copies of the same setting three times already). Every
+	// value returned here is fixed for the lifetime of the process: none of
+	// it is adjustable through this RPC or any other, it is read-only by
+	// construction, not merely by convention.
+	GetAgentConfig(context.Context, *GetAgentConfigRequest) (*GetAgentConfigResponse, error)
 	mustEmbedUnimplementedDecisionEngineServiceServer()
 }
 
@@ -106,6 +139,9 @@ func (UnimplementedDecisionEngineServiceServer) ReportDelayedOutcome(context.Con
 }
 func (UnimplementedDecisionEngineServiceServer) ReportDowntimeEvent(context.Context, *ReportDowntimeEventRequest) (*ReportDowntimeEventResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReportDowntimeEvent not implemented")
+}
+func (UnimplementedDecisionEngineServiceServer) GetAgentConfig(context.Context, *GetAgentConfigRequest) (*GetAgentConfigResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAgentConfig not implemented")
 }
 func (UnimplementedDecisionEngineServiceServer) mustEmbedUnimplementedDecisionEngineServiceServer() {}
 func (UnimplementedDecisionEngineServiceServer) testEmbeddedByValue()                               {}
@@ -164,6 +200,24 @@ func _DecisionEngineService_ReportDowntimeEvent_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DecisionEngineService_GetAgentConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAgentConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DecisionEngineServiceServer).GetAgentConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DecisionEngineService_GetAgentConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DecisionEngineServiceServer).GetAgentConfig(ctx, req.(*GetAgentConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DecisionEngineService_ServiceDesc is the grpc.ServiceDesc for DecisionEngineService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -178,6 +232,10 @@ var DecisionEngineService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportDowntimeEvent",
 			Handler:    _DecisionEngineService_ReportDowntimeEvent_Handler,
+		},
+		{
+			MethodName: "GetAgentConfig",
+			Handler:    _DecisionEngineService_GetAgentConfig_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

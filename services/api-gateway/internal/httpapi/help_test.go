@@ -66,6 +66,7 @@ func TestHelpListsEveryDocumentedRoute(t *testing.T) {
 		{"GET", "/v1/demo/scenarios"},
 		{"GET", "/v1/demo/world"},
 		{"POST", "/v1/demo/inject-poison"},
+		{"GET", "/v1/demo/config"},
 	}
 	for _, w := range want {
 		found := false

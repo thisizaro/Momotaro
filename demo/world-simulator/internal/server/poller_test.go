@@ -53,6 +53,15 @@ func (f *fakeDecisionEngine) ReportDowntimeEvent(ctx context.Context, in *decisi
 	return &decisionenginev1.ReportDowntimeEventResponse{Applied: true}, nil
 }
 
+// GetAgentConfig is here only so fakeDecisionEngine satisfies
+// decisionenginev1.DecisionEngineServiceClient (Unit AM added the method to
+// that interface). World Simulator never calls this RPC, only the
+// Gateway does, so an empty response is fine: nothing in this package's
+// tests reads it.
+func (f *fakeDecisionEngine) GetAgentConfig(ctx context.Context, in *decisionenginev1.GetAgentConfigRequest, opts ...grpc.CallOption) (*decisionenginev1.GetAgentConfigResponse, error) {
+	return &decisionenginev1.GetAgentConfigResponse{}, nil
+}
+
 func (f *fakeDecisionEngine) callsMade() []*decisionenginev1.ReportDelayedOutcomeRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -1113,6 +1113,18 @@ ordered by value per hour. Detail for each is in
       helpRoutes slice; AL misleading labels and the partial confusion
       matrix; AM read-only config panel
       → `docs/DEMO_READINESS.md`
+- [x] **AM read-only config panel, done 2026-09-03.** New `GetAgentConfig`
+      RPC on the Decision Engine's own gRPC service returns the guardrail
+      and LLM-routing values it already loaded and validated at startup;
+      `GET /v1/demo/config` proxies it through the Gateway, gated on
+      `DEMO_CONTROLS_ENABLED` like every other `/v1/demo/*` route, rather
+      than the Gateway re-reading `os.Getenv` and risking drift. Shown as a
+      new "Agent configuration" section on the Demo Controls page, grouped
+      into time compression, retry/contact limits and LLM routing, marked
+      fixed at startup. `.env.example` recounted fresh: **60** variables,
+      not the 56 the original brief stated; `LLM_PROVIDER_CHAIN` left out
+      as Classifier-owned, out of scope for a contained change
+      → `docs/DEMO_READINESS.md`, `docs/DECISIONS.md` 2026-09-03
 
 ## Phase 6: Load testing & performance validation
 

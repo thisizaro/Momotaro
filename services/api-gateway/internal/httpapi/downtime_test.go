@@ -21,6 +21,12 @@ type fakeDecisionEngine struct {
 	resp *decisionenginev1.ReportDowntimeEventResponse
 	err  error
 	got  *decisionenginev1.ReportDowntimeEventRequest
+
+	// configResp/configErr back GetAgentConfig (docs/DEMO_READINESS.md Unit
+	// AM), used by demo_config_test.go. Separate from resp/err above since
+	// the two RPCs return unrelated response types.
+	configResp *decisionenginev1.GetAgentConfigResponse
+	configErr  error
 }
 
 func (f *fakeDecisionEngine) ReportDelayedOutcome(ctx context.Context, in *decisionenginev1.ReportDelayedOutcomeRequest, opts ...grpc.CallOption) (*decisionenginev1.ReportDelayedOutcomeResponse, error) {
@@ -33,6 +39,13 @@ func (f *fakeDecisionEngine) ReportDowntimeEvent(ctx context.Context, in *decisi
 		return f.resp, f.err
 	}
 	return &decisionenginev1.ReportDowntimeEventResponse{Applied: true}, nil
+}
+
+func (f *fakeDecisionEngine) GetAgentConfig(ctx context.Context, in *decisionenginev1.GetAgentConfigRequest, opts ...grpc.CallOption) (*decisionenginev1.GetAgentConfigResponse, error) {
+	if f.configResp != nil || f.configErr != nil {
+		return f.configResp, f.configErr
+	}
+	return &decisionenginev1.GetAgentConfigResponse{}, nil
 }
 
 func newDowntimeHandler(f *fakeDecisionEngine) http.Handler {
