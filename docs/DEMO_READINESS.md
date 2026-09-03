@@ -796,16 +796,20 @@ or provider chain. Full reasoning in `docs/DECISIONS.md`.
 
 ### Unit AK: `/help` page
 
-**Resolved 2026-09-03.** `GET /v1/help` assembles the frozen contract into
-one machine-readable list (method, path, auth, one sentence), unauthenticated
-so a caller without a key yet can discover which routes need one. Assembled
-by hand from `docs/API_GATEWAY.md` rather than reflected off the router,
-because the wire contract and the Go routing table are not the same thing to
-describe; a route added to one without the other is now a documented bug in
-whichever was missed. Three tests: no auth required, every documented route
-present with a non-empty description and auth note, and every `/v1/demo/*`
-row's auth note names `DEMO_CONTROLS_ENABLED` rather than presenting demo
-routes as unconditionally available.
+**Resolved 2026-09-03, in two passes.** First pass shipped `GET /v1/help`
+as JSON only; the user asked for what they actually meant by a help page,
+"like a help doc for someone trying to connect to the real system", closer
+to FastAPI's `/docs` than a raw endpoint. Second pass made the route content
+negotiated: a browser's `Accept: text/html` gets a rendered page grouped
+under this document's own section headings, click a route to expand its
+auth requirement and description, built with a native
+`<details>`/`<summary>` accordion so it needs no JavaScript at all.
+`curl`'s default `Accept: */*` and everything else still gets the original
+JSON. Both representations are built from the one `helpRoutes` slice, so
+they cannot drift apart. Six tests total: the original three plus one
+proving the JSON default is unchanged, one proving `Accept: text/html`
+renders the page with every route and the auth vocabulary present, one
+proving `Accept: */*` does not accidentally trip the HTML branch.
 
 ### Unit AL: misleading labels
 - **"In flight / lost (40.2%)"** on the recovery bar while the In Flight tile

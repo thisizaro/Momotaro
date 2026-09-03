@@ -56,6 +56,19 @@ var helpRoutes = []helpRoute{
 // help answers GET /v1/help. Unauthenticated on purpose: a caller who does
 // not already have an API key needs a way to discover which routes need
 // one (docs/DEMO_READINESS.md Unit AK).
+//
+// Content negotiated: a browser's Accept header prefers text/html, so it
+// gets a rendered page (help_page.go), the human-readable version the user
+// actually asked for, "a help doc for someone trying to connect to the
+// real system". Everything else, including curl's default Accept: */*,
+// keeps getting the JSON below, which is the documented contract and what
+// the tests above assert.
 func (h *Handler) help(w http.ResponseWriter, r *http.Request) {
+	if wantsHelpHTML(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write(helpHTMLOnce())
+		return
+	}
 	writeJSON(w, http.StatusOK, helpResponse{Routes: helpRoutes})
 }

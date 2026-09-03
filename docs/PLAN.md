@@ -1107,9 +1107,11 @@ ordered by value per hour. Detail for each is in
       the four-field error taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`,
       `docs/DEMO_READINESS.md`
 - [ ] **P3, ~6h.** AK `/help` page from the frozen contract, **done**
-      2026-09-03: `GET /v1/help` assembles docs/API_GATEWAY.md into one
-      unauthenticated JSON list; AL misleading labels and the partial
-      confusion matrix; AM read-only config panel
+      2026-09-03: GET /v1/help content negotiates, a browser gets a
+      rendered FastAPI-/docs-shaped page (native <details> accordion, no
+      JavaScript), everything else keeps the JSON, both built from one
+      helpRoutes slice; AL misleading labels and the partial confusion
+      matrix; AM read-only config panel
       → `docs/DEMO_READINESS.md`
 
 ## Phase 6: Load testing & performance validation
