@@ -13,6 +13,7 @@ import (
 
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
+	decisionenginev1 "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	reportingv1 "github.com/thisizaro/Momotaro/proto/gen/reporting/v1"
 	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
@@ -22,12 +23,13 @@ import (
 
 // Handler serves the Gateway's HTTP routes.
 type Handler struct {
-	ingestion   ingestionv1.IngestionServiceClient
-	reporting   reportingv1.ReportingServiceClient
-	audit       auditv1.AuditServiceClient
-	apiKey      string
-	callTimeout time.Duration
-	limiter     *rate.Limiter // nil means rate limiting is disabled
+	ingestion      ingestionv1.IngestionServiceClient
+	reporting      reportingv1.ReportingServiceClient
+	audit          auditv1.AuditServiceClient
+	decisionEngine decisionenginev1.DecisionEngineServiceClient
+	apiKey         string
+	callTimeout    time.Duration
+	limiter        *rate.Limiter // nil means rate limiting is disabled
 
 	// worldsim backs /v1/demo/* (demo.go). nil unless EnableDemoControls was
 	// called, which cmd/main.go only does when DEMO_CONTROLS_ENABLED is
@@ -65,13 +67,19 @@ func (h *Handler) SetWSAllowedOrigins(origins []string) {
 // present in X-API-Key (docs/ARCHITECTURE.md section 17: deliberately not
 // real user auth, so a judge can try the API with zero setup).
 //
+// decisionEngine backs POST /v1/webhooks/payment-downtime
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), a production route like
+// payment-failed, not one gated behind demo controls, so unlike
+// EnableDemoControls's worldsim client this is a required constructor
+// argument.
+//
 // rateLimitRPS/rateLimitBurst configure a single token bucket shared across
 // every request the Gateway receives (there is no per-caller identity to key
 // on, section 17 again: this system has no concept of a "user"). Either
 // value <= 0 disables rate limiting entirely, useful for tests and for local
 // development against a single caller.
-func New(ingestion ingestionv1.IngestionServiceClient, reporting reportingv1.ReportingServiceClient, audit auditv1.AuditServiceClient, apiKey string, callTimeout time.Duration, rateLimitRPS float64, rateLimitBurst int) *Handler {
-	h := &Handler{ingestion: ingestion, reporting: reporting, audit: audit, apiKey: apiKey, callTimeout: callTimeout}
+func New(ingestion ingestionv1.IngestionServiceClient, reporting reportingv1.ReportingServiceClient, audit auditv1.AuditServiceClient, decisionEngine decisionenginev1.DecisionEngineServiceClient, apiKey string, callTimeout time.Duration, rateLimitRPS float64, rateLimitBurst int) *Handler {
+	h := &Handler{ingestion: ingestion, reporting: reporting, audit: audit, decisionEngine: decisionEngine, apiKey: apiKey, callTimeout: callTimeout}
 	if rateLimitRPS > 0 && rateLimitBurst > 0 {
 		h.limiter = rate.NewLimiter(rate.Limit(rateLimitRPS), rateLimitBurst)
 	}
@@ -90,6 +98,7 @@ func (h *Handler) Routes() http.Handler {
 	authenticated := http.NewServeMux()
 	authenticated.HandleFunc("POST /v1/batches", h.submitBatch)
 	authenticated.HandleFunc("POST /v1/webhooks/payment-failed", h.submitEvent)
+	authenticated.HandleFunc("POST /v1/webhooks/payment-downtime", h.submitDowntimeEvent)
 	authenticated.HandleFunc("GET /v1/batches", h.listBatches)
 	authenticated.HandleFunc("GET /v1/batches/{batch_id}/report", h.getBatchReport)
 	authenticated.HandleFunc("GET /v1/batches/{batch_id}/records", h.listBatchRecords)

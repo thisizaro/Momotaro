@@ -1084,6 +1084,7 @@ database and unmanaged sharing is how that becomes a mess:
 | `INTERVENTION_ATTEMPT` | Executor | Decision Engine, Classifier, Reporting, Audit |
 | `AUDIT_ENTRY` | Decision Engine, transactionally with its own `RECORD_STATE` changes, append-only | Audit, Reporting |
 | `GROUND_TRUTH` | batch generator (`scripts/`) | World Simulator, Reporting accuracy scorer **only** |
+| `PAYMENT_DOWNTIME` | Decision Engine, via `ReportDowntimeEvent` (`docs/PHASE5_5_IMPLEMENTATION.md` Unit Y) | Decision Engine's own guardrail check only, read fresh on every call, never cached |
 
 No service writes a table it does not own. Cross-service reads go through
 these tables, never through another service's internal helper queries.

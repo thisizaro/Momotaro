@@ -48,7 +48,7 @@ func (f *fakeReporting) StreamBatchUpdates(ctx context.Context, in *reportingv1.
 }
 
 func newHandlerWithReporting(rep *fakeReporting) http.Handler {
-	return New(&fakeIngestion{}, rep, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0).Routes()
+	return New(&fakeIngestion{}, rep, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0).Routes()
 }
 
 func TestGetBatchReportProxiesAndTranslatesFieldForField(t *testing.T) {
@@ -477,7 +477,7 @@ func TestListBatchesProxiesToIngestion(t *testing.T) {
 			{BatchId: "batch-1", CreatedAt: timestamppb.New(time.Date(2026, 8, 29, 14, 0, 0, 0, time.UTC)), TotalRecords: 80, Source: "synthetic-demo"},
 		},
 	}}
-	handler := New(fi, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0).Routes()
+	handler := New(fi, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0).Routes()
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/batches?limit=5", nil)
 	req.Header.Set("X-API-Key", testAPIKey)

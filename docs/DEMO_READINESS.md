@@ -34,6 +34,11 @@ Ordered by what decides whether this wins. **P0 first, top to bottom.**
 > one-row-per-bucket view is the default again; Unit AO's per-record layout
 > is now an opt-in "Per-record" toggle, and search was added. Detail after
 > Unit AO below.
+>
+> **Unit Y done, scoped down, 2026-09-03.** Payment-downtime webhooks now
+> hold a retry back from a known Razorpay-published outage and let it
+> through again once resolved. Signature verification (Unit Z) is not part
+> of this PR. Detail under P2 below and in `docs/DECISIONS.md`.
 
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
@@ -52,7 +57,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 8 | AI | Confidence-based LLM routing + quota banner | 4h | **done** #113 |
 | 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | **done** |
 | **P2** | | **Differentiators** | **~11h** | |
-| 10 | Y | Razorpay payment-downtime webhooks | 5h | |
+| 10 | Y | Razorpay payment-downtime webhooks | 5h | **done, scoped down** |
 | 11 | Z | Real webhook payload, signature, error taxonomy | 6h | |
 | **P3** | | **Polish** | **~6h** | |
 | 12 | AK | `/help` page from the frozen contract | 3h | |
@@ -735,6 +740,16 @@ this unit reads, the same fields Unit AO already read.
 Unchanged from `docs/PHASE5_5_IMPLEMENTATION.md`. Still the strongest
 differentiator found in any research pass, because it is Razorpay's own
 published signal rather than an invented one.
+
+**Done, deliberately scoped down.** `POST /v1/webhooks/payment-downtime`
+receives Razorpay's real `payment.downtime.started`/`.updated`/`.resolved`
+payload (not a Gateway-invented flat body); a new `payment_downtime` table
+holds one row per downtime id; `guardrails.go` holds RETRY back with reason
+`bank downtime active: <method> <instrument>, severity <severity>`, leaving
+nudges untouched; a genuinely worthwhile retry is DEFERRED rather than
+escalated, so resuming on `.resolved` needs no separate "wake up" mechanism.
+Signature verification is Unit Z's job, not done here. Full writeup,
+including what was cut for time, in `docs/DECISIONS.md` and `docs/PLAN.md`.
 
 ### Unit Z: real webhook payload, signature, error taxonomy
 Unchanged from `docs/PHASE5_5_IMPLEMENTATION.md`.

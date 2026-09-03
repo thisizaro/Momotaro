@@ -133,7 +133,7 @@ run-decision-engine:
 ## run-api-gateway: run api-gateway on its fixed local port
 run-api-gateway:
 	GRPC_PORT=9198 METRICS_PORT=9199 \
-	INGESTION_ADDR=localhost:9090 REPORTING_ADDR=localhost:9200 AUDIT_ADDR=localhost:9194 WORLD_SIMULATOR_ADDR=localhost:9202 \
+	INGESTION_ADDR=localhost:9090 REPORTING_ADDR=localhost:9200 AUDIT_ADDR=localhost:9194 DECISION_ENGINE_ADDR=localhost:9196 WORLD_SIMULATOR_ADDR=localhost:9202 \
 	go run ./services/api-gateway/cmd
 
 ## run-reporting: run reporting on its fixed local port

@@ -874,12 +874,35 @@ ordered by value per hour. Detail for each is in
       in `mockEngine.ts` per `web/AGENTS.md`, honestly labelled as browser-side
       fabrication since only the World Simulator can write real `GROUND_TRUTH`
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit X
-- [ ] **Unit Y: payment-downtime webhooks and outage-aware retry.** Razorpay
+- [x] **Unit Y: payment-downtime webhooks and outage-aware retry.** Razorpay
       publishes `payment.downtime.started`/`.updated`/`.resolved` with
       severity, method and scheduled windows. Consume them and defer retries
       into a known issuer outage, as a guardrail alongside TRAI and RBI. This
       is the "bank health" capability two reviews asked for, except it is
-      Razorpay's own published signal rather than an invented one
+      Razorpay's own published signal rather than an invented one.
+      **Shipped, deliberately scoped down.** New route
+      `POST /v1/webhooks/payment-downtime` matched to Razorpay's real
+      documented payload (nested `payload["payment.downtime"]["entity"]`,
+      unix-seconds `begin`/`end`, nullable `end`, open-string `severity`, a
+      varying `instrument` shape resolved via `instrument_schema`), signature
+      verification deliberately NOT done (Unit Z's job). A new
+      `payment_downtime` table (migration 00008), owned by the Decision
+      Engine, holds one row per Razorpay downtime id. `guardrails.go` gained
+      `applyDowntimeGuardrail`, kept separate from `applyGuardrails` so the
+      existing guardrail rules and their tests are untouched: it blocks
+      RETRY only, never nudges, with reason
+      `bank downtime active: <method> <instrument>, severity <severity>`.
+      Unlike the other guardrails a downtime-blocked retry that is still
+      genuinely worth running is DEFERRED (scheduled normally) rather than
+      escalated; resuming on `.resolved` needs nothing beyond the next
+      guardrail check reading the row fresh, since nothing was ever put to
+      sleep. A safety-valve cap (`downtimeMaxUnresolvedHold`, 6h) keeps an
+      unplanned outage from stranding a record if `.resolved` never arrives.
+      **Scoped out**: pre-empting an already-scheduled retry's `due_at` at
+      claim time (so one attempt can still fire into an outage that started
+      after the record was scheduled, self-correcting on its next
+      re-score), and severity-tiered treatment (medium vs high). Full
+      reasoning in `docs/DECISIONS.md`
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit Y
 - [ ] **Unit Z: real Razorpay webhook payload, signature, and error
       taxonomy.** Accept their actual `payment.failed` body, verify

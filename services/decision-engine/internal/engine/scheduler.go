@@ -173,9 +173,14 @@ func (s *Scheduler) handleFailedAttempt(ctx context.Context, log *slog.Logger, c
 		log.Error("failed to load attempt history for re-scoring", logger.KeyError, err.Error())
 		return
 	}
+	downtime, err := s.store.loadDowntimeStatus(ctx, c.InstrumentRef)
+	if err != nil {
+		log.Error("failed to load downtime status for re-scoring", logger.KeyError, err.Error())
+		return
+	}
 
 	now := s.clock.Now()
-	state, pendingAction, reason, score, trace := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
+	state, pendingAction, reason, score, trace := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, downtime, c.AmountPaise, now)
 	var dueAt *time.Time
 	if state == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
 		dueAt = retryDueAt(c.RootCauseBucket, c.Type, now, s.cfg.RetryDelay, s.cfg.RetryMandateLeadTime, s.cfg.TimeScale)
@@ -246,7 +251,11 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 		if err != nil {
 			return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, fmt.Errorf("load attempt history for %s: %w", recordID, err)
 		}
-		toState, pending, reason, sc, tr := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, c.AmountPaise, now)
+		downtime, err := s.store.loadDowntimeStatus(ctx, c.InstrumentRef)
+		if err != nil {
+			return false, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, fmt.Errorf("load downtime status for %s: %w", recordID, err)
+		}
+		toState, pending, reason, sc, tr := scoreAndRoute(s.economics, s.cfg.Guardrails, c.RootCauseBucket, history, downtime, c.AmountPaise, now)
 		pendingAction, score, trace = pending, sc, tr
 		if toState == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
 			dueAt = retryDueAt(c.RootCauseBucket, c.Type, now, s.cfg.RetryDelay, s.cfg.RetryMandateLeadTime, s.cfg.TimeScale)
@@ -282,6 +291,31 @@ func (s *Scheduler) ResumeNudge(ctx context.Context, recordID string, attemptNum
 		logger.From(ctx).Error("failed to publish audit event", logger.KeyError, pubErr.Error())
 	}
 	return true, final, nil
+}
+
+// RecordDowntimeEvent persists one Razorpay payment.downtime.* webhook
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), via the API Gateway's
+// POST /v1/webhooks/payment-downtime and this service's ReportDowntimeEvent
+// RPC (services/decision-engine/internal/server). This is the entire
+// "resume" mechanism: it does not touch any record directly. A
+// payment.downtime.resolved event just marks the row resolved, and the very
+// next guardrail check for that instrument (a fresh classification, or a
+// failed attempt being re-scored, both load downtime status fresh from
+// Postgres every time) simply stops seeing it as active. There is nothing
+// here to "wake up" a parked record because scoreAndRoute's downtime
+// deferral (state.go) never puts one to sleep in the first place: a retry
+// held by an active downtime stays exactly where a normal retry would be,
+// RETRY_SCHEDULED with its own due_at, and fires the moment that arrives
+// with nothing left blocking it (docs/DECISIONS.md has the full reasoning
+// and what this deliberately does not cover).
+//
+// now is the caller's clock, not time.Now(), so this is testable and so
+// created_at/updated_at reflect this service's own view of time rather than
+// trusting Razorpay's created_at, which docs/PHASE5_5_IMPLEMENTATION.md Unit
+// Z (signature verification) has not vetted yet.
+func (s *Scheduler) RecordDowntimeEvent(ctx context.Context, evt DowntimeEvent) error {
+	evt.Now = s.clock.Now()
+	return s.store.recordDowntimeEvent(ctx, evt)
 }
 
 // executeWithRetry also returns the composed nudge text it sent ("" for a

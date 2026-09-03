@@ -13,7 +13,7 @@ import (
 )
 
 func newHandlerWithAudit(a *fakeAudit) http.Handler {
-	return New(&fakeIngestion{}, &fakeReporting{}, a, testAPIKey, 2*time.Second, 0, 0).Routes()
+	return New(&fakeIngestion{}, &fakeReporting{}, a, nil, testAPIKey, 2*time.Second, 0, 0).Routes()
 }
 
 func TestGetRecordAuditRendersFullTrail(t *testing.T) {

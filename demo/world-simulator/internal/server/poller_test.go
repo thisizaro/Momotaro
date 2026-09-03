@@ -45,6 +45,14 @@ func (f *fakeDecisionEngine) ReportDelayedOutcome(ctx context.Context, in *decis
 	return &decisionenginev1.ReportDelayedOutcomeResponse{Applied: true, ResultingState: commonv1.RecordState_RECORD_STATE_RECOVERED}, nil
 }
 
+// ReportDowntimeEvent is unused by World Simulator (it only ever calls
+// ReportDelayedOutcome); present so fakeDecisionEngine still satisfies
+// decisionenginev1.DecisionEngineServiceClient after
+// docs/PHASE5_5_IMPLEMENTATION.md Unit Y added this RPC to the same service.
+func (f *fakeDecisionEngine) ReportDowntimeEvent(ctx context.Context, in *decisionenginev1.ReportDowntimeEventRequest, opts ...grpc.CallOption) (*decisionenginev1.ReportDowntimeEventResponse, error) {
+	return &decisionenginev1.ReportDowntimeEventResponse{Applied: true}, nil
+}
+
 func (f *fakeDecisionEngine) callsMade() []*decisionenginev1.ReportDelayedOutcomeRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()

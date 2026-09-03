@@ -112,6 +112,86 @@ Response: `202 Accepted`
 Accepting fast and processing asynchronously is deliberate, a webhook sender
 must never be made to wait on our whole recovery pipeline.
 
+### `POST /v1/webhooks/payment-downtime`
+
+**docs/PHASE5_5_IMPLEMENTATION.md Unit Y.** Receives Razorpay's
+`payment.downtime.started` / `.updated` / `.resolved` webhooks: a real,
+published, first-party signal that an issuer, bank or network is degraded or
+fully down, consumed as a guardrail input so the agent holds a retry back
+from a known outage rather than spending an attempt into it, and lets it
+through again once the outage resolves. The dashboard never calls this, same
+as the payment-failed webhook above; it is listed here because it is part
+of the Gateway's external contract.
+
+**Signature verification is explicitly NOT done here.** This route accepts
+an unauthenticated body exactly like `payment-failed` does today; Razorpay's
+signature check and the four-field error taxonomy are
+`docs/PHASE5_5_IMPLEMENTATION.md` Unit Z, a separate, not-yet-started unit.
+Until that lands, treat every field here as untrusted input the same way the
+handler itself does: the body is size-capped and never logged in full at
+INFO, and a malformed payload is a `400`, never a panic.
+
+Request body: Razorpay's real, documented shape
+(https://razorpay.com/docs/webhooks/payloads/payments/), matched exactly,
+**not** a Gateway-invented flat body:
+```json
+{
+  "entity": "event",
+  "account_id": "acc_CWX291oykl9aZA",
+  "event": "payment.downtime.started",
+  "contains": ["payment.downtime"],
+  "payload": {
+    "payment.downtime": {
+      "entity": {
+        "id": "down_F1Zppa6lcVheSE",
+        "entity": "payment.downtime",
+        "method": "netbanking",
+        "begin": 1591935238,
+        "end": null,
+        "status": "started",
+        "scheduled": false,
+        "severity": "high",
+        "instrument": { "bank": "VIJB" },
+        "instrument_schema": ["bank"],
+        "created_at": 1591935238,
+        "updated_at": 1591935238
+      }
+    }
+  },
+  "created_at": 1591935238
+}
+```
+Field notes, because each one has bitten a naive implementation somewhere:
+- `entity.begin`, `entity.end`, `entity.created_at`, `entity.updated_at` and
+  the top-level `created_at` are **UNIX SECONDS, not milliseconds.**
+- `entity.end` is **null** while the downtime is still ongoing. Only a
+  `.resolved` event, or a scheduled downtime whose own published end has
+  passed, means the record is retryable again.
+- `entity.status` is one of `started`, `updated`, `resolved`; anything else
+  is a `400`.
+- `entity.severity` is `high` or `medium` in Razorpay's documented examples,
+  but is treated as an **open string** here, never validated against a
+  closed list: an unrecognised value is stored and shown as-is, never
+  rejected.
+- `entity.scheduled` distinguishes planned maintenance (`true`) from an
+  unplanned outage (`false`).
+- `entity.instrument` **varies by payment method** and is never assumed to
+  have one shape: netbanking gives `{"bank": "VIJB"}`, a card gives
+  `{"issuer": "SBIN", "type": "credit"}` or `{"network": "MC", "type":
+  "credit"}`. `entity.instrument_schema` names which field is the
+  identifying one (its first entry); the Gateway extracts exactly that
+  single value and forwards it as the instrument the guardrail matches on,
+  never the raw object.
+
+Response: `200 OK`
+```json
+{ "downtime_id": "down_F1Zppa6lcVheSE", "applied": true }
+```
+`applied` is `true` once the Decision Engine has durably recorded the event;
+this route does the gRPC call synchronously and does not return early the
+way `payment-failed` does, since there is no downstream pipeline to hand
+this off to.
+
 ### `POST /v1/batches`
 
 Submit a batch for the agent to process. Used by the demo, and in production

@@ -2233,3 +2233,101 @@ working tree. `.gitignore`'s pre-existing binary rules (`bin/`, `*.exe`,
 committed in the first place and why it took until this unit to notice.
 Add the new entry above whenever a future `scripts/<newname>` main package
 is added, rather than waiting to rediscover this the same way.
+
+## 2026-09-03: DECISION_ENGINE_ADDR made required with nothing setting it for api-gateway, and the wrong port sitting in .env
+
+Unit Y (`docs/PHASE5_5_IMPLEMENTATION.md`) added `POST /v1/webhooks/payment-downtime`
+to the Gateway, which needs a gRPC client to the Decision Engine. The PR
+added `DecisionEngineAddr: l.Str("DECISION_ENGINE_ADDR")` to api-gateway's
+config, `l.Str` meaning required, and shipped three separate gaps around it,
+caught by CI on the PR (all nine e2e tests failing, not a flake):
+
+1. `test/e2e/harness_test.go`'s api-gateway env block never set
+   `DECISION_ENGINE_ADDR` (only World Simulator's block did), so the
+   Gateway subprocess died at startup with "invalid configuration:
+   DECISION_ENGINE_ADDR is required but not set" and every e2e test timed
+   out waiting for a Gateway that was never coming up.
+2. `Makefile`'s `run-api-gateway` target set `INGESTION_ADDR`,
+   `REPORTING_ADDR`, `AUDIT_ADDR` and `WORLD_SIMULATOR_ADDR` but not
+   `DECISION_ENGINE_ADDR`, so `make run-api-gateway` and `make demo-up`
+   would have hit the same fatal startup error outside CI too.
+3. `.env`/`.env.example` had `DECISION_ENGINE_ADDR=localhost:9090`, which is
+   ingestion's port, not the Decision Engine's (`9196` per
+   `run-decision-engine`). Because `grpc.NewClient` dials lazily, had (2)
+   not existed this would NOT have failed at startup: the Gateway would have
+   come up looking healthy and every downtime webhook would have dialled
+   ingestion's gRPC server instead. In practice this specific value is
+   never read as-is (the Makefile always overrides it, see the fix below),
+   but the whole placeholder block reads as more real than it is if nobody
+   already knows that.
+
+**Fixed**: `harness_test.go` now sets `DECISION_ENGINE_ADDR` for
+api-gateway from the same `deGRPCPort` World Simulator's block already
+uses; `run-api-gateway` now sets `DECISION_ENGINE_ADDR=localhost:9196`
+alongside its other overrides; `.env`/`.env.example` gained a comment
+above the whole service-to-service address block explaining that every
+value there is the single-service `:9090` placeholder, not that service's
+real port, and that only the Makefile's `run-<service>` targets carry the
+real fixed ports. `services/api-gateway/cmd/main_test.go` gained
+`TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr`, parsing the Makefile's
+own `run-api-gateway` recipe and asserting it exports every env var
+`loadConfig` requires, so a future required config addition that forgets
+this target fails a fast unit test instead of nine slow e2e ones.
+
+**Lesson, same shape as the 2026-08-31 `configs/demo.env` entry and the
+`LLM_SAMPLE_RATE` two-knob problem**: this repo has three places that can
+each independently claim to configure a service (`.env`, a `Makefile`
+`run-<service>` target, and a test harness), and adding a new *required*
+config value means updating all three that actually run the service, not
+just the one being worked in at the time. `l.Str` (required) is still the
+right call for a cross-service address an unconditional production route
+depends on, see `docs/DECISIONS.md`; the gap was in the three call sites,
+not in requiring the value.
+
+## 2026-09-03: a regression test read the gitignored `.env`, green locally and red on every CI runner
+
+The same PR as the entry directly above this one (`DECISION_ENGINE_ADDR`
+made required with three call sites not catching up) added a test to guard
+against it happening again: `TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr`
+merged the real `.env` with the `run-api-gateway` recipe's own overrides and
+called `loadConfig` against the result. It passed on the machine that wrote
+it. CI failed both `build-test` and `integration` immediately:
+
+```
+--- FAIL: TestRunAPIGatewayMakeTargetSetsEveryRequiredAddr (0.00s)
+    makefile_test.go:148: open /home/runner/work/Momotaro/Momotaro/.env:
+    no such file or directory
+```
+
+`.env` is gitignored (`AGENTS.md`: "the real `.env` is gitignored, never
+committed"), so it exists on every developer machine that has ever run
+`make demo-up` and on none of CI's. A test built and run against a local
+checkout with a real `.env` present cannot see this failure mode at all,
+which is precisely why it shipped.
+
+**This is the mirror image of the 2026-09-02 WebSocket origin-check
+incident above, not a new class of bug.** That one was a test suite passing
+in CI because CI could not reproduce a production-only condition (a
+cross-origin browser request). This one is a test passing on a developer
+machine because a developer machine has a file CI does not. Same shape,
+opposite direction: **whether a test's result depends on which environment
+it runs in is itself worth asking, independent of whether the test looks
+correct.**
+
+**Fix.** `envFromDotFile`, and the one test that used it, were pointed at
+`.env.example` instead, which is tracked and carries the same values for
+every field `loadConfig` needs (diffed to confirm; the two files differ only
+in real secrets `.env` fills in that `loadConfig` never reads, and in a few
+comment blocks). This gives equivalent coverage while running everywhere,
+which is why it was chosen over the simpler fix of skipping the test when
+`.env` is absent: a test that runs in CI beats one that documents why it
+cannot. Verified by moving the real `.env` aside and running the entire
+suite (`go test ./...`) with it genuinely absent, matching CI's own
+condition exactly rather than assuming the fix worked.
+
+**Lesson.** A test that reaches for a real config file rather than a
+checked-in fixture inherits that file's own guarantees, or lack of them.
+`.env` has none: gitignored by design, so its presence is a property of the
+machine, not the repository. Anything a test needs to see should be a
+tracked file (`.env.example`, here) or something the test constructs itself,
+never a file whose entire purpose is to hold values nobody commits.

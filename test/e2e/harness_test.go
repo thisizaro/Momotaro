@@ -233,12 +233,13 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 	s.decisionEngine = deProc
 
 	procs = append(procs, startProcess(t, "api-gateway", apiGatewayBin, merge(commonEnv(gwPort, gwMetrics), map[string]string{
-		"INGESTION_ADDR": ingestionAddr,
-		"REPORTING_ADDR": s.reportingAddr,
-		"AUDIT_ADDR":     s.auditAddr,
-		"API_KEY":        apiKey,
-		"HTTP_PORT":      strconv.Itoa(gwHTTPPort),
-		"CALL_TIMEOUT":   "5s",
+		"INGESTION_ADDR":       ingestionAddr,
+		"REPORTING_ADDR":       s.reportingAddr,
+		"AUDIT_ADDR":           s.auditAddr,
+		"DECISION_ENGINE_ADDR": fmt.Sprintf("127.0.0.1:%d", deGRPCPort),
+		"API_KEY":              apiKey,
+		"HTTP_PORT":            strconv.Itoa(gwHTTPPort),
+		"CALL_TIMEOUT":         "5s",
 	})))
 
 	if err := waitForTCP(readyCtx, s.gatewayHTTP); err != nil {

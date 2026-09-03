@@ -23,6 +23,7 @@ import (
 	"github.com/thisizaro/Momotaro/internal/platform/metrics"
 	"github.com/thisizaro/Momotaro/internal/platform/shutdown"
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
+	decisionenginev1 "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
 	reportingv1 "github.com/thisizaro/Momotaro/proto/gen/reporting/v1"
 	worldsimv1 "github.com/thisizaro/Momotaro/proto/gen/worldsim/v1"
@@ -36,14 +37,19 @@ const serviceName = "api-gateway"
 // serviceConfig adds this service's own settings to the shared ones.
 type serviceConfig struct {
 	config.Common
-	IngestionAddr  string
-	ReportingAddr  string
-	AuditAddr      string
-	APIKey         string
-	HTTPPort       int
-	CallTimeout    time.Duration
-	RateLimitRPS   float64
-	RateLimitBurst int
+	IngestionAddr string
+	ReportingAddr string
+	AuditAddr     string
+	// DecisionEngineAddr backs POST /v1/webhooks/payment-downtime
+	// (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), a production route, so
+	// unlike WorldSimulatorAddr below this is always required, never gated
+	// behind DemoControlsEnabled.
+	DecisionEngineAddr string
+	APIKey             string
+	HTTPPort           int
+	CallTimeout        time.Duration
+	RateLimitRPS       float64
+	RateLimitBurst     int
 
 	// DemoControlsEnabled gates /v1/demo/* (docs/PHASE5_5_IMPLEMENTATION.md
 	// Unit W). Default false: demo controls are a surface that does not
@@ -67,13 +73,14 @@ type serviceConfig struct {
 func loadConfig() (serviceConfig, error) {
 	l := config.NewLoader()
 	cfg := serviceConfig{
-		Common:        config.LoadCommon(l, serviceName),
-		IngestionAddr: l.Str("INGESTION_ADDR"),
-		ReportingAddr: l.Str("REPORTING_ADDR"),
-		AuditAddr:     l.Str("AUDIT_ADDR"),
-		APIKey:        l.Str("API_KEY"),
-		HTTPPort:      l.Port("HTTP_PORT", 8090),
-		CallTimeout:   l.Duration("CALL_TIMEOUT", 5*time.Second),
+		Common:             config.LoadCommon(l, serviceName),
+		IngestionAddr:      l.Str("INGESTION_ADDR"),
+		ReportingAddr:      l.Str("REPORTING_ADDR"),
+		AuditAddr:          l.Str("AUDIT_ADDR"),
+		DecisionEngineAddr: l.Str("DECISION_ENGINE_ADDR"),
+		APIKey:             l.Str("API_KEY"),
+		HTTPPort:           l.Port("HTTP_PORT", 8090),
+		CallTimeout:        l.Duration("CALL_TIMEOUT", 5*time.Second),
 		// Basic protection against a runaway caller, not per-tenant fairness:
 		// this system has no concept of a "user" to key on (ARCHITECTURE.md
 		// section 17). Defaults comfortably clear the 50 records/sec NFR
@@ -149,10 +156,22 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 	}
 	defer auditConn.Close()
 
+	// Backs POST /v1/webhooks/payment-downtime (docs/PHASE5_5_IMPLEMENTATION.md
+	// Unit Y), a production route dialed unconditionally like ingestion,
+	// reporting and audit above, never gated behind DemoControlsEnabled.
+	decisionEngineConn, err := grpc.NewClient(cfg.DecisionEngineAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(interceptors.UnaryClientDefaultDeadline(cfg.CallTimeout)))
+	if err != nil {
+		return fmt.Errorf("dial decision engine at %s: %w", cfg.DecisionEngineAddr, err)
+	}
+	defer decisionEngineConn.Close()
+
 	handler := httpapi.New(
 		ingestionv1.NewIngestionServiceClient(ingestionConn),
 		reportingv1.NewReportingServiceClient(reportingConn),
 		auditv1.NewAuditServiceClient(auditConn),
+		decisionenginev1.NewDecisionEngineServiceClient(decisionEngineConn),
 		cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
 	handler.SetWSAllowedOrigins(cfg.WSAllowedOrigins)
 

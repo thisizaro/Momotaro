@@ -207,7 +207,16 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 		return err
 	}
 
-	steps, pendingAction, score, trace := e.decide(classifyResp, history, evt.AmountPaise, now)
+	// Loaded fresh from PAYMENT_DOWNTIME on every classification, never
+	// cached: the whole point is that a bank outage raised or resolved
+	// between two records must be visible to both without a restart
+	// (docs/PHASE5_5_IMPLEMENTATION.md Unit Y).
+	downtime, err := e.store.loadDowntimeStatus(ctx, evt.InstrumentRef)
+	if err != nil {
+		return err
+	}
+
+	steps, pendingAction, score, trace := e.decide(classifyResp, history, downtime, evt.AmountPaise, now)
 	final := steps[len(steps)-1].To
 	var dueAt *time.Time
 	if final == commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
@@ -256,7 +265,7 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 // and the Classifier's real contribution is the BUCKET, which is what the
 // prior table is keyed on. That is the concrete answer to "does the model
 // decide how money is spent?": it does not, it only says what went wrong.
-func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHistory, amountPaise int64, now time.Time) ([]stateStep, commonv1.ActionType, economics.Score, DecisionTrace) {
+func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHistory, downtime downtimeStatus, amountPaise int64, now time.Time) ([]stateStep, commonv1.ActionType, economics.Score, DecisionTrace) {
 	none := commonv1.ActionType_ACTION_TYPE_UNSPECIFIED
 
 	// Below the configured confidence threshold is a safety call, exactly
@@ -288,7 +297,7 @@ func (e *Engine) decide(resp *classifierv1.ClassifyResponse, history attemptHist
 		return directPath(commonv1.RecordState_RECORD_STATE_ESCALATED, "classifier recommended escalation"), none, economics.Score{}, DecisionTrace{}
 	}
 
-	state, pendingAction, reason, score, trace := scoreAndRoute(e.economics, e.cfg.Guardrails, resp.GetBucket(), history, amountPaise, now)
+	state, pendingAction, reason, score, trace := scoreAndRoute(e.economics, e.cfg.Guardrails, resp.GetBucket(), history, downtime, amountPaise, now)
 	return scoringPath(state, reason), pendingAction, score, trace
 }
 

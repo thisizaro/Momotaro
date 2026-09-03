@@ -65,6 +65,14 @@ var spendingActions = []commonv1.ActionType{
 // as the justification for a downgrade.
 type guardrailVerdict struct {
 	blocked map[commonv1.ActionType]string
+	// retryHeldByDowntime is true when RETRY was blocked SPECIFICALLY by an
+	// active payment downtime (applyDowntimeGuardrail, docs/PHASE5_5_IMPLEMENTATION.md
+	// Unit Y), as opposed to the retry budget, the recovery window, or any
+	// other permanent stop. It is the signal scoreAndRoute uses to decide
+	// whether an otherwise-unpermitted retry should be DEFERRED (scheduled
+	// normally, to run once the downtime clears) rather than escalated: a
+	// downtime is bad timing, not a reason to give up on the record.
+	retryHeldByDowntime bool
 }
 
 // allows reports whether the guardrails permit action.
@@ -203,4 +211,94 @@ func attemptNumberFor(action commonv1.ActionType, h attemptHistory) int {
 		return h.Retries + 1
 	}
 	return h.Contacts + 1
+}
+
+// downtimeStatus is what the guardrails need to know about the most recent
+// UNRESOLVED Razorpay payment-downtime event covering a record's instrument
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Y). Loaded by the store from
+// PAYMENT_DOWNTIME, keyed on instrument_ref, the same pattern attemptHistory
+// uses so this stays a plain value and every function that reasons about it
+// stays pure and testable without Postgres.
+//
+// Present is false whenever there is no unresolved downtime row for this
+// instrument at all: an empty instrument_ref, an instrument nothing has ever
+// reported downtime for, or one whose only rows are already resolved all
+// look this up trivially and land here.
+type downtimeStatus struct {
+	Present    bool
+	DowntimeID string
+	Method     string // e.g. "netbanking", "card", "upi", exactly as Razorpay sent it
+	// Instrument is the single identifying value pulled out of Razorpay's
+	// `instrument` object (which varies by method, e.g. {"bank":"VIJB"} for
+	// netbanking vs {"issuer":"SBIN","type":"credit"} for a card): whichever
+	// field its own instrument_schema names first. See the Gateway's
+	// downtimeInstrumentKey, which does this extraction once at the edge so
+	// nothing downstream needs to know Razorpay's per-method shapes.
+	Instrument string
+	Severity   string // "high" | "medium" in Razorpay's documented examples, but treated as an open string: an unrecognised value is still shown, never rejected
+	Scheduled  bool   // true for planned maintenance, false for an unplanned outage
+	Begin      time.Time
+	End        *time.Time // nil while the downtime is ongoing (Razorpay's own null-while-ongoing shape)
+}
+
+// downtimeMaxUnresolvedHold caps how long an UNPLANNED downtime (Scheduled
+// false, End nil) can hold a retry back without a payment.downtime.resolved
+// event ever arriving. A SCHEDULED downtime needs no such cap: Razorpay
+// publishes its End up front, so that timestamp alone bounds it once it
+// passes, resolved event or not.
+//
+// This is the safety valve behind "must not strand a record permanently"
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Y): a webhook can be lost, a demo
+// operator can forget to resolve what they raised, and this service can
+// restart mid-outage with nothing but this Postgres row to go on (there is
+// no in-memory timer to lose). Six hours comfortably covers a real
+// unscheduled outage without leaving a record parked for the length of a
+// working day on a signal that may itself have gone silent.
+const downtimeMaxUnresolvedHold = 6 * time.Hour
+
+// downtimeBlocksRetry reports whether d is, right now, an active downtime
+// that should hold RETRY back, and if so, the human-readable reason the
+// audit trail records for it (docs/PHASE5_5_IMPLEMENTATION.md Unit Y: "bank
+// downtime active: netbanking VIJB, severity high", matching the shape of
+// every other guardrail reason in this file).
+func downtimeBlocksRetry(d downtimeStatus, now time.Time) (string, bool) {
+	if !d.Present {
+		return "", false
+	}
+	if now.Before(d.Begin) {
+		return "", false
+	}
+	if d.End != nil {
+		if !now.Before(*d.End) {
+			return "", false // a scheduled downtime's own published end has passed
+		}
+	} else if !now.Before(d.Begin.Add(downtimeMaxUnresolvedHold)) {
+		return "", false // the safety valve: no resolved event, but this has run long enough
+	}
+	return fmt.Sprintf("bank downtime active: %s %s, severity %s", d.Method, d.Instrument, d.Severity), true
+}
+
+// applyDowntimeGuardrail layers the downtime rule onto a verdict
+// applyGuardrails already computed. Kept as a separate function, rather than
+// a new parameter threaded through applyGuardrails itself, so the existing
+// guardrail rules (retry budget, contact cap/cooldown, recovery window) and
+// every test written against them stay exactly as they are; scoreAndRoute is
+// the one place that calls both and merges the result.
+//
+// If RETRY is already blocked for a permanent reason (the retry budget is
+// spent, or the recovery window has closed), that verdict is left untouched:
+// a downtime clearing would not make either of those reasons any less true,
+// and overwriting a permanent reason with a temporary one would misreport
+// why the record really cannot retry.
+func applyDowntimeGuardrail(v guardrailVerdict, d downtimeStatus, now time.Time) guardrailVerdict {
+	if !v.allows(commonv1.ActionType_ACTION_TYPE_RETRY) {
+		return v
+	}
+	reason, blocked := downtimeBlocksRetry(d, now)
+	if !blocked {
+		return v
+	}
+	v.blocked[commonv1.ActionType_ACTION_TYPE_RETRY] = reason
+	v.retryHeldByDowntime = true
+	return v
 }

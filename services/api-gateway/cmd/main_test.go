@@ -11,6 +11,7 @@ func validEnv(t *testing.T) {
 	t.Setenv("INGESTION_ADDR", "localhost:9090")
 	t.Setenv("REPORTING_ADDR", "localhost:9090")
 	t.Setenv("AUDIT_ADDR", "localhost:9090")
+	t.Setenv("DECISION_ENGINE_ADDR", "localhost:9090")
 	t.Setenv("API_KEY", "test-key")
 }
 

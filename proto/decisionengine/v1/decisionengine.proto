@@ -17,6 +17,15 @@ service DecisionEngineService {
   // Resume a record parked in a waiting state because its outcome resolved
   // later (a customer acting on a nudge hours after receiving it).
   rpc ReportDelayedOutcome(ReportDelayedOutcomeRequest) returns (ReportDelayedOutcomeResponse);
+
+  // Records one Razorpay payment.downtime.started / .updated / .resolved
+  // webhook (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), exactly the kind of
+  // "arrives after the fact, with no request left to answer on" event this
+  // file's header comment describes: a bank outage starting or clearing is
+  // not something the Decision Engine ever asks about, it is told. The API
+  // Gateway (POST /v1/webhooks/payment-downtime) is the only caller, the
+  // same shape as a real Razorpay webhook landing on this RPC in production.
+  rpc ReportDowntimeEvent(ReportDowntimeEventRequest) returns (ReportDowntimeEventResponse);
 }
 
 message ReportDelayedOutcomeRequest {
@@ -34,4 +43,29 @@ message ReportDelayedOutcomeResponse {
   // at-least-once like everything else here.
   bool applied = 1;
   common.v1.RecordState resulting_state = 2;
+}
+
+// ReportDowntimeEventRequest is already translated from Razorpay's raw wire
+// shape (docs/PHASE5_5_IMPLEMENTATION.md Unit Y: the payload nests three
+// levels deep and Razorpay's own `instrument` object varies by payment
+// method). The API Gateway does that translation once, at the edge, so
+// nothing on this side of the RPC needs to know Razorpay's per-method
+// shapes: instrument_key is already the single identifying value extracted
+// from whichever fields `instrument_schema` named (e.g. "VIJB" for
+// netbanking's {"bank":"VIJB"}, "SBIN" for a card's
+// {"issuer":"SBIN","type":"credit"}).
+message ReportDowntimeEventRequest {
+  string downtime_id = 1;    // Razorpay's down_xxx id, the upsert key
+  string method = 2;         // e.g. "netbanking", "card", "upi", exactly as Razorpay sent it
+  string status = 3;         // "started" | "updated" | "resolved"
+  bool scheduled = 4;        // planned maintenance vs an unplanned outage
+  string severity = 5;       // "high" | "medium" in Razorpay's documented examples; treated as an open string, never validated against a closed list
+  string instrument_key = 6; // the single identifying value pulled from Razorpay's `instrument` object
+  int64 begin_unix = 7;      // UNIX SECONDS, not milliseconds
+  int64 end_unix = 8;        // UNIX SECONDS; meaningless unless has_end is true
+  bool has_end = 9;          // false while the downtime is ongoing (Razorpay's own `end: null` shape)
+}
+
+message ReportDowntimeEventResponse {
+  bool applied = 1;
 }

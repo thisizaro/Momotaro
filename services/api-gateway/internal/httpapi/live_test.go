@@ -44,7 +44,7 @@ func (f *fakeStreamClient) Recv() (*reportingv1.StreamBatchUpdatesResponse, erro
 
 func newLiveTestServer(t *testing.T, rep *fakeReporting, allowedOrigins []string) *httptest.Server {
 	t.Helper()
-	h := New(&fakeIngestion{}, rep, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0)
+	h := New(&fakeIngestion{}, rep, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0)
 	h.SetWSAllowedOrigins(allowedOrigins)
 	srv := httptest.NewServer(h.Routes())
 	t.Cleanup(srv.Close)
