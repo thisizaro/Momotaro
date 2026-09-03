@@ -2501,3 +2501,55 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   exactly like `payment-failed` does today, with the body size-capped and
   never logged in full at INFO in the meantime.
   `docs/PHASE5_5_IMPLEMENTATION.md` Unit Y, `docs/API_GATEWAY.md`.
+- 2026-09-03: **`DECISION_ENGINE_ADDR` stays required (`l.Str`) on the API
+  Gateway, not made optional, despite the startup breakage this caused in
+  CI** (`docs/INCIDENTS.md` 2026-09-03: the harness and `make run-api-gateway`
+  both needed catching up, not the requiredness itself). The alternative
+  considered was optional-with-a-nil-client, the route returning a clear
+  "not configured" error rather than the Gateway refusing to start. Kept
+  required, for the same reason `INGESTION_ADDR`, `REPORTING_ADDR` and
+  `AUDIT_ADDR` are already required even though no single deployment
+  necessarily calls every route each one backs: `POST
+  /v1/webhooks/payment-downtime` is an unconditional part of
+  `docs/API_GATEWAY.md`'s frozen contract, registered unconditionally in
+  `Routes()`, the same as `payment-failed`, never behind the
+  `DEMO_CONTROLS_ENABLED` gate `WORLD_SIMULATOR_ADDR` sits behind (that one
+  IS conditionally required, only when the flag is on, for exactly this
+  reason: a production deployment must never be forced to know World
+  Simulator exists). A route that is part of the permanent contract needs
+  its backend at startup or not at all; a demo-only route does not.
+
+  The deeper reason is `docs/ENGINEERING.md` section 5's fail-fast
+  philosophy, already enforced everywhere else in this codebase harder than
+  it was here: `GuardrailConfig.Validate()` refuses the zero value rather
+  than silently escalating every record (`docs/INCIDENTS.md` 2026-08-24),
+  `LLMSampleRate`/`RouteConfidenceThreshold`/`ClassifyConfidenceThreshold`
+  are range-checked at startup, `DEMO_TIME_SCALE<=0` is rejected outright.
+  Making `DECISION_ENGINE_ADDR` optional would trade a loud startup failure
+  for exactly the silent-misconfiguration failure mode
+  `docs/INCIDENTS.md` 2026-09-03 (this same entry) describes:
+  `grpc.NewClient` dials lazily, so an unset-but-tolerated client would not
+  fail at the route either, it would nil-pointer or need its own
+  per-request "not configured" branch, one more thing to remember at every
+  call site rather than one check at startup. A required config value that
+  is occasionally inconvenient to set is a five-minute Makefile fix,
+  exactly what this entry is; a route that silently no-ops or panics in
+  production is a page.
+
+  What actually broke was not the requiredness, it was that turning a
+  previously-unused address into a required one has THREE places that can
+  each independently claim to configure this service (`.env`, the
+  `Makefile`'s `run-<service>` target, and `test/e2e/harness_test.go`), and
+  only one of the three was updated in the original PR. The fix is at
+  those three call sites, and `services/api-gateway/cmd/makefile_test.go`
+  now has three tests guarding against a future repeat: one parsing the
+  `run-api-gateway` recipe's OWN assignments (not merged with `.env`'s
+  fallback, which would silently mask the exact class of gap this incident
+  was) and cross-checking the port against `run-decision-engine`'s own
+  `GRPC_PORT` rather than a literal; one running the real `loadConfig`
+  against the full environment `make run-api-gateway` actually provides;
+  one parsing `test/e2e/harness_test.go`'s api-gateway block as text for
+  the same key. All three are proven red against the original bug (each
+  reverted independently, confirmed failing, restored) before being
+  reported green.
+  `docs/PHASE5_5_IMPLEMENTATION.md` Unit Y, `docs/INCIDENTS.md` 2026-09-03.
