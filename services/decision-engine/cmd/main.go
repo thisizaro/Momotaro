@@ -246,6 +246,7 @@ func main() {
 	}
 
 	log := logger.New(cfg.ServiceName, cfg.LogLevel)
+	warnIfLiveCallsUnreachable(cfg, log)
 
 	if err := run(ctx, cfg, log); err != nil {
 		log.Error("fatal", "err", err)
@@ -256,6 +257,27 @@ func main() {
 
 func slogFallback() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
+}
+
+// warnIfLiveCallsUnreachable catches a specific, silent misconfiguration:
+// LLM_SAMPLE_RATE > 0 (an operator expects some fraction of records to
+// reach a live model) but LLM_ROUTE_CONFIDENCE_THRESHOLD left at its
+// default 0.0 (routing's own comparison is strict less-than, and a real
+// confidence value is never negative, so 0.0 can never be satisfied,
+// engine.go's Config field explains the same fact from the other side).
+// The result is zero live calls, with nothing in the log to say why: the
+// same class of bug as configs/demo.env being sourced instead of applied
+// for weeks and silently doing nothing (docs/INCIDENTS.md 2026-08-31).
+// Logged once at startup, right after the real logger exists, so it is in
+// the first few lines rather than discovered by counting calls that never
+// happened.
+func warnIfLiveCallsUnreachable(cfg serviceConfig, log *slog.Logger) {
+	if cfg.LLMSampleRate > 0 && cfg.RouteConfidenceThreshold == 0 {
+		log.Warn("LLM_SAMPLE_RATE is set but LLM_ROUTE_CONFIDENCE_THRESHOLD is 0, so no record will ever be judged ambiguous and no live model call will be placed; set LLM_ROUTE_CONFIDENCE_THRESHOLD above 0 to allow any record to reach a live model",
+			"llm_sample_rate", cfg.LLMSampleRate,
+			"llm_route_confidence_threshold", cfg.RouteConfidenceThreshold,
+		)
+	}
 }
 
 func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {

@@ -89,15 +89,20 @@ func startStack(ctx context.Context, t *testing.T, retryDelay string) *stack {
 // classifier's and/or the Decision Engine's process, for a test that needs
 // to point the live provider chain at a fake endpoint rather than the
 // rules-only default (Phase 3 Unit C: proving the fallback path with the
-// real classifier binary and a real HTTP failure, not a fake rung). Both
-// maps matter: the classifier's LLM_PROVIDER_CHAIN decides which rungs
-// EXIST, but the Decision Engine's LLM_SAMPLE_RATE decides whether any given
-// record is even allowed to reach them (ClassifyRequest.force_rules_only,
-// Phase 3 Unit H) -- a test that only overrides the classifier's env still
-// gets force_rules_only=true at the default sample rate 0.0, and the LLM
-// rung is filtered out before it is ever called, same as a request that
-// never named it. A new function rather than parameters on startStack
-// itself, so the other seven existing callers need no change.
+// real classifier binary and a real HTTP failure, not a fake rung). Three
+// knobs matter together, not two: the classifier's LLM_PROVIDER_CHAIN
+// decides which rungs EXIST; the Decision Engine's LLM_SAMPLE_RATE is a
+// ceiling on how many records may ever reach them; and the Decision
+// Engine's LLM_ROUTE_CONFIDENCE_THRESHOLD decides which records are even
+// eligible, by asking the deterministic rules engine first and comparing
+// its confidence against this threshold (docs/DEMO_READINESS.md Unit AI).
+// A test that sets LLM_SAMPLE_RATE=1.0 but leaves the threshold at its
+// default (0.0, which no real confidence value is ever below) still gets
+// force_rules_only=true on every record: routing never judges it ambiguous,
+// so the budget is never even consulted, and the LLM rung is filtered out
+// before it is ever called, same as a request that never named it. A new
+// function rather than parameters on startStack itself, so the other seven
+// existing callers need no change.
 func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, classifierEnv, decisionEngineEnv map[string]string) *stack {
 	t.Helper()
 
