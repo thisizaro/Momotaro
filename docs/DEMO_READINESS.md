@@ -49,6 +49,16 @@ Ordered by what decides whether this wins. **P0 first, top to bottom.**
 > `error_reason`) is accepted alongside `failure_code` and used by the
 > rules engine as a fallback signal when the failure code alone is
 > unrecognised. Detail under P2 below and in `docs/DECISIONS.md`.
+>
+> **Unit AM done, 2026-09-03.** The Decision Engine now answers a new
+> `GetAgentConfig` RPC with the guardrail and LLM-routing values it loaded
+> and validated at startup; the Gateway proxies it as `GET /v1/demo/config`,
+> gated on `DEMO_CONTROLS_ENABLED` like every other `/v1/demo/*` route. The
+> Demo Controls page shows it grouped into time compression, retry/contact
+> limits and LLM routing, clearly marked fixed at startup. `LLM_PROVIDER_CHAIN`
+> is left out (Classifier-owned, out of scope for a contained change, see
+> `docs/DECISIONS.md`). The **56** figure below was stale: `.env.example`
+> was recounted fresh and has **60** entries today.
 
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
@@ -72,7 +82,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | **P3** | | **Polish** | **~6h** | |
 | 12 | AK | `/help` page from the frozen contract | 3h | **done** |
 | 13 | AL | Misleading labels and the confusion matrix | 2h | |
-| 14 | AM | Read-only config panel | 1h | |
+| 14 | AM | Read-only config panel | 1h | **done** |
 | 15 | AN | Redesign the record drawer, and show real time against simulated time | 3h | **done** #110 |
 | 16 | AO | Timeline overplotting, filtering and interactivity | 4h | **done** #112 |
 | 17 | AP | Restore the compact timeline as the default, add search | 3h | **done** |
@@ -829,6 +839,28 @@ statement of the guardrails. A small `GET /v1/demo/config` route backs it.
 Context for why this is worth showing: there are **56 environment variables**
 and **none of them are adjustable at runtime**. The UI currently exposes four
 actions and zero configuration.
+
+**Done, 2026-09-03.** The 56 figure above was stale: `.env.example` was
+recounted fresh with `grep -cE '^[A-Z_][A-Z0-9_]*=' .env.example` rather
+than trusted, and has **60** entries today, still none adjustable at
+runtime. `GetAgentConfig`, a new RPC on the Decision Engine's own gRPC
+service, returns the values it already loaded and validated at startup:
+`DEMO_TIME_SCALE`, `MAX_RETRIES`, `MAX_CONTACTS`, `CONTACT_COOLDOWN`,
+`RECOVERY_WINDOW`, `LLM_SAMPLE_RATE`, `LLM_ROUTE_CONFIDENCE_THRESHOLD`,
+`CLASSIFY_CONFIDENCE_THRESHOLD`, `NUDGE_MAX_CHARS`, and the
+`downtimeMaxUnresolvedHold` Go constant (no env var backs it, but it is a
+real bound). `GET /v1/demo/config` proxies that RPC, the same thin-proxy
+pattern every other `/v1/demo/*` route already uses, gated on
+`DEMO_CONTROLS_ENABLED` identically. The Demo Controls page shows it as a
+new, clearly-labelled "Agent configuration" section, grouped into time
+compression, retry/contact limits and LLM routing, not a flat list.
+
+`LLM_PROVIDER_CHAIN` is deliberately **not** shown: it is owned by the
+Classifier, not the Decision Engine, and surfacing it here would have
+meant either a second cross-service call or a duplicated copy of the
+Classifier's own config parsing sitting in the Decision Engine, exactly
+the kind of drift this unit exists to avoid causing elsewhere. Left out
+rather than read independently. `docs/DECISIONS.md` 2026-09-03.
 
 ---
 

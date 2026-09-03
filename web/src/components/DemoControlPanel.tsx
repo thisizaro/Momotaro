@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Bug, Globe, Info, Play, PowerOff, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { api, DemoControlsDisabledError, USE_MOCK } from '@/lib/api';
-import type { DemoBatchResponse, DemoInjectPoisonResponse, DemoScenario, DemoWorldResponse } from '@/types';
+import type { DemoBatchResponse, DemoConfigResponse, DemoInjectPoisonResponse, DemoScenario, DemoWorldResponse } from '@/types';
+import { AgentConfigPanel } from '@/components/AgentConfigPanel';
 import { DueCountdown } from '@/components/DueCountdown';
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorBanner } from '@/components/ErrorBanner';
@@ -47,6 +48,9 @@ export function DemoControlPanel({ onBatchSeeded }: Props) {
   const [world, setWorld] = useState<DemoWorldResponse | null>(null);
   const [worldError, setWorldError] = useState<string | null>(null);
 
+  const [agentConfig, setAgentConfig] = useState<DemoConfigResponse | null>(null);
+  const [agentConfigError, setAgentConfigError] = useState<string | null>(null);
+
   const [injecting, setInjecting] = useState(false);
   const [injectError, setInjectError] = useState<string | null>(null);
   const [injectResult, setInjectResult] = useState<DemoInjectPoisonResponse | null>(null);
@@ -85,9 +89,23 @@ export function DemoControlPanel({ onBatchSeeded }: Props) {
     }
   }, [handlePossiblyDisabled]);
 
+  // Unlike world state, this is fetched once, not polled: it is fixed for
+  // the lifetime of the process (docs/DEMO_READINESS.md Unit AM), so there
+  // is nothing that would ever change between polls.
+  const loadAgentConfig = useCallback(async () => {
+    try {
+      const cfg = await api.getDemoConfig();
+      setAgentConfig(cfg);
+      setAgentConfigError(null);
+    } catch (err) {
+      handlePossiblyDisabled(err, setAgentConfigError, 'Failed to load agent configuration');
+    }
+  }, [handlePossiblyDisabled]);
+
   useEffect(() => {
     loadScenarios();
-  }, [loadScenarios]);
+    loadAgentConfig();
+  }, [loadScenarios, loadAgentConfig]);
 
   useEffect(() => {
     if (disabled) return;
@@ -303,6 +321,9 @@ export function DemoControlPanel({ onBatchSeeded }: Props) {
           )}
         </div>
       </div>
+
+      {/* Agent configuration, read-only */}
+      <AgentConfigPanel config={agentConfig} error={agentConfigError} onRetry={loadAgentConfig} />
 
       {/* World Simulator explainer */}
       <div className="card p-5">
