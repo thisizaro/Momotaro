@@ -100,3 +100,26 @@ describe('formatSimulatedGap', () => {
     expect(formatSimulatedGap(-500)).toBe('0 min');
   });
 });
+
+// A continuous loadgen run spans real minutes, not the few seconds a seeded
+// batch takes, and at 300000x that is years of simulated time. The window
+// framing then reads as nonsense: a live stack showed
+// "day 3347 of the 7-day recovery window" on its axis
+// (docs/INCIDENTS.md 2026-09-03). Past the window the position is no longer
+// a position in it, so the framing has to go.
+describe('formatSimulatedElapsed past the recovery window', () => {
+  it('drops the window framing once elapsed exceeds it', () => {
+    // 16 real minutes at 300000x is about 3333 simulated days.
+    const out = formatSimulatedElapsed(16 * 60 * 1000);
+    expect(out).not.toContain('recovery window');
+    expect(out).toBe('9.1 years of simulated time');
+  });
+
+  it('keeps the window framing for a normal seeded batch', () => {
+    // A seeded batch settles in seconds. 1 real second is 3.5 simulated
+    // days, 3 seconds is 10, 12 seconds is 42: all still readable as a
+    // position in a recovery cycle, and worth keeping.
+    expect(formatSimulatedElapsed(1000)).toContain('recovery window');
+    expect(formatSimulatedElapsed(12000)).toContain('recovery window');
+  });
+});

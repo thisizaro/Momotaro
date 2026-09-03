@@ -30,6 +30,14 @@ make migrate-up          # apply the schema
 make test-integration    # build every service, run every test tier
 ```
 
+**What runs where.** Docker Compose runs **infrastructure only**: Postgres,
+Redis, Kafka and a Kafka UI. The nine Go services are **not** containerised
+locally; they run as `go run` processes on fixed ports, started by
+`make demo-up`. Dockerfiles exist for every service and CI builds them, but
+running them from source locally means a change is live on the next restart
+with no image rebuild. If you have used Compose elsewhere and expected
+`docker compose up` to start the whole product, that is why it does not.
+
 That last command is the one that proves the thing works. It brings up the
 stack if it is not already running, applies migrations, then runs the unit,
 integration and end-to-end tiers: six real service binaries started as
@@ -128,7 +136,24 @@ npm run dev                    # http://localhost:5173
 ```
 
 The individual `make run-<service> PROFILE=demo` targets still exist for
-development when you want one service in the foreground with its logs.
+development when you want one service in the foreground with its logs. Every
+port is fixed, so Prometheus can scrape them and so two services never race
+for one port:
+
+| Target | gRPC | Metrics | Notes |
+|---|---|---|---|
+| `make run-ingestion` | 9090 | 9091 | |
+| `make run-classifier` | 9190 | 9191 | |
+| `make run-executor` | 9192 | 9193 | |
+| `make run-audit` | 9194 | 9195 | |
+| `make run-decision-engine` | 9196 | 9197 | owns the state machine |
+| `make run-api-gateway` | 9198 | 9199 | **HTTP on 8090**, the only public port |
+| `make run-reporting` | 9200 | 9201 | |
+| `make run-world-simulator` | 9202 | 9203 | demo only, holds the sealed answer key |
+| `make run-notification-simulator` | 9204 | 9205 | demo only, stands in for SMS and WhatsApp |
+
+Everything the dashboard and `curl` talk to is **http://localhost:8090**. The
+gRPC ports are internal, and the metrics ports exist for Prometheus.
 
 **`VITE_API_BASE_URL=http://localhost:8090` must be set**, or the dashboard
 runs on `src/lib/mockEngine.ts`, its built-in fake backend, and shows
@@ -231,6 +256,18 @@ make loadgen RATE=2 EVENTS=200        # a fixed total instead of a time bound
 Needs the api-gateway already running (`make demo-up PROFILE=demo`) and
 `API_KEY` set, otherwise it exits immediately saying which one is missing.
 
+`make loadgen` wraps a Go CLI at `scripts/loadgen`. For anything the three
+forms above do not cover, run it directly:
+
+```bash
+go run ./scripts/loadgen -h        # every flag
+go run ./scripts/loadgen -rate 20 -count 500 -seed 42
+```
+
+`-seed` fixes the traffic shape so two runs send the same events, which is
+useful when comparing behaviour. It never sets a ground truth; webhook
+traffic has no answer key by design, which is the point of this tool.
+
 This posts events at `POST /v1/webhooks/payment-failed`, the same public
 route a real payment gateway would call, at a steady rate. It never touches
 Postgres or Kafka directly and never carries a ground truth: every event
@@ -249,9 +286,34 @@ Press Ctrl-C to stop early. Either way, the last line printed is a summary:
 make up-observability          # Prometheus, Alertmanager, Grafana
 ```
 
-On Docker Desktop with WSL2 in NAT mode, `host.docker.internal` will not reach
-your services. Pass your distro's IP instead:
-`make up-observability HOST_IP=$(hostname -I | awk '{print $1}')`.
+| Where | URL |
+|---|---|
+| Prometheus | http://localhost:9900 |
+| Alertmanager | http://localhost:9901 |
+| Grafana | http://localhost:9902 (admin/momotaro, or anonymous viewer) |
+| Kafka UI | http://localhost:8080 |
+
+Prometheus is on **9900, not its usual 9090**, because 9090 is ingestion's
+gRPC port on this same host. Grafana is on **9902, not 3000**, for the same
+kind of reason. The container-internal ports are unchanged; only the host
+mappings move.
+
+**Run it instead of `make demo-up`, not alongside it.** `up-observability`
+brings up the base Compose stack as well, so starting both at once has the
+two racing for the same containers. Bring this up first, then
+`make demo-up PROFILE=demo`.
+
+Prometheus scrapes the fixed `run-<service>` metrics ports listed above, from
+inside a container, so it needs a route back to your host. On Docker Desktop
+with WSL2 in NAT mode `host.docker.internal` will not reach them, so pass
+your distro's IP:
+
+```bash
+make up-observability HOST_IP=$(hostname -I | awk '{print $1}')
+```
+
+Check **Status > Targets** in Prometheus to confirm the scrape is working. If
+every target is down, `HOST_IP` is the reason.
 
 ## How a record moves
 
@@ -271,6 +333,12 @@ record changed state without a record of why. Kafka carries events, never
 truth.
 
 ## Layout
+
+`scripts/` holds three **compiled Go CLIs**, not shell scripts: `migrate`
+(schema), `batchgen` (a seeded batch with a sealed answer key) and `loadgen`
+(live webhook traffic). Each has `-h`. The `make` targets are thin wrappers
+that pass the usual flags.
+
 
 | Path | What it is |
 |---|---|

@@ -51,9 +51,31 @@ export function simulatedElapsedMs(realElapsedMs: number): number {
  * rather than showing false decimal precision on a number too small to
  * mean anything at day granularity.
  */
+// MAX_WINDOW_FRAMED_DAYS is how far past the recovery window the "day N of
+// the 7-day recovery window" phrasing stays useful. A seeded batch settles
+// in seconds and reaches a few tens of days, which reads well. Continuous
+// webhook traffic runs for real minutes and reaches thousands, which does
+// not (docs/INCIDENTS.md 2026-09-03).
+const MAX_WINDOW_FRAMED_DAYS = 99;
+const DAYS_PER_YEAR = 365;
+
 export function formatSimulatedElapsed(realElapsedMs: number): string {
   const simMs = simulatedElapsedMs(realElapsedMs);
   const simDays = simMs / MS_PER_DAY;
+  if (simDays > MAX_WINDOW_FRAMED_DAYS) {
+    // Far past the window the framing stops meaning anything. A seeded
+    // batch settles in seconds and lands on "day 22" or "day 44", which
+    // reads well and is worth keeping. A continuous loadgen run spans
+    // real minutes, and at 300000x a live stack reached
+    // "day 3347 of the 7-day recovery window" on its axis
+    // (docs/INCIDENTS.md 2026-09-03). Beyond this point report the span
+    // plainly, in whichever unit a person would actually say out loud.
+    const simYears = simDays / DAYS_PER_YEAR;
+    if (simYears >= 1) {
+      return `${simYears.toFixed(1)} years of simulated time`;
+    }
+    return `${Math.round(simDays).toLocaleString()} days of simulated time`;
+  }
   if (simDays >= 1) {
     const decimals = simDays < 10 ? 1 : 0;
     return `day ${simDays.toFixed(decimals)} of the ${RECOVERY_WINDOW_DAYS}-day recovery window`;

@@ -53,6 +53,21 @@ type SchedulerConfig struct {
 	// NudgeMaxChars bounds a composed nudge's raw length. See clients.go's
 	// field of the same name.
 	NudgeMaxChars int32
+
+	// LLMSampleRate is the same LLM_SAMPLE_RATE ceiling the Engine applies
+	// to classification, applied here to nudge composition. Composition
+	// used to bypass it entirely, so a run that nudged 146 records made
+	// 479 Groq attempts and held the circuit breaker open for 361 of them,
+	// which then degraded classification too (docs/INCIDENTS.md
+	// 2026-09-03).
+	//
+	// The Scheduler gets its own budget rather than sharing the Engine's
+	// instance, so the ceiling bounds each path separately rather than
+	// globally: worst case total spend is twice the rate, not the rate.
+	// That is a deliberate simplification. It is bounded, which is the
+	// property that was missing, and sharing one instance would mean
+	// threading it through two constructors for a demo-scale limit.
+	LLMSampleRate float64
 }
 
 // Scheduler is docs/ARCHITECTURE.md section 7a's scheduler worker. Without
@@ -83,6 +98,7 @@ func NewScheduler(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceCl
 			executor:      executor,
 			callTimeout:   cfg.CallTimeout,
 			nudgeMaxChars: cfg.NudgeMaxChars,
+			llmBudget:     newLLMBudget(cfg.LLMSampleRate),
 		},
 		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
 		audit:     newAuditEventPublisher(dlqProducer, cfg.AuditEventsTopic),

@@ -2380,3 +2380,77 @@ and train everyone to ignore the one time it matters. Documented in
 - **Verify by starting the product after a merge, not only by watching CI.**
   CI does not run `make demo-up`. Every one of these was found by a human
   running the thing.
+
+## 2026-09-03: live webhook traffic exposed three bugs at once
+
+**How it surfaced.** A `make loadgen RATE=2 EVENTS=200` run against a live
+stack, then reading the dashboard. None of this shows up in a seeded demo
+batch, and CI cannot see any of it: all three need continuous traffic that
+arrived through the public webhook API.
+
+### 1. Records that arrive by webhook never settle
+
+**Symptom.** The webhook batch read `RECOVERY RATE 0.0%`, `RECOVERED Rs 0`,
+of Rs 19.9L at risk. In the database, 220 records: **146 stuck in `NUDGED`,
+55 in `RETRYING`, 19 escalated, and zero terminal**.
+
+**Cause.** Webhook records have no `GROUND_TRUTH` row, because nothing
+seeded them. `store.loadRecordProfile` inner-joins that table, so it
+returned `errNoGroundTruth`, and `SimulateOutcome` turned that into a gRPC
+`NotFound`. The Executor therefore had no outcome to record and the record
+sat in flight forever.
+
+The original code was deliberate and its comment said so: World Simulator
+"exists solely to answer against that sealed profile, has nothing to roll
+and must not guess a probability." That rule is right about not fabricating
+an answer key. It is wrong about refusing to answer at all, because in a
+demo there is no real bank behind the webhook, so refusing is not
+neutrality, it is a record that never finishes.
+
+**Fix.** `unseededProfile` derives a plausible profile from the record's own
+failure code, via a new `syntheticgen.BucketForFailureCode`. It writes **no
+`GROUND_TRUTH` row**, so accuracy and the baseline comparison stay correctly
+absent for webhook traffic, which is exactly the distinction Unit AJ set out
+to draw. An unrecognised code falls back to `USER_ACTION_NEEDED` rather than
+stranding the record, since real gateways invent codes we have never seen.
+
+### 2. The sampling ceiling did not cover nudge composition
+
+**Symptom.** 479 Groq attempts for one run, of which **361 hit an open
+circuit breaker**, 44 were rate limited and 3 timed out.
+
+**Cause.** `LLM_SAMPLE_RATE` was applied in `clients.classify` and nowhere
+else. `clients.composeNudge` went straight to the provider chain. With 146
+records nudged, composition alone blew through Groq's free tier, opened the
+breaker, and then **classification degraded to rules as well**. An
+unbudgeted path spent the budget the budgeted path was protecting.
+
+**Fix.** `composeNudge` consults the same `llmBudget`. When the ceiling is
+spent it sets `force_template_only` and the Classifier's terminal rung
+answers, which is a real Hinglish message either way.
+
+### 3. Simulated time on the timeline axis became absurd
+
+**Symptom.** `day 3347 of the 7-day recovery window`.
+
+**Cause.** The axis frames elapsed time as a position in the recovery
+window, which holds for a seeded batch that settles in seconds and reaches
+day 22 or day 44. Continuous traffic runs for real minutes, and at 300000x
+16 real minutes is over nine simulated years.
+
+**Fix.** Keep the window framing up to 99 simulated days, where it still
+reads as a position in a recovery cycle, and beyond that report the span
+plainly in the unit a person would say out loud. A first attempt at this
+switched at 7 days and broke an existing test asserting `day 10`; that test
+was right and the threshold was wrong.
+
+**Lessons.**
+
+- **A demo mode and a production mode diverge in ways neither one's tests
+  cover.** Every seeded-batch test passed throughout. The webhook path has
+  its own integration test and that passed too. What nobody had was a long
+  continuous run watched on the dashboard.
+- **A budget that covers one caller is not a budget.** Check every path to
+  an expensive dependency, not only the one the limit was written for.
+- **A unit that is correct at demo scale can be nonsense at another scale.**
+  The time framing was not wrong, it was unbounded.

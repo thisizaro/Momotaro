@@ -387,6 +387,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		TimeScale:            cfg.DemoTimeScale,
 		Guardrails:           guardrailsFrom(cfg),
 		NudgeMaxChars:        cfg.NudgeMaxChars,
+		LLMSampleRate:        cfg.LLMSampleRate,
 	}
 	scheduler := engine.NewScheduler(pool,
 		classifierv1.NewClassifierServiceClient(classifierConn),
