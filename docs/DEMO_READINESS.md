@@ -21,6 +21,12 @@ Ordered by what decides whether this wins. **P0 first, top to bottom.**
 > review of the working Unit AH timeline found dense buckets overplotting
 > into a solid band, two competing colour encodings, a near-invisible legend
 > caption, and no click-to-filter. Detail under P1 below, after Unit AN.
+>
+> **P1 closed 2026-09-03.** Unit AJ was the last item: `scripts/loadgen`
+> now posts steady, varied traffic at the public webhook API, and the
+> dashboard explains rather than blanks the accuracy/baseline panels for a
+> batch with no ground truth. S, AH, AI and AJ are all done. Detail under
+> P1 below.
 
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
@@ -36,8 +42,8 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | **P1** | | **Built already, invisible** | **~16h** | |
 | 6 | S | Surface `decision_trace` (the "why not" table) | 4h | **done** #107 |
 | 7 | AH | Historical timeline + real vs relative time | 6h | **done** #109 |
-| 8 | AI | Confidence-based LLM routing + quota banner | 4h | |
-| 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | |
+| 8 | AI | Confidence-based LLM routing + quota banner | 4h | **done** #113 |
+| 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | **done** |
 | **P2** | | **Differentiators** | **~11h** | |
 | 10 | Y | Razorpay payment-downtime webhooks | 5h | |
 | 11 | Z | Real webhook payload, signature, error taxonomy | 6h | |
@@ -430,6 +436,41 @@ Then make the absence explanatory rather than empty: for a production-sourced
 batch the report says plainly that live traffic has no answer key, which is
 precisely why the seeded batch exists alongside it. Two modes that explain each
 other.
+
+**Resolved 2026-09-03.** The CLI landed as `scripts/loadgen`: that name had
+been reserved since Phase 6 (`docs/PLAN.md`, `docs/ARCHITECTURE.md` section
+14) for exactly this job, throughput traffic through the public HTTP API,
+but no such tool existed yet, so this closes that gap rather than adding a
+third generator alongside `scripts/batchgen`. It POSTs to
+`/v1/webhooks/payment-failed` at a steady, `-rate`-controlled pace (every
+event's send time pinned to a fixed offset from the run's start, so a slow
+request falls behind rather than compounding into a burst), drawing type,
+amount and failure code from `internal/platform/syntheticgen`, the same
+generator `scripts/batchgen` and the World Simulator already use, so live
+traffic looks like the same vocabulary rather than an invented one. It
+never carries the hidden ground-truth fields `syntheticgen.GeneratedRecord`
+also has: the webhook route's wire shape has no field for them, by design.
+SIGINT stops it cleanly and it always prints one summary line
+(`sent=N accepted=N failed=N`); a dead gateway is reported per failure and,
+after a few consecutive failures, with an explicit "gateway appears
+unreachable" line, never a silent hang. Rate limiting, event variety, and
+the summary counters are all unit-tested with no live server
+(`scripts/loadgen/*_test.go`), per this unit's own TDD instruction.
+
+For the dashboard half, `batch.source` turned out to already be on the wire
+(`BatchSummary.source`, `GET /v1/batches`, since Unit G), so no
+`docs/API_GATEWAY.md` change was needed: `App.tsx` already holds the batch
+list that response came from, so the active batch's source is looked up
+from state already on hand. `web/src/lib/groundTruth.ts`'s
+`noGroundTruthReason` is one function shared by the Classification Accuracy
+panel and `BaselineComparisonCard`, so the two can never drift into saying
+slightly different things about the same fact; it names the `"webhook"`
+source specifically (the always-on rolling batch every webhook event
+attaches to, `services/ingestion/internal/server/store.go`, what
+`scripts/loadgen` posts to) and falls back to an honest generic reason for
+any other ground-truth-less source. Quiet in tone by design, tested for it:
+no exclamation marks, no em dash, a statement about method rather than a
+warning. Full reasoning in `docs/DECISIONS.md` 2026-09-03.
 
 ### Unit AN: redesign the record drawer, and show real time against simulated time
 

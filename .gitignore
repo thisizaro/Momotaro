@@ -7,6 +7,17 @@ dist/
 *.test
 *.out
 
+# `go build ./...` from the repo root writes one bare, extension-less binary
+# per scripts/<name> main package straight into this directory (migrate,
+# batchgen, loadgen). Explicit names, not a wildcard, so a real file that
+# happens to share a script's name is never silently ignored.
+# docs/INCIDENTS.md 2026-09-03: /migrate has been committed since the very
+# first commit that added it, undetected until now, this list stops that
+# from repeating for the newer tools.
+/migrate
+/batchgen
+/loadgen
+
 # Go
 vendor/
 go.work

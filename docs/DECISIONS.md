@@ -2310,3 +2310,59 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   free-tier quota being spent is a normal operating condition on this
   project's stated cost posture, not a fault to flag, and dressing it as one
   would misstate what actually happened.
+- 2026-09-03: **Unit AJ's live traffic generator became `scripts/loadgen`,
+  not a new script.** `docs/PLAN.md` Phase 6 and `docs/ARCHITECTURE.md`
+  section 14 had already named `scripts/loadgen` (throughput testing against
+  the public HTTP API, distinct from `scripts/batchgen` which writes
+  straight to Postgres because only it may seed `GROUND_TRUTH`) but no such
+  directory existed yet: it was a planned slot, not a built tool, checked
+  before writing anything per this unit's own instruction to read what is
+  already there first. Building Unit AJ's CLI there rather than under a
+  third name closes that gap instead of creating a second, differently
+  named tool with an overlapping job description, and lets Phase 6's own
+  "scripts/loadgen built" checkbox become literally true. Scope is
+  deliberately narrower than section 14's full description (no ramping
+  load profile, no p50/p95/p99 latency histogram): this unit needed steady
+  webhook traffic for the Live Event Stream panel, not a performance test
+  harness, and the remaining Phase 6 items (ramp/peak profile, latency
+  measurement, worker pool calibration) stay open, unclaimed by this
+  change.
+- 2026-09-03: **`scripts/loadgen`'s rate limiter schedules every event at a
+  fixed offset from the run's start time (`NextSendTime(n) = start + n *
+  interval`), never accumulated from the previous send.** The alternative,
+  sleeping `interval` after each send, drifts under load (a slow HTTP round
+  trip delays every subsequent send by the same amount, compounding) and
+  invites exactly the burst this unit's own requirement rules out ("rate
+  limiting should be steady, not bursty") the moment something tries to
+  "catch up". Pinning every event to an absolute offset means a slow send
+  can only ever fall behind its own schedule, never accelerate to
+  compensate, and it made the steadiness claim a pure, table-testable
+  function (`TestNextSendTimeIsEvenlySpaced`,
+  `scripts/loadgen/ratelimiter_test.go`) with no live server, no goroutine
+  timing, and no flakiness, exactly what the unit's TDD instruction asked
+  for. `clock.Clock` is injected (`docs/ENGINEERING.md` section 2)
+  specifically so `RateLimiter.Wait`'s context-cancellation branch
+  (SIGINT/graceful shutdown) is also synchronously testable: an
+  already-cancelled context returns immediately without needing the fake
+  clock to advance at all.
+- 2026-09-03: **No API contract addition for the "no ground truth" dashboard
+  explanation (Unit AJ part 2).** `batch.source` turned out to already be on
+  the wire: `GET /v1/batches` (`docs/API_GATEWAY.md`) has returned
+  `BatchSummary.source` since Unit G, and `App.tsx` already holds the batch
+  list that response came from in state. So the active batch's source is
+  looked up from state already on hand (`batches.find(b => b.batch_id ===
+  activeBatchId)?.source`) rather than added to `BatchReport`, which has no
+  `source` field and would have been a real, frozen-doc-first contract
+  change if it had been needed. The copy itself
+  (`web/src/lib/groundTruth.ts`, `noGroundTruthReason`) is one function
+  shared by the Classification Accuracy panel and `BaselineComparisonCard`
+  so the two panels can never drift into saying slightly different things
+  about the same fact, and it branches only on the literal `"webhook"`
+  source (`services/ingestion/internal/server/store.go`'s
+  `rollingBatchSource`, what `scripts/loadgen` posts to) for the specific
+  "this is live production traffic" wording; any other ground-truth-less
+  source (a `count`-submitted batch, anything unrecognised) still gets an
+  honest, generic reason rather than a wrong guess about which case it is.
+  Kept deliberately quiet in tone (no exclamation marks, tested for it) per
+  the unit's own instruction that this is "a statement about method, not a
+  warning".

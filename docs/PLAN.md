@@ -931,7 +931,8 @@ ordered by value per hour. Detail for each is in
       healthy system, which turned out to be three defects rather than a
       label bug, fixed with reconnect backoff and honest close-code handling
       (#101) → `docs/DEMO_READINESS.md`
-- [ ] **P1, ~16h.** Unit S surface `decision_trace` (the "why not the
+- [x] **P1, ~16h. Complete 2026-09-03, all four units done. This closes
+      P1.** Unit S surface `decision_trace` (the "why not the
       alternatives" table, still the highest-value single item), **done**
       2026-09-02, see `docs/PLAN.md`'s own Unit S line above and
       `docs/DECISIONS.md` 2026-09-02; AH historical
@@ -941,9 +942,19 @@ ordered by value per hour. Detail for each is in
       toggle with a real-vs-simulated-time axis on History, see
       `docs/DEMO_READINESS.md` Unit AH and `docs/DECISIONS.md` 2026-09-02;
       AI confidence-based LLM routing with
-      a quota-exhausted banner; AJ live production stream via a webhook CLI,
+      a quota-exhausted banner, **done** 2026-09-03, see `docs/PLAN.md`'s own
+      Unit AI line below; AJ live production stream via a webhook CLI,
       which fills the dead event panel and makes the no-answer-key distinction
-      explanatory → `docs/DEMO_READINESS.md`
+      explanatory, **done** 2026-09-03: the CLI landed as `scripts/loadgen`
+      (reserved since Phase 6 for exactly this job, unbuilt until now, so
+      this closes that gap rather than adding a third generator), posting
+      steady, `syntheticgen`-drawn traffic at `/v1/webhooks/payment-failed`
+      with no ground truth by design; the dashboard's Classification
+      Accuracy panel and `BaselineComparisonCard` now share one explanation
+      (`web/src/lib/groundTruth.ts`) for a batch with none, using
+      `BatchSummary.source` already on the wire, no `docs/API_GATEWAY.md`
+      change needed → `docs/DEMO_READINESS.md` Unit AJ, `docs/DECISIONS.md`
+      2026-09-03
 - [x] **[FRONTEND] Unit AN: redesign the record drawer, show real time
       against simulated time.** Added after the rest of Phase 5.6 was
       planned. Widened `max-w-lg` (512px) to `max-w-3xl` (768px), the
@@ -1021,7 +1032,12 @@ ordered by value per hour. Detail for each is in
 
 ## Phase 6: Load testing & performance validation
 
-- [ ] `scripts/loadgen` built, synthetic mode default (no real LLM calls)
+- [x] `scripts/loadgen` built, synthetic mode default (no real LLM calls).
+      Built 2026-09-03 for Unit AJ (`docs/DEMO_READINESS.md`), a narrower
+      scope than the rest of this phase: steady traffic through the public
+      webhook API with no ramp/peak profile and no latency measurement, see
+      the three items below, which remain unclaimed and explicitly skipped
+      for the hackathon per this doc's own P1 status note
       → `ARCHITECTURE.md` §5, §14
 - [ ] Baseline/ramp/peak load profile run against the docker-compose stack
       → `ARCHITECTURE.md` §14

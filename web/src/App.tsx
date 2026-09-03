@@ -23,6 +23,7 @@ import { BatchSelector } from '@/components/BatchSelector';
 import { ErrorBanner } from '@/components/ErrorBanner';
 import { RecordsTruncatedBanner } from '@/components/RecordsTruncatedBanner';
 import { LlmQuotaBanner } from '@/components/LlmQuotaBanner';
+import { noGroundTruthReason } from '@/lib/groundTruth';
 import { BaselineComparisonCard } from '@/components/BaselineComparison';
 import { InvariantsPanel } from '@/components/InvariantsPanel';
 import { ConfusionMatrix } from '@/components/ConfusionMatrix';
@@ -157,6 +158,13 @@ function App() {
       setDrawerLoading(false);
     }
   }, []);
+
+  // Looked up from the batch list already on hand (BatchSummary.source,
+  // GET /v1/batches) rather than fetched again: this is what lets the
+  // accuracy/baseline panels below tell a production-sourced batch apart
+  // from a seeded one with no new contract field (docs/DEMO_READINESS.md
+  // Unit AJ, docs/DECISIONS.md).
+  const activeBatchSource = batches.find((b) => b.batch_id === activeBatchId)?.source;
 
   const connectionLabel = !activeBatchId
     ? 'Idle'
@@ -333,6 +341,7 @@ function App() {
               <BaselineComparisonCard
                 baseline={report.baseline_comparison}
                 ownNetRecoveredPaise={report.net_recovered_paise}
+                source={activeBatchSource}
               />
             ) : (
               <div className="h-[140px] animate-pulse bg-slate-50 rounded-lg" />
@@ -356,18 +365,22 @@ function App() {
               <div className="space-y-4">
                 <div>
                   {report.accuracy ? (
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-3xl font-bold text-slate-900">
-                        {(report.accuracy.overall_accuracy * 100).toFixed(1)}%
-                      </span>
-                      <span className="text-sm text-slate-400">vs ground truth</span>
-                    </div>
+                    <>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-3xl font-bold text-slate-900">
+                          {(report.accuracy.overall_accuracy * 100).toFixed(1)}%
+                        </span>
+                        <span className="text-sm text-slate-400">vs ground truth</span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Measures how often the LLM classifier agrees with the true root cause.
+                      </p>
+                    </>
                   ) : (
-                    <span className="text-sm text-slate-400">No ground truth for this batch</span>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      {noGroundTruthReason(activeBatchSource)}
+                    </p>
                   )}
-                  <p className="text-xs text-slate-400 mt-1">
-                    Measures how often the LLM classifier agrees with the true root cause.
-                  </p>
                 </div>
                 {report.accuracy && (
                   <div className="pt-2 border-t border-slate-100">
