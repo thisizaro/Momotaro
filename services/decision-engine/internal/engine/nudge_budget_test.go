@@ -1,9 +1,9 @@
 package engine
 
 import (
-	"time"
 	"context"
 	"testing"
+	"time"
 
 	classifierv1 "github.com/thisizaro/Momotaro/proto/gen/classifier/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
@@ -67,4 +67,26 @@ func TestComposeNudgeAllowsALiveCallWithinBudget(t *testing.T) {
 	if len(rc.forceTemplateOnly) != 1 || rc.forceTemplateOnly[0] {
 		t.Errorf("ForceTemplateOnly = %v, want false at rate 1.0", rc.forceTemplateOnly)
 	}
+}
+
+// NewScheduler must produce clients with a usable budget. It did not when
+// composeNudge first started consulting one, and because the Scheduler is
+// the only thing that composes nudges, that was a nil dereference on the
+// first nudge of any real run, not merely in a test
+// (docs/INCIDENTS.md 2026-09-03).
+func TestNewSchedulerGivesItsClientsAnLLMBudget(t *testing.T) {
+	s := NewScheduler(nil, nil, nil, nil, nil, nil, SchedulerConfig{
+		CallTimeout:   time.Second,
+		NudgeMaxChars: 160,
+		LLMSampleRate: 0.15,
+	})
+	if s.clients.llmBudget == nil {
+		t.Fatal("clients.llmBudget is nil: composeNudge would panic on the first nudge")
+	}
+	// Not asserting the first call is granted: llmBudget is a strict
+	// running ratio, so at rate 0.15 the very first record would be 1 of 1,
+	// which correctly exceeds the ceiling. Calls become affordable as the
+	// denominator grows. What matters here is that the budget exists and
+	// answers instead of panicking.
+	s.clients.llmBudget.consider(true)
 }
