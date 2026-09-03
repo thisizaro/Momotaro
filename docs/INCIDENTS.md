@@ -2457,6 +2457,24 @@ was right and the threshold was wrong.
 
 ## 2026-09-03: TestGatewayReportRoutesAndLiveRelay fails reading the live WebSocket message, on a clean `main` too
 
+> **Corrected after this entry was written.** The supervising session
+> re-ran this same test against an unmodified `main` in its own worktree,
+> separately from the run this entry describes: **4 consecutive passes**,
+> 25 to 38 seconds each. The two failing runs below both took 73 seconds,
+> roughly double. That duration gap, not the failure itself, is the real
+> signal: this reads as a resource-contention timeout under load, the same
+> shape as the `TestSmokeBatchReachesExpectedTerminalStates` flake reported
+> lower in this same entry, not a deterministic regression. The "Status"
+> and "Lesson" sections below overclaimed certainty ("consistently
+> fails", "not a one-off flake", "a real regression to chase, not retry
+> past") from two data points taken in one loaded environment. Left
+> unedited below since the investigation itself, isolating the failure
+> against a clean worktree before blaming this unit's diff, was the right
+> instinct and is worth keeping visible; only the conclusion drawn from it
+> was too strong. Downgraded to: **watch, not chase**, alongside the
+> existing scheduler flake (2026-09-01), until it fails a third time with a
+> duration that does not point at contention.
+
 **Symptom, while verifying Unit AM** (`docs/DEMO_READINESS.md`, the
 read-only config panel). `go test -race -count=1 -tags=e2e ./test/e2e/...`
 consistently fails one test:
