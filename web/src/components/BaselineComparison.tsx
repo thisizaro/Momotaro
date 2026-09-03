@@ -1,16 +1,25 @@
 import { formatCurrencyShort } from '@/lib/format';
+import { noGroundTruthReason } from '@/lib/groundTruth';
 import type { BaselineComparison } from '@/types';
 
 interface Props {
   baseline?: BaselineComparison;
   ownNetRecoveredPaise: number;
+  /**
+   * The active batch's `source` (BatchSummary.source, GET /v1/batches),
+   * looked up by the caller from state already on hand. Only used to word
+   * the explanation when `baseline` is absent; not required, since an
+   * unknown source still gets an honest generic reason
+   * (lib/groundTruth.ts).
+   */
+  source?: string;
 }
 
-export function BaselineComparisonCard({ baseline, ownNetRecoveredPaise }: Props) {
+export function BaselineComparisonCard({ baseline, ownNetRecoveredPaise, source }: Props) {
   if (!baseline) {
     return (
-      <div className="flex items-center justify-center h-full text-sm text-slate-400 py-8">
-        No ground truth for this batch, baseline comparison unavailable.
+      <div className="flex items-center justify-center h-full text-sm text-slate-400 leading-relaxed text-center px-4 py-8">
+        {noGroundTruthReason(source)}
       </div>
     );
   }

@@ -203,6 +203,26 @@ Two symptoms of a misconfigured run, both seen for real: a recovery rate near
 batch has no ground truth, so it came from the dashboard button rather than
 `make batchgen`.
 
+### Fill the Live Event Stream with real production traffic
+
+```bash
+make loadgen                          # 5 events/s for 5 minutes, default
+make loadgen RATE=10 DURATION=2m      # faster, shorter
+make loadgen RATE=2 EVENTS=200        # a fixed total instead of a time bound
+```
+
+This posts events at `POST /v1/webhooks/payment-failed`, the same public
+route a real payment gateway would call, at a steady rate. It never touches
+Postgres or Kafka directly and never carries a ground truth: every event
+lands in the same always-on `webhook` batch real production traffic uses
+(`services/ingestion/internal/server/store.go`), which is why the batch it
+fills has no accuracy score or baseline comparison. The dashboard says so
+plainly in both panels rather than showing them empty: that absence is the
+other half of the story `make batchgen` tells, not a bug.
+
+Press Ctrl-C to stop early. Either way, the last line printed is a summary:
+`loadgen summary: sent=N accepted=N failed=N`.
+
 ### Optional: metrics
 
 ```bash

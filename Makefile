@@ -214,6 +214,21 @@ SEED   ?=
 batchgen:
 	go run ./scripts/batchgen -count $(COUNT) -source $(SOURCE) $(if $(SEED),-seed $(SEED),)
 
+RATE        ?= 5
+DURATION    ?= 5m
+EVENTS      ?=
+GATEWAY_URL ?= http://localhost:8090
+
+## loadgen: post live traffic at the API Gateway's public webhook API,
+## filling the Live Event Stream panel the way real production traffic
+## would (docs/DEMO_READINESS.md Unit AJ). Steady rate, no ground truth,
+## same synthetic vocabulary as batchgen. Defaults to a time-bounded run
+## (override with RATE=n DURATION=5m); pass EVENTS=n instead of DURATION
+## for a fixed total. Requires api-gateway already running
+## (make run-api-gateway or make demo-up).
+loadgen:
+	go run ./scripts/loadgen -gateway-url $(GATEWAY_URL) -rate $(RATE) $(if $(EVENTS),-count $(EVENTS),-duration $(DURATION))
+
 ## up: start local infra (postgres, redis, kafka, kafka ui)
 up:
 	docker compose up -d
@@ -271,4 +286,4 @@ docker-build:
         vet fmt check up up-observability down down-clean migrate-up migrate-status \
         docker-build run-ingestion run-classifier run-executor run-audit \
         run-decision-engine run-api-gateway run-reporting run-world-simulator \
-        run-notification-simulator batchgen demo-up demo-down demo-reset wait-ports
+        run-notification-simulator batchgen loadgen demo-up demo-down demo-reset wait-ports

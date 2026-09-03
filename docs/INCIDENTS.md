@@ -2200,3 +2200,36 @@ transitions.
   calling them done.** This is now standing practice for this repo. Every
   frontend unit since has been checked that way, and it is how #106, the
   drawer truncation and the timeline overplotting were all found.
+
+## 2026-09-03: a compiled binary has been checked into git since the first commit
+
+Found while building Unit AJ's `scripts/loadgen`: `go build ./...` at the
+repo root writes one binary per `main` package into the current directory
+(`migrate`, `batchgen`, now `loadgen`), and one of those, `migrate` (an ELF
+executable, several megabytes, no extension), is tracked in git, committed
+in `fad9093` ("feat: platform packages, first migration, and local infra
+stack"), the very first commit that added `scripts/migrate`. It has ridden
+along in every commit since. Running `go build ./...` (or `make build`,
+which is exactly that) locally regenerates it as an untracked modification
+to a tracked binary file, which is how this surfaced: a routine `go build
+./...` sanity check during this unit left `git status` showing a binary
+diff that had nothing to do with the change being made.
+
+**Partly fixed here, the rest left for whoever picks it up.** `.gitignore`
+now has explicit entries for `/migrate`, `/batchgen`, `/loadgen` at the
+root, so the new tool this unit adds (`scripts/loadgen`) cannot repeat this,
+and a future `go build ./...` regenerating `/migrate` locally no longer
+shows as a confusing modification to a tracked binary. Actually untracking
+the already-committed `/migrate` blob (a `git rm --cached`) is left alone:
+it is a repo-history change unrelated to Unit AJ's scope, and the binary
+itself has caused no observed failure, `go run ./scripts/migrate ...` is
+what every Makefile target and doc actually invokes, never this file.
+
+**Lesson.** `go build ./...` from the repo root is not a no-op sanity
+check, it is exactly what `make build` runs, so both leave one bare,
+extension-less binary per `scripts/<name>` `main` package sitting in the
+working tree. `.gitignore`'s pre-existing binary rules (`bin/`, `*.exe`,
+`*.so`, `*.dylib`) never covered that shape, which is how `/migrate` got
+committed in the first place and why it took until this unit to notice.
+Add the new entry above whenever a future `scripts/<newname>` main package
+is added, rather than waiting to rediscover this the same way.
