@@ -75,6 +75,42 @@ judge can copy-paste it and try the API themselves without setup friction.
 
 **The one exception is the WebSocket route**, see gap 5 below.
 
+### Webhook signature verification
+
+**docs/PHASE5_5_IMPLEMENTATION.md Unit Z.** In addition to `X-API-Key`
+above, both webhook routes below (`payment-failed`, `payment-downtime`)
+require a second header, `X-Razorpay-Signature`: an HMAC-SHA256 hex digest
+of the raw request body, keyed with a shared webhook secret, exactly the
+scheme Razorpay documents at
+https://razorpay.com/docs/webhooks/validate-test/. Razorpay's docs are
+explicit that the digest covers the raw body, not any parsed or
+re-serialized form of it ("Do not parse or cast the webhook request body"),
+so the Gateway verifies before it ever decodes JSON, over the exact bytes
+that arrived.
+
+Verification is fail-closed in every direction: a missing header, a
+malformed or wrong signature, or the Gateway having no webhook secret
+configured at all, are each rejected with `401 UNAUTHORIZED`, never treated
+as "verification skipped". The response body never states which of those
+was the actual cause, so a caller probing for a working signature learns
+nothing from the error beyond "unauthorized". `WEBHOOK_SECRET` is a
+required startup value, the same requiredness as `API_KEY`
+(`docs/DECISIONS.md`): a Gateway that could start without one would accept
+every request into these two routes' code paths only to fail-closed on
+literally all of them, which is the "looks healthy, silently black-holes
+work" failure mode `docs/ENGINEERING.md` section 5 exists to rule out. An
+optional `WEBHOOK_SECRET_PREVIOUS` also verifies, so a secret rotation does
+not invalidate a webhook retried under the old one before the sender picks
+up the new value.
+
+This does not replace `X-API-Key`; both routes still sit behind the
+Gateway's normal auth like every other route (`docs/ARCHITECTURE.md`
+section 17), so a caller needs both headers. `scripts/loadgen` sets both:
+it already sends `X-API-Key`, and now also signs its synthetic payload with
+`$WEBHOOK_SECRET` before sending, the same way a judge or CI would need to
+for a real webhook call, rather than the route special-casing loadgen
+traffic.
+
 ## Endpoints
 
 ### `POST /v1/webhooks/payment-failed`
@@ -86,6 +122,9 @@ never calls this, it is listed here because it is part of the Gateway's
 contract, not because `web/` needs it. **Already implemented** exactly as
 below (`services/api-gateway/internal/httpapi/handler.go`).
 
+**Requires `X-Razorpay-Signature`**, see "Webhook signature verification"
+above (`docs/PHASE5_5_IMPLEMENTATION.md` Unit Z).
+
 Request body:
 ```json
 {
@@ -95,7 +134,12 @@ Request body:
   "failure_code": "bank_not_available",
   "instrument_ref": "card_ref_1",
   "occurred_at": "2026-08-29T14:00:00Z",
-  "idempotency_key": "provider-event-id-123"
+  "idempotency_key": "provider-event-id-123",
+  "error_code": "BAD_REQUEST_ERROR",
+  "error_description": "Payment failed",
+  "error_source": "bank",
+  "error_step": "payment_authorization",
+  "error_reason": "payment_failed"
 }
 ```
 `type` is one of `PAYMENT`, `MANDATE`, `CHECKOUT`, `INVOICE` (the Gateway's
@@ -104,6 +148,21 @@ route mirrors what a real webhook payload looks like). `currency` defaults
 to `INR` if omitted. `occurred_at` defaults to receipt time if omitted.
 `idempotency_key` is optional; two submissions with the same key are the
 same event, no duplicate record is created.
+
+**`error_code`, `error_description`, `error_source`, `error_step` and
+`error_reason` are all optional additions (Unit Z), Razorpay's own
+four-field error taxonomy alongside the `failure_code` this route already
+took** (`https://razorpay.com/docs/webhooks/payloads/payments/`).
+`failure_code` remains required and is unchanged; these five are additive,
+never a replacement, and every one of them is stored and forwarded exactly
+as received. **All five are open string vocabularies, never a closed
+enum**: Razorpay's own docs say `error_source` and `error_step`'s possible
+values vary by payment method (cards, netbanking, wallets, UPI Intent,
+Cardless EMI and e-mandate each have their own sets), so this contract does
+not enumerate them and a caller must not either. An unrecognised value is
+stored and shown as-is, never rejected. `error_reason` is typically the
+same programmatic code `failure_code` already carries (e.g. `invalid_otp`);
+sending both is fine, they need not match.
 
 Response: `202 Accepted`
 ```json
@@ -123,13 +182,12 @@ through again once the outage resolves. The dashboard never calls this, same
 as the payment-failed webhook above; it is listed here because it is part
 of the Gateway's external contract.
 
-**Signature verification is explicitly NOT done here.** This route accepts
-an unauthenticated body exactly like `payment-failed` does today; Razorpay's
-signature check and the four-field error taxonomy are
-`docs/PHASE5_5_IMPLEMENTATION.md` Unit Z, a separate, not-yet-started unit.
-Until that lands, treat every field here as untrusted input the same way the
-handler itself does: the body is size-capped and never logged in full at
-INFO, and a malformed payload is a `400`, never a panic.
+**Requires `X-Razorpay-Signature`**, same as `payment-failed` above (Unit Z
+closed the gap this section used to describe: this route accepted an
+unauthenticated body until then). See "Webhook signature verification"
+above. Every field below is still treated as untrusted input past that
+check: the body is size-capped, never logged in full at INFO, and a
+malformed payload is a `400`, never a panic.
 
 Request body: Razorpay's real, documented shape
 (https://razorpay.com/docs/webhooks/payloads/payments/), matched exactly,

@@ -156,14 +156,19 @@ func (e *Engine) HandleMessage(ctx context.Context, msg kafkax.Message) error {
 	}
 
 	record := &commonv1.Record{
-		Id:            evt.RecordID,
-		BatchId:       evt.BatchID,
-		Type:          commonv1.RecordType(commonv1.RecordType_value[evt.Type]),
-		AmountPaise:   evt.AmountPaise,
-		Currency:      evt.Currency,
-		FailureCode:   evt.FailureCode,
-		InstrumentRef: evt.InstrumentRef,
-		CreatedAt:     timestamppb.New(evt.CreatedAt),
+		Id:               evt.RecordID,
+		BatchId:          evt.BatchID,
+		Type:             commonv1.RecordType(commonv1.RecordType_value[evt.Type]),
+		AmountPaise:      evt.AmountPaise,
+		Currency:         evt.Currency,
+		FailureCode:      evt.FailureCode,
+		InstrumentRef:    evt.InstrumentRef,
+		CreatedAt:        timestamppb.New(evt.CreatedAt),
+		ErrorCode:        evt.ErrorCode,
+		ErrorDescription: evt.ErrorDescription,
+		ErrorSource:      evt.ErrorSource,
+		ErrorStep:        evt.ErrorStep,
+		ErrorReason:      evt.ErrorReason,
 	}
 
 	// Loaded before Classify, not after: these are its inputs

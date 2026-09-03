@@ -33,6 +33,13 @@
 // appears in the exit summary: pass -api-key or set $API_KEY (see
 // .env.example), the same convention scripts/batchgen and the rest of the
 // stack already use for secrets.
+//
+// The same is true of the webhook secret (docs/PHASE5_5_IMPLEMENTATION.md
+// Unit Z): pass -webhook-secret or set $WEBHOOK_SECRET. Once the Gateway
+// has WEBHOOK_SECRET configured it rejects an unsigned webhook, so this is
+// required in practice, not optional hardening; the alternative -- the
+// Gateway special-casing loadgen traffic to skip verification -- is
+// exactly the bypass docs/PHASE5_5_IMPLEMENTATION.md Unit Z rules out.
 package main
 
 import (
@@ -60,6 +67,7 @@ const webhookPath = "/v1/webhooks/payment-failed"
 func main() {
 	gatewayURL := flag.String("gateway-url", "http://localhost:8090", "API Gateway base URL (webhook path is appended)")
 	apiKey := flag.String("api-key", os.Getenv("API_KEY"), "X-API-Key value; defaults to $API_KEY, never logged or printed")
+	webhookSecret := flag.String("webhook-secret", os.Getenv("WEBHOOK_SECRET"), "webhook secret used to sign X-Razorpay-Signature; defaults to $WEBHOOK_SECRET, never logged or printed (docs/PHASE5_5_IMPLEMENTATION.md Unit Z)")
 	rate := flag.Float64("rate", 5, "events per second, steady (not bursty)")
 	count := flag.Int("count", 0, "total events to send; mutually exclusive with -duration")
 	duration := flag.Duration("duration", 0, "how long to run, e.g. 5m; mutually exclusive with -count")
@@ -79,6 +87,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "loadgen: no API key: pass -api-key or set $API_KEY (see .env.example)")
 		os.Exit(2)
 	}
+	if *webhookSecret == "" {
+		fmt.Fprintln(os.Stderr, "loadgen: no webhook secret: pass -webhook-secret or set $WEBHOOK_SECRET (see .env.example); the Gateway rejects an unsigned webhook (docs/PHASE5_5_IMPLEMENTATION.md Unit Z)")
+		os.Exit(2)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -86,15 +98,16 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	cfg := runConfig{
-		url:        *gatewayURL + webhookPath,
-		apiKey:     *apiKey,
-		rate:       *rate,
-		count:      *count,
-		duration:   *duration,
-		seed:       *seed,
-		httpClient: &http.Client{Timeout: *requestTimeout},
-		clk:        clock.New(),
-		logger:     logger,
+		url:           *gatewayURL + webhookPath,
+		apiKey:        *apiKey,
+		webhookSecret: *webhookSecret,
+		rate:          *rate,
+		count:         *count,
+		duration:      *duration,
+		seed:          *seed,
+		httpClient:    &http.Client{Timeout: *requestTimeout},
+		clk:           clock.New(),
+		logger:        logger,
 	}
 
 	summary, err := run(ctx, cfg)

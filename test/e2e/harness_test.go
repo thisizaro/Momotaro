@@ -238,6 +238,7 @@ func startStackWithEnv(ctx context.Context, t *testing.T, retryDelay string, cla
 		"AUDIT_ADDR":           s.auditAddr,
 		"DECISION_ENGINE_ADDR": fmt.Sprintf("127.0.0.1:%d", deGRPCPort),
 		"API_KEY":              apiKey,
+		"WEBHOOK_SECRET":       webhookSecret,
 		"HTTP_PORT":            strconv.Itoa(gwHTTPPort),
 		"CALL_TIMEOUT":         "5s",
 	})))

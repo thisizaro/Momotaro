@@ -109,6 +109,23 @@ message Record {
   // Opaque handle for the payment instrument, used to look up prior
   // outcomes on the same card/mandate. Not the instrument itself.
   string instrument_ref = 8;
+
+  // Razorpay's four-field error taxonomy (docs/PHASE5_5_IMPLEMENTATION.md
+  // Unit Z, https://razorpay.com/docs/webhooks/payloads/payments/),
+  // additive alongside failure_code above rather than a replacement for it.
+  // All four are OPEN string vocabularies, never a closed enum: Razorpay's
+  // own docs say error_source and error_step's possible values vary by
+  // payment method (cards, netbanking, wallets, UPI Intent, Cardless EMI
+  // and e-mandate each have their own sets), so this proto does not
+  // enumerate them and no consumer may assume it has seen the full set.
+  // Every one of these is optional; absent means the caller (or an older
+  // event predating this field) never sent it, not that classification
+  // should fail.
+  string error_code = 9;         // the class, e.g. "BAD_REQUEST_ERROR"
+  string error_description = 10; // human-readable
+  string error_source = 11;      // who/what failed, e.g. "bank", "customer"
+  string error_step = 12;        // where in the flow, e.g. "payment_authentication"
+  string error_reason = 13;      // the specific programmatic reason, e.g. "invalid_otp"
 }
 
 // One past attempt on a record. Passed to the classifier as history so it

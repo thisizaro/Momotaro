@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thisizaro/Momotaro/internal/platform/webhooksig"
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	ingestionv1 "github.com/thisizaro/Momotaro/proto/gen/ingestion/v1"
@@ -18,6 +19,20 @@ import (
 )
 
 const testAPIKey = "test-demo-key"
+
+// testWebhookSecret is the fixed secret every test Handler in this package
+// verifies X-Razorpay-Signature against (see newHandler/newDowntimeHandler),
+// so a test body signed with signBody(testWebhookSecret, ...) is accepted
+// exactly the way a real Gateway with WEBHOOK_SECRET set would.
+const testWebhookSecret = "test-webhook-secret"
+
+// signBody returns the X-Razorpay-Signature value for body under
+// testWebhookSecret, computed with the exact same webhooksig.Sign the
+// Gateway itself verifies against, never a hand-rolled second
+// implementation that could quietly drift from it.
+func signBody(body string) string {
+	return webhooksig.Sign(testWebhookSecret, []byte(body))
+}
 
 type fakeIngestion struct {
 	resp *ingestionv1.SubmitBatchResponse
@@ -51,7 +66,9 @@ func (f *fakeIngestion) ListBatches(ctx context.Context, in *ingestionv1.ListBat
 }
 
 func newHandler(f *fakeIngestion) http.Handler {
-	return New(f, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0).Routes()
+	h := New(f, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0)
+	h.SetWebhookSecrets(testWebhookSecret, "")
+	return h.Routes()
 }
 
 // fakeAudit implements auditv1.AuditServiceClient. Defined here so both
@@ -85,12 +102,22 @@ func notFoundErr(msg string) error {
 	return status.Error(codes.NotFound, msg)
 }
 
+// doRequest signs body with testWebhookSecret unconditionally: the two
+// webhook routes require a valid X-Razorpay-Signature and every other route
+// simply ignores the header, so setting it here means every existing
+// caller of doRequest that posts to a webhook route keeps working without
+// having to know about signing, while a test that specifically wants an
+// unsigned or wrongly-signed request builds it by hand (see
+// signature_test.go).
 func doRequest(h http.Handler, method, path, apiKey, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if body != "" {
+		req.Header.Set(razorpaySignatureHeader, signBody(body))
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -277,6 +304,74 @@ func TestWebhookSuccess(t *testing.T) {
 	}
 	if rc.InstrumentRef != "mandate_1" {
 		t.Errorf("InstrumentRef = %q, want mandate_1", rc.InstrumentRef)
+	}
+}
+
+// TestWebhookForwardsErrorTaxonomyFields proves the five additional fields
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Z) reach Ingestion's NewRecord
+// alongside failure_code, using the exact values from Razorpay's own
+// documented payment.failed example
+// (https://razorpay.com/docs/webhooks/payloads/payments/).
+func TestWebhookForwardsErrorTaxonomyFields(t *testing.T) {
+	fake := &fakeIngestion{eventResp: &ingestionv1.SubmitEventResponse{RecordId: "rec-1", BatchId: "batch-1"}}
+	h := newHandler(fake)
+
+	body := `{
+		"type":"PAYMENT","amount_paise":50000,"currency":"INR",
+		"failure_code":"payment_failed","instrument_ref":"card_ref_1",
+		"error_code":"BAD_REQUEST_ERROR",
+		"error_description":"Payment failed",
+		"error_source":"bank",
+		"error_step":"payment_authorization",
+		"error_reason":"payment_failed"
+	}`
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", testAPIKey, body)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202, body=%s", rec.Code, rec.Body.String())
+	}
+
+	if fake.gotEvent == nil {
+		t.Fatal("ingestion.SubmitEvent was not called")
+	}
+	rc := fake.gotEvent.Record
+	if rc.ErrorCode != "BAD_REQUEST_ERROR" {
+		t.Errorf("ErrorCode = %q, want BAD_REQUEST_ERROR", rc.ErrorCode)
+	}
+	if rc.ErrorDescription != "Payment failed" {
+		t.Errorf("ErrorDescription = %q, want %q", rc.ErrorDescription, "Payment failed")
+	}
+	if rc.ErrorSource != "bank" {
+		t.Errorf("ErrorSource = %q, want bank", rc.ErrorSource)
+	}
+	if rc.ErrorStep != "payment_authorization" {
+		t.Errorf("ErrorStep = %q, want payment_authorization", rc.ErrorStep)
+	}
+	if rc.ErrorReason != "payment_failed" {
+		t.Errorf("ErrorReason = %q, want payment_failed", rc.ErrorReason)
+	}
+}
+
+// TestWebhookAcceptsAnUnrecognisedErrorSource proves error_source/error_step
+// are genuinely open vocabularies at the Gateway layer: a value never seen
+// in Razorpay's documented examples must still be accepted and forwarded
+// verbatim, never rejected as invalid (docs/PHASE5_5_IMPLEMENTATION.md Unit
+// Z: "treat these as open string vocabularies... handle an unrecognised
+// value without crashing or discarding the record").
+func TestWebhookAcceptsAnUnrecognisedErrorSource(t *testing.T) {
+	fake := &fakeIngestion{eventResp: &ingestionv1.SubmitEventResponse{RecordId: "rec-1", BatchId: "batch-1"}}
+	h := newHandler(fake)
+
+	body := `{
+		"type":"PAYMENT","amount_paise":50000,"failure_code":"payment_failed",
+		"error_source":"upi_intent_app_never_documented",
+		"error_step":"a_future_step_this_gateway_has_never_seen"
+	}`
+	rec := doRequest(h, http.MethodPost, "/v1/webhooks/payment-failed", testAPIKey, body)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 for an unrecognised error_source/error_step, body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.gotEvent.Record.ErrorSource != "upi_intent_app_never_documented" {
+		t.Errorf("ErrorSource = %q, want it forwarded verbatim, not rejected", fake.gotEvent.Record.ErrorSource)
 	}
 }
 

@@ -33,6 +33,16 @@ message NewRecord {
   string instrument_ref = 5;
   // When the upstream failure happened. Defaults to receipt time if unset.
   google.protobuf.Timestamp occurred_at = 6;
+
+  // Razorpay's four-field error taxonomy (docs/PHASE5_5_IMPLEMENTATION.md
+  // Unit Z), mirroring common.v1.Record's own fields of the same names.
+  // All optional, all open strings, never a closed enum: see that
+  // message's comment for why.
+  string error_code = 7;
+  string error_description = 8;
+  string error_source = 9;
+  string error_step = 10;
+  string error_reason = 11;
 }
 
 message SubmitEventRequest {

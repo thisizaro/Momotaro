@@ -14,6 +14,15 @@ type RawEvent struct {
 	FailureCode   string    `json:"failure_code"`
 	InstrumentRef string    `json:"instrument_ref"`
 	CreatedAt     time.Time `json:"created_at"`
+
+	// Razorpay's four-field error taxonomy (docs/PHASE5_5_IMPLEMENTATION.md
+	// Unit Z), mirroring services/ingestion/internal/server.RawEvent's own
+	// fields of the same names. All optional, all open strings.
+	ErrorCode        string `json:"error_code,omitempty"`
+	ErrorDescription string `json:"error_description,omitempty"`
+	ErrorSource      string `json:"error_source,omitempty"`
+	ErrorStep        string `json:"error_step,omitempty"`
+	ErrorReason      string `json:"error_reason,omitempty"`
 }
 
 // DeadLetter is the raw.events.dlq wire payload (docs/ARCHITECTURE.md

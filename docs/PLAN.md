@@ -904,12 +904,43 @@ ordered by value per hour. Detail for each is in
       re-score), and severity-tiered treatment (medium vs high). Full
       reasoning in `docs/DECISIONS.md`
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit Y
-- [ ] **Unit Z: real Razorpay webhook payload, signature, and error
-      taxonomy.** Accept their actual `payment.failed` body, verify
-      `X-Razorpay-Signature` (HMAC-SHA256 over the raw body) in constant time,
-      and classify on all four error fields (`error_code`, `error_source`,
-      `error_step`, `error_reason`) rather than one. `source: bank` +
-      `step: payment_authorization` is signal a reason code alone cannot carry
+- [x] **Unit Z: webhook signature verification and the four-field error
+      taxonomy.** Verify `X-Razorpay-Signature` (HMAC-SHA256 over the RAW
+      body, verified before decoding, `hmac.Equal` for constant-time
+      comparison) on both webhook routes, and accept Razorpay's four
+      additional error fields (`error_code`, `error_description`,
+      `error_source`, `error_step`, `error_reason`) alongside the existing
+      `failure_code`. **Shipped.** Signature verification is one shared
+      middleware (`verifyWebhookSignature`, `services/api-gateway/internal/
+      httpapi/signature.go`) wrapping both `payment-failed` and
+      `payment-downtime`, backed by a new `internal/platform/webhooksig`
+      package (`Sign`/`Verify`) so `services/api-gateway` and
+      `scripts/loadgen` share one implementation of "valid" rather than two
+      that could drift. `WEBHOOK_SECRET` is required at startup, same
+      requiredness as `API_KEY`: an unset secret is a startup failure, not a
+      per-request bypass, because a Gateway that started anyway would accept
+      every request into these routes only to fail-closed on literally all
+      of them. `WEBHOOK_SECRET_PREVIOUS` is optional, for rotation.
+      `scripts/loadgen` now signs its own traffic (`-webhook-secret` /
+      `$WEBHOOK_SECRET`), so `make loadgen` keeps working with no bypass on
+      the Gateway side. The four new fields are additive on
+      `common.v1.Record`/`ingestion.v1.NewRecord` (migration 00009 adds the
+      matching nullable `record` columns) and flow through to the
+      classifier's rules engine: `bucketForErrorTaxonomy`
+      (`services/classifier/internal/rules/buckets.go`) is consulted only
+      when `failure_code` itself is unrecognised, matching `error_step`
+      containing "AUTHENTICATION" to `USER_ACTION_NEEDED` and "AUTHORIZATION"
+      paired with a systemic `error_source` (bank/gateway/network/razorpay/
+      issuer) to `TRANSIENT_BANK`, the worked example this unit was scoped
+      around. Both fields stay open string vocabularies (substring matching,
+      no closed enum) since Razorpay's own docs say the possible values vary
+      by payment method. **Scoped out** (see `docs/DECISIONS.md`): switching
+      `payment-failed` to Razorpay's real nested payload shape (kept the
+      existing flat wire body, additive fields only); surfacing the new
+      fields in `web/`, Reporting or Audit (stored and used by the
+      classifier only); a closed enum or validation for `error_source`/
+      `error_step`; any change to the LLM prompt or provider chain.
+      **This closes P2.**
       → `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z
 
 - [x] **Unit AA: surface `due_at` through the stack.** A record's scheduled
@@ -1071,9 +1102,10 @@ ordered by value per hour. Detail for each is in
       records the model gets to see, `engine.go`'s `decide` still reads only
       `Bucket` off the winning response → `docs/DEMO_READINESS.md` Unit AI,
       `docs/DECISIONS.md` 2026-09-03.
-- [ ] **P2, ~11h.** Unit Y Razorpay payment-downtime webhooks; Unit Z real
-      webhook payload, signature verification and the four-field error
-      taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`, `docs/DEMO_READINESS.md`
+- [x] **P2, ~11h. Complete, closed 2026-09-03.** Unit Y Razorpay
+      payment-downtime webhooks; Unit Z webhook signature verification and
+      the four-field error taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`,
+      `docs/DEMO_READINESS.md`
 - [ ] **P3, ~6h.** AK `/help` page from the frozen contract; AL misleading
       labels and the partial confusion matrix; AM read-only config panel
       → `docs/DEMO_READINESS.md`

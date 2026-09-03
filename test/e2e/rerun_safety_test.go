@@ -30,6 +30,7 @@ import (
 
 	"github.com/google/uuid"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
+	"github.com/thisizaro/Momotaro/internal/platform/webhooksig"
 	auditv1 "github.com/thisizaro/Momotaro/proto/gen/audit/v1"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 )
@@ -340,6 +341,11 @@ func submitEvent(ctx context.Context, t *testing.T, gwAddr, body string) submitE
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
+	// docs/PHASE5_5_IMPLEMENTATION.md Unit Z: the Gateway now verifies
+	// X-Razorpay-Signature on this route, so every caller, this test
+	// included, signs its body with the same secret startStack configured
+	// the api-gateway subprocess with (harness_test.go).
+	req.Header.Set("X-Razorpay-Signature", webhooksig.Sign(webhookSecret, []byte(body)))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -2553,3 +2553,134 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   reverted independently, confirmed failing, restored) before being
   reported green.
   `docs/PHASE5_5_IMPLEMENTATION.md` Unit Y, `docs/INCIDENTS.md` 2026-09-03.
+- 2026-09-03: **Webhook signature verification (Unit Z) is one shared
+  middleware, not duplicated per route.** `verifyWebhookSignature`
+  (`services/api-gateway/internal/httpapi/signature.go`) wraps both
+  `POST /v1/webhooks/payment-failed` and `POST /v1/webhooks/payment-downtime`
+  at the point they are registered in `Routes()`. The alternative, a copy of
+  the same read-cap-verify-replace sequence inside each handler, was
+  rejected on the same reasoning `docs/API_GATEWAY.md`'s own wire
+  conventions already apply elsewhere in this codebase: two places that are
+  supposed to agree on what "verified" means will eventually disagree,
+  usually silently, usually discovered by a signature that should have
+  failed and didn't. The middleware also absorbed `payment-downtime`'s
+  existing body-size cap (`maxDowntimeBodyBytes`, Unit Y), which closed a
+  real gap: `payment-failed` had no cap of its own before this.
+
+  The verify-then-decode order is the actual security property, not an
+  implementation detail: the middleware reads the full body into `[]byte`
+  once, verifies the HMAC-SHA256 over those exact bytes
+  (`internal/platform/webhooksig.Verify`, `hmac.Equal`, never `==` or
+  `bytes.Equal`), and only then replaces `r.Body` with a fresh reader over
+  the SAME bytes for the handler to decode. Razorpay's own docs are explicit
+  ("Do not parse or cast the webhook request body") because a decode before
+  verify, or a decode-then-reserialize, does not reproduce the exact bytes
+  that were signed; a JSON re-encoding can reorder keys, change number
+  formatting, or drop unknown fields, any of which breaks the signature for
+  a legitimate request or, worse, could be exploited to make an attacker's
+  reserialized body match a signature computed over a different original.
+
+  **Fail-closed decision for an unset secret: a startup failure, not a
+  route-level bypass.** `WEBHOOK_SECRET` is loaded with `config.Loader.Str`
+  (required, the same call `API_KEY` already uses), so the Gateway refuses
+  to start at all without it, before either webhook route can ever accept a
+  connection. The alternative considered was making it optional and having
+  `verifyWebhookSignature` reject every request at the route when unset
+  (which `webhooksig.Verify` already does as a second, independent layer:
+  it returns `false` for every signature when its `secrets` slice is empty
+  or all-empty, regardless of how it got that way). Required-at-startup won
+  for the same reason `docs/DECISIONS.md` 2026-09-03 (the
+  `DECISION_ENGINE_ADDR` entry, just above) already gives for a different
+  required address: a Gateway that starts and then rejects every request to
+  a route forever is the "looks healthy, silently black-holes work" failure
+  mode `docs/ENGINEERING.md` section 5 exists to prevent, worse than a
+  crash loop because nothing alerts on it. The route-level check is kept
+  anyway, not removed, as defense in depth: it is what makes the fail-closed
+  guarantee hold even for a `Handler` built directly (as every test in
+  `services/api-gateway/internal/httpapi` does) rather than through
+  `cmd/main.go`'s `loadConfig`.
+
+  `WEBHOOK_SECRET_PREVIOUS` is optional and additive: Razorpay's own
+  documented rotation behaviour is that a webhook retried under a
+  since-rotated secret must still verify, so `SetWebhookSecrets(current,
+  previous)` tries both rather than only the new value.
+
+  **How `make loadgen` keeps working.** `scripts/loadgen` now reads
+  `$WEBHOOK_SECRET` (or `-webhook-secret`) the same way it already reads
+  `$API_KEY`, fails fast with the same style of message if it is empty, and
+  signs its own marshaled body with `internal/platform/webhooksig.Sign`
+  before sending, adding `X-Razorpay-Signature` alongside the `X-API-Key` it
+  already sent. The alternative, the Gateway special-casing loadgen traffic
+  to skip verification, was the one thing this unit was explicit about not
+  doing: a bypass that only fires for one caller is a second, unverified
+  path into the same routes, indistinguishable from a real hole once it
+  exists. `internal/platform/webhooksig` exists specifically so
+  `api-gateway` and `loadgen` share one `Sign`/`Verify` implementation
+  rather than loadgen growing its own HMAC code that could quietly drift
+  from what the Gateway actually checks.
+
+  `docs/API_GATEWAY.md` "Webhook signature verification",
+  `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z.
+
+- 2026-09-03: **The four-field error taxonomy (Unit Z) is scoped to
+  ingest-and-classify, not a rewrite of the classifier or a new closed
+  vocabulary.** `error_code`, `error_description`, `error_source`,
+  `error_step` and `error_reason` are additive fields on
+  `common.v1.Record`/`ingestion.v1.NewRecord` (migration 00009 adds the
+  matching nullable `record` columns), accepted on
+  `POST /v1/webhooks/payment-failed` alongside the existing `failure_code`,
+  which stays required and unchanged. They flow through Ingestion's
+  `raw.events` payload and the Decision Engine's own mirror of it into
+  `commonv1.Record`, the same path `failure_code` already takes, so no new
+  transport was invented for them.
+
+  **The one place they change behaviour**: `services/classifier/internal/
+  rules/buckets.go`'s new `bucketForErrorTaxonomy`, consulted by
+  `rules.Provider.Classify` ONLY when `failure_code` itself did not resolve
+  to a bucket (SPEC.md section 4.3's existing unknown-code path), never as
+  an override of a recognised code. It matches a normalised `error_step`
+  containing "AUTHENTICATION" to `ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED`
+  (the customer's own half of the flow failed, a retry cannot fix that) and
+  "AUTHORIZATION" paired with a systemic `error_source` (bank, gateway,
+  network, razorpay, issuer) to `ROOT_CAUSE_BUCKET_TRANSIENT_BANK` (the
+  customer's step already succeeded, the rail itself failed past it), the
+  exact worked example `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z gives:
+  Razorpay's own generic `payment_failed` code paired with
+  `error_source=bank`/`error_step=payment_authorization` is a retry;
+  paired with `error_source=customer`/`error_step=payment_authentication`
+  it is not, and the reason code alone cannot make that distinction.
+
+  **Deliberately not a closed enum.** Razorpay's docs are explicit that
+  `error_source` and `error_step`'s possible values vary by payment method
+  (cards, netbanking, wallets, UPI Intent, Cardless EMI and e-mandate each
+  have their own sets), so `bucketForErrorTaxonomy` matches on substrings
+  of a normalised value rather than an exact-spelling map the way
+  `failureCodeToBucket` is: a step this engine has never seen either
+  resolves the same way as a documented one containing the same word, or
+  falls through to `ok=false` and the existing record-type fallback,
+  proven by `TestClassifyHandlesAnUnrecognisedErrorSourceWithoutCrashing`.
+  Freezing a closed list from one documentation page was the specific trap
+  called out for this unit and is why no such list exists here.
+
+  **Scoped out, deliberately, not forgotten:**
+  - Switching `POST /v1/webhooks/payment-failed` to Razorpay's real nested
+    `payment.failed` payload shape (`payload.payment.entity.*`). Kept the
+    existing flat wire body and added the five fields to it instead. The
+    nested shape is real, documented work of its own (matching
+    `payment-downtime`'s own nested-shape precedent from Unit Y) but a
+    second, larger change than this unit's actual point, which is the
+    signature check and the taxonomy fields being usable at all.
+  - Surfacing any of the five fields in `web/`, `reporting.v1.BatchReport`,
+    or `audit.v1.GetRecordAudit`. They are stored on `record` and read by
+    the classifier only; a judge-visible view of them is real value but a
+    separate, reviewable slice.
+  - Any change to the LLM prompt (`services/classifier/internal/llm/
+    prompt.go`) or provider chain. The rules engine's fallback path was the
+    literal example in this unit's brief; teaching the LLM rung about the
+    same fields is a natural follow-up, not required to prove the point.
+  - Validating or normalising `error_source`/`error_step` against any list,
+    open or closed, beyond the existing `normalizeFailureCode` whitespace/
+    case/separator cleanup already shared with `failure_code`.
+
+  `docs/API_GATEWAY.md` "POST /v1/webhooks/payment-failed",
+  `docs/PHASE5_5_IMPLEMENTATION.md` Unit Z.

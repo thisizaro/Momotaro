@@ -36,13 +36,16 @@ func (f *fakeDecisionEngine) ReportDowntimeEvent(ctx context.Context, in *decisi
 }
 
 func newDowntimeHandler(f *fakeDecisionEngine) http.Handler {
-	return New(&fakeIngestion{}, &fakeReporting{}, &fakeAudit{}, f, testAPIKey, 2*time.Second, 0, 0).Routes()
+	h := New(&fakeIngestion{}, &fakeReporting{}, &fakeAudit{}, f, testAPIKey, 2*time.Second, 0, 0)
+	h.SetWebhookSecrets(testWebhookSecret, "")
+	return h.Routes()
 }
 
 func postDowntime(h http.Handler, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/v1/webhooks/payment-downtime", strings.NewReader(body))
 	req.Header.Set("X-API-Key", testAPIKey)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(razorpaySignatureHeader, signBody(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -339,14 +342,16 @@ func TestSubmitDowntimeEventReturns502WhenDecisionEngineIsUnavailable(t *testing
 	}
 }
 
-// This route is unauthenticated-by-default until Unit Z adds signature
-// verification, so a body larger than the cap must be rejected cleanly
-// (400), never read without bound (docs/PHASE5_5_IMPLEMENTATION.md Unit Y:
-// "cap the body read").
+// A body larger than the cap must be rejected cleanly (400), never read
+// without bound (docs/PHASE5_5_IMPLEMENTATION.md Unit Y: "cap the body
+// read"), and the cap is enforced before signature verification even runs
+// (signature.go), so this deliberately sends no signature at all: the
+// oversized body must still be the reason for the 400, not a side effect of
+// also being unsigned.
 func TestSubmitDowntimeEventRejectsAnOversizedBody(t *testing.T) {
 	h := newDowntimeHandler(&fakeDecisionEngine{})
 
-	huge := bytes.Repeat([]byte(" "), maxDowntimeBodyBytes+1)
+	huge := bytes.Repeat([]byte(" "), maxWebhookBodyBytes+1)
 	body := `{"payload":` + string(huge) + `}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/webhooks/payment-downtime", strings.NewReader(body))
 	req.Header.Set("X-API-Key", testAPIKey)

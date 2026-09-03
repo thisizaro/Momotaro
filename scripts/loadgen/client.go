@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/thisizaro/Momotaro/internal/platform/webhooksig"
 )
 
 // sendResult is the outcome of one webhook POST. err, when non-nil, is
@@ -24,7 +26,15 @@ type sendResult struct {
 // documented success response for POST /v1/webhooks/payment-failed
 // (docs/API_GATEWAY.md); any other status, or a transport failure (gateway
 // unreachable, timed out, connection refused), is not accepted.
-func sendEvent(ctx context.Context, httpClient *http.Client, url, apiKey string, payload WebhookPayload) sendResult {
+//
+// webhookSecret signs the marshaled body into X-Razorpay-Signature
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Z), the same HMAC-SHA256 scheme
+// services/api-gateway verifies against (internal/platform/webhooksig,
+// shared rather than reimplemented here so the two can never quietly
+// disagree on what "signed" means). Without this the Gateway's own
+// signature check rejects every event once WEBHOOK_SECRET is configured,
+// which is why `make loadgen` needs it, not a bypass on the Gateway side.
+func sendEvent(ctx context.Context, httpClient *http.Client, url, apiKey, webhookSecret string, payload WebhookPayload) sendResult {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return sendResult{err: fmt.Errorf("marshal payload: %w", err)}
@@ -36,6 +46,7 @@ func sendEvent(ctx context.Context, httpClient *http.Client, url, apiKey string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("X-Razorpay-Signature", webhooksig.Sign(webhookSecret, body))
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

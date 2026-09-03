@@ -46,10 +46,24 @@ type serviceConfig struct {
 	// behind DemoControlsEnabled.
 	DecisionEngineAddr string
 	APIKey             string
-	HTTPPort           int
-	CallTimeout        time.Duration
-	RateLimitRPS       float64
-	RateLimitBurst     int
+	// WebhookSecret verifies X-Razorpay-Signature on both webhook routes
+	// (docs/PHASE5_5_IMPLEMENTATION.md Unit Z, docs/API_GATEWAY.md "Webhook
+	// signature verification"). Required, the same requiredness as APIKey
+	// above: a Gateway that could start without it would accept every
+	// request into those two routes' code paths only to fail-closed on
+	// literally all of them (webhooksig.Verify never treats "no secret" as
+	// "skip verification"), which is precisely the "looks healthy, silently
+	// black-holes work" failure mode docs/ENGINEERING.md section 5 exists to
+	// rule out. See docs/DECISIONS.md for the full reasoning.
+	WebhookSecret string
+	// WebhookSecretPrevious is optional: set during a secret rotation so a
+	// webhook retried under the old secret still verifies until whatever
+	// redelivers it stops (Razorpay's own documented rotation behaviour).
+	WebhookSecretPrevious string
+	HTTPPort              int
+	CallTimeout           time.Duration
+	RateLimitRPS          float64
+	RateLimitBurst        int
 
 	// DemoControlsEnabled gates /v1/demo/* (docs/PHASE5_5_IMPLEMENTATION.md
 	// Unit W). Default false: demo controls are a surface that does not
@@ -73,14 +87,16 @@ type serviceConfig struct {
 func loadConfig() (serviceConfig, error) {
 	l := config.NewLoader()
 	cfg := serviceConfig{
-		Common:             config.LoadCommon(l, serviceName),
-		IngestionAddr:      l.Str("INGESTION_ADDR"),
-		ReportingAddr:      l.Str("REPORTING_ADDR"),
-		AuditAddr:          l.Str("AUDIT_ADDR"),
-		DecisionEngineAddr: l.Str("DECISION_ENGINE_ADDR"),
-		APIKey:             l.Str("API_KEY"),
-		HTTPPort:           l.Port("HTTP_PORT", 8090),
-		CallTimeout:        l.Duration("CALL_TIMEOUT", 5*time.Second),
+		Common:                config.LoadCommon(l, serviceName),
+		IngestionAddr:         l.Str("INGESTION_ADDR"),
+		ReportingAddr:         l.Str("REPORTING_ADDR"),
+		AuditAddr:             l.Str("AUDIT_ADDR"),
+		DecisionEngineAddr:    l.Str("DECISION_ENGINE_ADDR"),
+		APIKey:                l.Str("API_KEY"),
+		WebhookSecret:         l.Str("WEBHOOK_SECRET"),
+		WebhookSecretPrevious: l.StrDefault("WEBHOOK_SECRET_PREVIOUS", ""),
+		HTTPPort:              l.Port("HTTP_PORT", 8090),
+		CallTimeout:           l.Duration("CALL_TIMEOUT", 5*time.Second),
 		// Basic protection against a runaway caller, not per-tenant fairness:
 		// this system has no concept of a "user" to key on (ARCHITECTURE.md
 		// section 17). Defaults comfortably clear the 50 records/sec NFR
@@ -174,6 +190,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		decisionenginev1.NewDecisionEngineServiceClient(decisionEngineConn),
 		cfg.APIKey, cfg.CallTimeout, cfg.RateLimitRPS, cfg.RateLimitBurst)
 	handler.SetWSAllowedOrigins(cfg.WSAllowedOrigins)
+	handler.SetWebhookSecrets(cfg.WebhookSecret, cfg.WebhookSecretPrevious)
 
 	// /v1/demo/* (docs/PHASE5_5_IMPLEMENTATION.md Unit W): only dial World
 	// Simulator, and only register these routes, when the flag is on. A
