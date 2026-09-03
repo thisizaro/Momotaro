@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,6 +52,44 @@ func TestLoadConfigAcceptsBoundaryLLMSampleRates(t *testing.T) {
 			t.Setenv("LLM_SAMPLE_RATE", good)
 			if _, err := loadConfig(); err != nil {
 				t.Errorf("loadConfig rejected LLM_SAMPLE_RATE=%s: %v", good, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigDefaultRouteConfidenceThresholdIsZero(t *testing.T) {
+	validEnv(t)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.RouteConfidenceThreshold != 0 {
+		t.Errorf("default RouteConfidenceThreshold = %v, want 0 (a threshold of 0 can never be satisfied by a real confidence value, so every existing deploy routes nothing to a live model)", cfg.RouteConfidenceThreshold)
+	}
+}
+
+// Out-of-range values must fail at startup, same reasoning as
+// LLM_SAMPLE_RATE above: this is compared against a confidence, always in
+// [0,1], so anything else can only be a typo.
+func TestLoadConfigRejectsOutOfRangeRouteConfidenceThreshold(t *testing.T) {
+	for _, bad := range []string{"3", "-0.1", "1.5"} {
+		t.Run(bad, func(t *testing.T) {
+			validEnv(t)
+			t.Setenv("LLM_ROUTE_CONFIDENCE_THRESHOLD", bad)
+			if _, err := loadConfig(); err == nil {
+				t.Errorf("loadConfig accepted LLM_ROUTE_CONFIDENCE_THRESHOLD=%s, want a startup error", bad)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsBoundaryRouteConfidenceThresholds(t *testing.T) {
+	for _, good := range []string{"0", "1", "0.8", "0.5"} {
+		t.Run(good, func(t *testing.T) {
+			validEnv(t)
+			t.Setenv("LLM_ROUTE_CONFIDENCE_THRESHOLD", good)
+			if _, err := loadConfig(); err != nil {
+				t.Errorf("loadConfig rejected LLM_ROUTE_CONFIDENCE_THRESHOLD=%s: %v", good, err)
 			}
 		})
 	}
@@ -107,5 +149,79 @@ func TestContactCooldownIsStillScaled(t *testing.T) {
 	if g.ContactCooldown >= cfg.ContactCooldown {
 		t.Errorf("ContactCooldown = %s, want it scaled below the configured %s; it is a wait we schedule, not a comparison against elapsed real time",
 			g.ContactCooldown, cfg.ContactCooldown)
+	}
+}
+
+// warnIfLiveCallsUnreachable is the fix for a class of misconfiguration
+// docs/INCIDENTS.md 2026-08-31 already cost this project a day over
+// (configs/demo.env silently doing nothing): an operator who sets
+// LLM_SAMPLE_RATE > 0 expecting some fraction of records to reach a live
+// model, but leaves LLM_ROUTE_CONFIDENCE_THRESHOLD at its default 0.0, gets
+// zero live calls with nothing in the log saying why (0.0 can never be
+// satisfied by a real confidence value, since the comparison is strict
+// less-than and confidence is never negative).
+func captureLogger(t *testing.T) (*slog.Logger, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	return slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+func decodeLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, raw := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		if len(raw) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("log line was not valid JSON: %v\n%s", err, raw)
+		}
+		lines = append(lines, m)
+	}
+	return lines
+}
+
+func TestWarnIfLiveCallsUnreachableWarnsWhenSampleRateSetButThresholdIsZero(t *testing.T) {
+	log, buf := captureLogger(t)
+	cfg := serviceConfig{LLMSampleRate: 0.5, RouteConfidenceThreshold: 0.0}
+
+	warnIfLiveCallsUnreachable(cfg, log)
+
+	lines := decodeLogLines(t, buf)
+	if len(lines) != 1 {
+		t.Fatalf("got %d log lines, want 1: %v", len(lines), lines)
+	}
+	if lines[0]["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", lines[0]["level"])
+	}
+	msg, _ := lines[0]["msg"].(string)
+	if !strings.Contains(msg, "LLM_ROUTE_CONFIDENCE_THRESHOLD") {
+		t.Errorf("msg = %q, want it to name LLM_ROUTE_CONFIDENCE_THRESHOLD, the variable that needs setting", msg)
+	}
+	if !strings.Contains(msg, "no live") && !strings.Contains(msg, "no record") {
+		t.Errorf("msg = %q, want it to say plainly that no live model calls will be placed", msg)
+	}
+}
+
+func TestWarnIfLiveCallsUnreachableSilentWhenThresholdIsSet(t *testing.T) {
+	log, buf := captureLogger(t)
+	cfg := serviceConfig{LLMSampleRate: 0.5, RouteConfidenceThreshold: 0.8}
+
+	warnIfLiveCallsUnreachable(cfg, log)
+
+	if lines := decodeLogLines(t, buf); len(lines) != 0 {
+		t.Errorf("got %d log lines, want 0: a nonzero threshold means live calls ARE reachable, nothing to warn about: %v", len(lines), lines)
+	}
+}
+
+func TestWarnIfLiveCallsUnreachableSilentWhenSampleRateIsZero(t *testing.T) {
+	log, buf := captureLogger(t)
+	cfg := serviceConfig{LLMSampleRate: 0.0, RouteConfidenceThreshold: 0.0}
+
+	warnIfLiveCallsUnreachable(cfg, log)
+
+	if lines := decodeLogLines(t, buf); len(lines) != 0 {
+		t.Errorf("got %d log lines, want 0: LLM_SAMPLE_RATE=0 already means no live calls, deliberately, nothing surprising to warn about: %v", len(lines), lines)
 	}
 }

@@ -47,12 +47,19 @@ func TestFallbackFromFailedLLMToRules(t *testing.T) {
 			"GROQ_BASE_URL":      fakeGroq.URL,
 			"GROQ_MODEL":         "e2e-fake-model",
 		},
-		// Without this, the Decision Engine sends force_rules_only=true at
-		// the default LLM_SAMPLE_RATE=0.0, and the classifier's chain
-		// filters groq out before ever calling it (Phase 3 Unit H) --
-		// exactly what this test exists to prove did NOT happen.
+		// Two knobs now gate a live call, and both must be set or the
+		// record never reaches groq at all (docs/DEMO_READINESS.md Unit
+		// AI). LLM_SAMPLE_RATE=1.0 alone is not enough: BANK_TIMEOUT
+		// classifies as TRANSIENT_BANK at confidence 0.90
+		// (rules/actions.go), and routing only offers a record to a live
+		// model when that confidence is below LLM_ROUTE_CONFIDENCE_THRESHOLD
+		// (default 0.0, which no real confidence value is ever below). Set
+		// it above 0.90 here so this specific record counts as ambiguous
+		// and the rules-only "peek" call is followed by a real one to
+		// groq, exactly what this test exists to prove happened.
 		map[string]string{
-			"LLM_SAMPLE_RATE": "1.0",
+			"LLM_SAMPLE_RATE":                "1.0",
+			"LLM_ROUTE_CONFIDENCE_THRESHOLD": "0.95",
 		},
 	)
 	gwHTTPAddr := stack.gatewayHTTP

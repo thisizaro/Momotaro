@@ -80,6 +80,18 @@ message BatchReport {
   // accuracy: present only once GROUND_TRUTH exists for this batch, never
   // present zeroed-out.
   BaselineComparison baseline_comparison = 18;
+
+  // Records whose classification was ambiguous enough that the Decision
+  // Engine wanted a live model call, but did not get one: the classifier's
+  // own provider chain hit rate_limited or circuit_open, or the Decision
+  // Engine's LLM_SAMPLE_RATE ceiling was already spent for this batch
+  // (docs/DEMO_READINESS.md Unit AI). Every one of these records still
+  // resolved to a real answer from the deterministic rules table, so this
+  // counts a fallback, never an unclassified record. Always present,
+  // defaulting to 0, not the "missing key means no answer" convention
+  // accuracy/baseline_comparison use above: nothing here depends on
+  // GROUND_TRUTH existing.
+  int32 llm_quota_exhausted_count = 19;
 }
 
 // A fixed naive policy (retry every record up to 3x, nudge every record

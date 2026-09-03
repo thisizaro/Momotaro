@@ -370,6 +370,26 @@ path. `docs/DECISIONS.md` has the full reasoning for each choice.
 
 ### Unit AI: confidence-based LLM routing, and a quota banner
 
+**Done, 2026-09-03.** Routing now asks the deterministic rules engine first
+(free, cannot fail) and only spends a live model call when its `Confidence`
+is below the new `LLM_ROUTE_CONFIDENCE_THRESHOLD` (`configs/demo.env`:
+0.80, chosen from `rules/actions.go`'s actual confidence table, not a round
+number: `USER_ACTION_NEEDED` 0.70, `OVERDUE` 0.75 and the unknown-code path
+0.00 are the genuinely ambiguous cases). `LLM_SAMPLE_RATE` is reinterpreted
+as a running-ratio ceiling (`services/decision-engine/internal/engine/llm_budget.go`)
+rather than the old hash-of-`record_id` selector, because the Decision
+Engine consumes `raw.events` as a stream and never sees a whole batch to
+rank before deciding; a confidence threshold plus a budget counter turned
+out simpler and more honest than trying to rank a batch not yet fully seen.
+An ambiguous record the ceiling denies still gets the rules answer, tagged
+with a `sample_budget:exhausted` hop so it is indistinguishable from a
+`rate_limited`/`circuit_open` fallback only in cause, not in effect: both
+count toward `BatchReport.llm_quota_exhausted_count`
+(`services/reporting/internal/server/exhaustion.go`), documented in
+`docs/API_GATEWAY.md` first per its own frozen-doc rule, and shown as a
+quiet slate `LlmQuotaBanner` that renders nothing at all when the count is
+zero. Full reasoning in `docs/DECISIONS.md` 2026-09-03.
+
 **Two knobs that are currently one, and should not be.**
 
 - **Routing**: which records deserve a model call. Today it is a deterministic

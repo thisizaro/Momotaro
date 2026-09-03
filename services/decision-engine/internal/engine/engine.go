@@ -69,10 +69,23 @@ type Config struct {
 	// (docs/ARCHITECTURE.md section 5a) and can only ever remove options.
 	Guardrails GuardrailConfig
 	// LLMSampleRate is LLM_SAMPLE_RATE (docs/PHASE3_IMPLEMENTATION.md Unit
-	// H): the fraction of records that get a live model call rather than
-	// ForceRulesOnly. Default 0.0, validated at startup in [0,1] by
-	// cmd/main.go, so every existing test and every default run stays free.
+	// H, reinterpreted by docs/DEMO_READINESS.md Unit AI): a ceiling on the
+	// fraction of ALL classified records that ever reach a live model,
+	// never a selector of which ones do. Default 0.0, validated at startup
+	// in [0,1] by cmd/main.go, so every existing test and every default run
+	// stays free. See llm_budget.go.
 	LLMSampleRate float64
+	// RouteConfidenceThreshold is LLM_ROUTE_CONFIDENCE_THRESHOLD
+	// (docs/DEMO_READINESS.md Unit AI, docs/ARCHITECTURE.md section 17):
+	// clients.classify asks the deterministic rules engine first and only
+	// spends a live model call when its Confidence for this record is
+	// below this threshold. Default 0.0, validated at startup in [0,1] by
+	// cmd/main.go: the comparison is strict less-than and confidence is
+	// never negative (rules/actions.go's lowest value is 0.00, for the
+	// unknown-code path), so a threshold of 0.0 can never be satisfied and a
+	// deployment that never sets this routes nothing to a live model,
+	// matching LLMSampleRate's own zero-value default.
+	RouteConfidenceThreshold float64
 	// ClassifyConfidenceThreshold is CLASSIFY_CONFIDENCE_THRESHOLD
 	// (docs/PHASE3_IMPLEMENTATION.md Unit G, classifier.proto): below this,
 	// a classification is escalated as a safety call rather than priced.
@@ -103,8 +116,14 @@ type Engine struct {
 // kafkax.Producer.Publish takes the topic per call.
 func New(pool *pgxpkg.Pool, classifier classifierv1.ClassifierServiceClient, executor executorv1.ExecutorServiceClient, dlqProducer *kafkax.Producer, clk clock.Clock, model *economics.Model, cfg Config) *Engine {
 	return &Engine{
-		store:     newStore(pool),
-		clients:   &clients{classifier: classifier, executor: executor, callTimeout: cfg.CallTimeout, llmSampleRate: cfg.LLMSampleRate},
+		store: newStore(pool),
+		clients: &clients{
+			classifier:               classifier,
+			executor:                 executor,
+			callTimeout:              cfg.CallTimeout,
+			routeConfidenceThreshold: cfg.RouteConfidenceThreshold,
+			llmBudget:                newLLMBudget(cfg.LLMSampleRate),
+		},
 		dlq:       newDeadLetterPublisher(dlqProducer, cfg.DLQTopic),
 		audit:     newAuditEventPublisher(dlqProducer, cfg.AuditEventsTopic),
 		clock:     clk,

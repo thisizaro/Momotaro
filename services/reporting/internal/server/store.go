@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/thisizaro/Momotaro/internal/platform/hopcodec"
 	pgxpkg "github.com/thisizaro/Momotaro/internal/platform/pgx"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 )
@@ -390,4 +391,46 @@ func rootCauseBucketString(b commonv1.RootCauseBucket) string {
 		return ""
 	}
 	return b.String()
+}
+
+// llmQuotaExhaustedCount counts distinct records whose initial
+// classification wanted a live model call and did not get one
+// (llmQuotaExhausted, exhaustion.go, docs/DEMO_READINESS.md Unit AI).
+//
+// provider_hops is only ever written on the audit_entry row(s) for a
+// record's first classification (from_state = NEW), never on a later
+// re-score (services/decision-engine/internal/engine/store.go's
+// recordRescore leaves it NULL on purpose), so filtering on from_state
+// already yields at most one hops value per record without needing
+// DISTINCT on the query itself.
+func (s *store) llmQuotaExhaustedCount(ctx context.Context, batchID string) (int32, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT provider_hops
+		FROM audit_entry
+		WHERE batch_id = $1 AND from_state = $2 AND provider_hops IS NOT NULL`,
+		batchID, commonv1.RecordState_RECORD_STATE_NEW.String(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("query provider_hops for batch %s: %w", batchID, err)
+	}
+	defer rows.Close()
+
+	var count int32
+	for rows.Next() {
+		var encoded string
+		if err := rows.Scan(&encoded); err != nil {
+			return 0, fmt.Errorf("scan provider_hops for batch %s: %w", batchID, err)
+		}
+		hops, err := hopcodec.Decode(encoded)
+		if err != nil {
+			return 0, fmt.Errorf("decode provider_hops for batch %s: %w", batchID, err)
+		}
+		if llmQuotaExhausted(hops) {
+			count++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate provider_hops for batch %s: %w", batchID, err)
+	}
+	return count, nil
 }

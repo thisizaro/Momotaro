@@ -14,10 +14,24 @@ import (
 // section 3). Kept separate from engine.go and scheduler.go so neither has
 // to repeat the context-deadline boilerplate per call site.
 type clients struct {
-	classifier    classifierv1.ClassifierServiceClient
-	executor      executorv1.ExecutorServiceClient
-	callTimeout   time.Duration
-	llmSampleRate float64
+	classifier  classifierv1.ClassifierServiceClient
+	executor    executorv1.ExecutorServiceClient
+	callTimeout time.Duration
+	// routeConfidenceThreshold is LLM_ROUTE_CONFIDENCE_THRESHOLD
+	// (docs/DEMO_READINESS.md Unit AI): classify routes a record to a live
+	// model only when the deterministic rules engine's own confidence for
+	// it is below this. Not the same knob as ClassifyConfidenceThreshold
+	// (engine.go), which decides whether to escalate AFTER classification;
+	// this one decides whether to spend a call BEFORE it, on the rules
+	// engine's answer alone.
+	routeConfidenceThreshold float64
+	// llmBudget is LLM_SAMPLE_RATE reinterpreted as a ceiling rather than a
+	// selector (docs/ARCHITECTURE.md section 17): it bounds the running
+	// fraction of every classified record that ever reaches a live
+	// provider, whether or not routeConfidenceThreshold judged it
+	// ambiguous. See llm_budget.go for why a running ratio rather than a
+	// per-batch rank.
+	llmBudget *llmBudget
 	// nudgeMaxChars bounds a composed nudge's raw length (before amount
 	// substitution). Zero here would make every ComposeNudge call fail
 	// validation on the Classifier's side (an SMS-realistic cap of 0 chars
@@ -26,14 +40,59 @@ type clients struct {
 	nudgeMaxChars int32
 }
 
+// exhaustedHop is appended to a rules-only classification when routing
+// judged the record ambiguous but the sampling ceiling was already spent:
+// the deterministic answer is still real and still used, this only marks
+// that a live call was wanted and not made, so Reporting can count it
+// (services/reporting/internal/server/exhaustion.go,
+// docs/API_GATEWAY.md's llm_quota_exhausted_count). Provider is not one of
+// the classifier's own registered rungs on purpose: this hop is recorded
+// by the Decision Engine, about a call it chose not to place, not by
+// anything inside the classifier's provider chain.
+var exhaustedHop = &commonv1.ProviderHop{Provider: "sample_budget", Result: "exhausted"}
+
+// classify routes a record by ambiguity rather than by a random sample
+// (docs/DEMO_READINESS.md Unit AI, replacing Phase 3 Unit H's
+// hash-of-record-id sampledForLLM). It always asks the deterministic rules
+// engine first (force_rules_only=true): that rung does no I/O and cannot
+// fail (SPEC.md section 4.7), so this "peek" is cheap, and its Confidence
+// is the actual signal routing needs. Only when that confidence is below
+// routeConfidenceThreshold, AND the running budget still allows it, does a
+// second call go out with the full provider chain enabled.
+//
+// This never changes what the model is allowed to decide: the guardrails
+// and the economics scorer downstream (engine.go's decide) still only ever
+// read the winning response's Bucket, exactly as before. Routing only
+// changes which records the model gets to see at all.
 func (c *clients) classify(ctx context.Context, record *commonv1.Record, history, instrumentHistory []*commonv1.InterventionAttempt) (*classifierv1.ClassifyResponse, error) {
+	ruleResp, err := c.classifyOnce(ctx, record, history, instrumentHistory, true)
+	if err != nil {
+		return nil, err
+	}
+
+	eligible := ruleResp.GetConfidence() < c.routeConfidenceThreshold
+	if !c.llmBudget.consider(eligible) {
+		if eligible {
+			ruleResp.Hops = append(ruleResp.Hops, exhaustedHop)
+		}
+		return ruleResp, nil
+	}
+
+	return c.classifyOnce(ctx, record, history, instrumentHistory, false)
+}
+
+// classifyOnce places one Classify RPC. forceRulesOnly=true is the
+// confidence "peek" (and also the load generator's original cost-safety
+// switch, SPEC.md section 4.8); false allows the full provider chain,
+// including a live model, on this specific record.
+func (c *clients) classifyOnce(ctx context.Context, record *commonv1.Record, history, instrumentHistory []*commonv1.InterventionAttempt, forceRulesOnly bool) (*classifierv1.ClassifyResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.callTimeout)
 	defer cancel()
 	return c.classifier.Classify(callCtx, &classifierv1.ClassifyRequest{
 		Record:            record,
 		History:           history,
 		InstrumentHistory: instrumentHistory,
-		ForceRulesOnly:    !sampledForLLM(record.GetId(), c.llmSampleRate),
+		ForceRulesOnly:    forceRulesOnly,
 	})
 }
 

@@ -233,6 +233,7 @@ Response:
   "closed_uneconomic_count": 4,
   "closed_uneconomic_paise": 210000,
   "processing_failure_count": 0,
+  "llm_quota_exhausted_count": 12,
   "by_root_cause": {
     "ROOT_CAUSE_BUCKET_TRANSIENT_BANK": { "record_count": 40, "at_risk_paise": 2000000, "recovered_paise": 1800000, "recovery_rate": 0.9 }
   },
@@ -262,6 +263,25 @@ Wire conventions 2). `accuracy` and `baseline_comparison` are **both absent**
 when the batch has no `GROUND_TRUTH` (see the ground-truth boundary above),
 never present with null or zeroed-out values, a missing key means no answer
 key exists, distinct from a real zero.
+
+**`llm_quota_exhausted_count`, added for Unit AI's confidence-based routing**
+(docs/DEMO_READINESS.md, editing this frozen document per its own rule: fix
+it here first). Records whose classification was ambiguous enough that the
+Decision Engine wanted a live model call, but did not get one, either
+because the classifier's own provider chain hit `rate_limited` or
+`circuit_open` (Groq's free-tier throttling or its own breaker already
+open), or because the Decision Engine's `LLM_SAMPLE_RATE` ceiling was
+already spent for this batch when this record's turn came. Every one of
+these records still got an answer, from the deterministic rules table, the
+terminal rung that cannot fail, so this is a count of records that fell
+back, never a count of records left unclassified. Always present as an
+integer, defaulting to 0 like `escalated_count` and
+`processing_failure_count` above it, not the "missing key means no answer"
+convention `accuracy`/`baseline_comparison` use: there is no ground-truth
+dependency here, a batch that never asked the model for anything reports 0
+truthfully rather than omitting the key. The dashboard renders this as a
+quiet stat, not an alarm: a free-tier quota being spent is a normal
+operating condition, not a system fault.
 
 ### `GET /v1/batches/{batch_id}/records`
 

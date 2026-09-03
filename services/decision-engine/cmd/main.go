@@ -92,10 +92,21 @@ type serviceConfig struct {
 	RecoveryWindow  time.Duration
 
 	// LLMSampleRate is LLM_SAMPLE_RATE (docs/PHASE3_IMPLEMENTATION.md Unit
-	// H): the fraction of records sampled deterministically for a live
-	// model call rather than force_rules_only. Default 0.0, so every
-	// existing test and every default run stays free of outbound LLM calls.
+	// H, reinterpreted by docs/DEMO_READINESS.md Unit AI): a ceiling on the
+	// fraction of ALL classified records that ever reach a live model, not
+	// a selector of which ones do (see RouteConfidenceThreshold below for
+	// that). Default 0.0, so every existing test and every default run
+	// stays free of outbound LLM calls.
 	LLMSampleRate float64
+
+	// RouteConfidenceThreshold is LLM_ROUTE_CONFIDENCE_THRESHOLD
+	// (docs/DEMO_READINESS.md Unit AI): a record is only offered to a live
+	// model when the deterministic rules engine's own confidence for it is
+	// below this. Default 0.0, so a deployment that never sets it routes
+	// nothing to a live model (services/decision-engine/internal/engine's
+	// Config field of the same name explains why 0.0 can never be
+	// satisfied by a real confidence value).
+	RouteConfidenceThreshold float64
 
 	// ClassifyConfidenceThreshold is CLASSIFY_CONFIDENCE_THRESHOLD
 	// (docs/PHASE3_IMPLEMENTATION.md Unit G): below this, a classification
@@ -180,6 +191,8 @@ func loadConfig() (serviceConfig, error) {
 
 		LLMSampleRate: l.Float("LLM_SAMPLE_RATE", 0.0),
 
+		RouteConfidenceThreshold: l.Float("LLM_ROUTE_CONFIDENCE_THRESHOLD", 0.0),
+
 		ClassifyConfidenceThreshold: l.Float("CLASSIFY_CONFIDENCE_THRESHOLD", 0.0),
 
 		KafkaLagPollInterval: l.Duration("KAFKA_LAG_POLL_INTERVAL", 30*time.Second),
@@ -198,6 +211,12 @@ func loadConfig() (serviceConfig, error) {
 	// intended as "3 in 10" would otherwise sample the whole batch.
 	if cfg.LLMSampleRate < 0 || cfg.LLMSampleRate > 1 {
 		return cfg, fmt.Errorf("LLM_SAMPLE_RATE must be in [0,1], got %v", cfg.LLMSampleRate)
+	}
+	// Same reasoning as LLM_SAMPLE_RATE just above: this is compared
+	// against a confidence value, which is always in [0,1], so anything
+	// outside that range could only be a typo.
+	if cfg.RouteConfidenceThreshold < 0 || cfg.RouteConfidenceThreshold > 1 {
+		return cfg, fmt.Errorf("LLM_ROUTE_CONFIDENCE_THRESHOLD must be in [0,1], got %v", cfg.RouteConfidenceThreshold)
 	}
 	// Confidence itself is documented as always in [0,1] (classifier.proto,
 	// enforced by the classifier's own validate.go), so a threshold outside
@@ -227,6 +246,7 @@ func main() {
 	}
 
 	log := logger.New(cfg.ServiceName, cfg.LogLevel)
+	warnIfLiveCallsUnreachable(cfg, log)
 
 	if err := run(ctx, cfg, log); err != nil {
 		log.Error("fatal", "err", err)
@@ -237,6 +257,27 @@ func main() {
 
 func slogFallback() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", serviceName)
+}
+
+// warnIfLiveCallsUnreachable catches a specific, silent misconfiguration:
+// LLM_SAMPLE_RATE > 0 (an operator expects some fraction of records to
+// reach a live model) but LLM_ROUTE_CONFIDENCE_THRESHOLD left at its
+// default 0.0 (routing's own comparison is strict less-than, and a real
+// confidence value is never negative, so 0.0 can never be satisfied,
+// engine.go's Config field explains the same fact from the other side).
+// The result is zero live calls, with nothing in the log to say why: the
+// same class of bug as configs/demo.env being sourced instead of applied
+// for weeks and silently doing nothing (docs/INCIDENTS.md 2026-08-31).
+// Logged once at startup, right after the real logger exists, so it is in
+// the first few lines rather than discovered by counting calls that never
+// happened.
+func warnIfLiveCallsUnreachable(cfg serviceConfig, log *slog.Logger) {
+	if cfg.LLMSampleRate > 0 && cfg.RouteConfidenceThreshold == 0 {
+		log.Warn("LLM_SAMPLE_RATE is set but LLM_ROUTE_CONFIDENCE_THRESHOLD is 0, so no record will ever be judged ambiguous and no live model call will be placed; set LLM_ROUTE_CONFIDENCE_THRESHOLD above 0 to allow any record to reach a live model",
+			"llm_sample_rate", cfg.LLMSampleRate,
+			"llm_route_confidence_threshold", cfg.RouteConfidenceThreshold,
+		)
+	}
 }
 
 func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
@@ -326,6 +367,7 @@ func run(ctx context.Context, cfg serviceConfig, log *slog.Logger) error {
 		TimeScale:                   cfg.DemoTimeScale,
 		Guardrails:                  guardrailsFrom(cfg),
 		LLMSampleRate:               cfg.LLMSampleRate,
+		RouteConfidenceThreshold:    cfg.RouteConfidenceThreshold,
 		ClassifyConfidenceThreshold: cfg.ClassifyConfidenceThreshold,
 	}
 	eng := engine.New(pool,

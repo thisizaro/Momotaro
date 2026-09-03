@@ -81,6 +81,10 @@ func (s *Server) GetBatchReport(ctx context.Context, req *reportingv1.GetBatchRe
 	if err != nil {
 		return nil, err
 	}
+	llmQuotaExhaustedCount, err := s.store.llmQuotaExhaustedCount(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
 
 	report := &reportingv1.BatchReport{
 		BatchId:                batchID,
@@ -102,6 +106,7 @@ func (s *Server) GetBatchReport(ctx context.Context, req *reportingv1.GetBatchRe
 		// Reporting's only source of numbers, has nothing to count.
 		// Tracked in docs/BACKLOG.md rather than guessed at.
 		ProcessingFailureCount: 0,
+		LlmQuotaExhaustedCount: llmQuotaExhaustedCount,
 		ByRootCause:            bucketStatsMap(bucketRows),
 		ByIntervention:         interventionStatsMap(interventionRows),
 		Accuracy:               classificationAccuracy(confusionRows),
