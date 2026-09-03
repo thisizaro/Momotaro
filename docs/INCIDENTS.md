@@ -2331,3 +2331,52 @@ checked-in fixture inherits that file's own guarantees, or lack of them.
 machine, not the repository. Anything a test needs to see should be a
 tracked file (`.env.example`, here) or something the test constructs itself,
 never a file whose entire purpose is to hold values nobody commits.
+
+## 2026-09-03: a newly required variable breaks every existing .env, three times running
+
+**Symptom, the third time.** After Unit Z (#119) merged, `make demo-up` left
+the Gateway dead:
+
+```
+"fatal" err="invalid configuration:
+  - WEBHOOK_SECRET is required but not set"
+```
+
+**The pattern, not the instance.** `.env` is gitignored. A PR that adds a
+newly required variable can update `.env.example`, which is tracked, and
+cannot touch anyone's actual `.env`. So the change is correct, CI is green,
+and every existing working tree breaks the next time it starts the stack.
+
+This has now happened three times in two days:
+
+| Unit | Variable | How it surfaced |
+|---|---|---|
+| AI (#113) | `LLM_ROUTE_CONFIDENCE_THRESHOLD` | silent: sample rate set, zero live calls, no error |
+| Y (#118) | `DECISION_ENGINE_ADDR` | all nine e2e tests failed in CI |
+| Z (#119) | `WEBHOOK_SECRET` | Gateway refused to start locally after merge |
+
+Only the middle one was caught by CI, and only because the e2e harness
+happens to start a real Gateway. The first was silent and needed a startup
+warning added to catch it. The third was caught by starting the stack by
+hand after merging.
+
+**Fix.** `make check-env` reports keys present in `.env.example` and absent
+from `.env`. Deliberately informational, exit 0, never a build failure:
+some of those keys are optional with defaults and some are set only in
+`configs/demo.env` under `PROFILE=demo`, so failing on them would cry wolf
+and train everyone to ignore the one time it matters. Documented in
+`README.md` next to the other run instructions.
+
+**Lessons.**
+
+- **A gitignored file is a config surface a PR cannot reach.** Anything
+  required that lives there will break existing environments no matter how
+  careful the PR is. The tracked file and the real file drift by
+  construction.
+- **Prefer a loud failure to a silent one, but prefer neither.** Unit Y and
+  Z both failed loudly, which is right, and both still cost time. Unit AI
+  failed silently and cost more. The startup warning added for AI is the
+  pattern worth repeating: name the variable and say what will not work.
+- **Verify by starting the product after a merge, not only by watching CI.**
+  CI does not run `make demo-up`. Every one of these was found by a human
+  running the thing.
