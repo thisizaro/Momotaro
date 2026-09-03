@@ -366,7 +366,7 @@ func TestGetAgentConfigReturnsTheConfiguredValuesVerbatim(t *testing.T) {
 		t.Errorf("ContactCooldownSeconds = %d, want %d", resp.GetContactCooldownSeconds(), int64((24 * time.Hour).Seconds()))
 	}
 	if resp.GetRecoveryWindowSeconds() != int64((7 * 24 * time.Hour).Seconds()) {
-		t.Errorf("RecoveryWindowSeconds = %d, want %d", resp.GetRecoveryWindowSeconds(), int64((7*24*time.Hour).Seconds()))
+		t.Errorf("RecoveryWindowSeconds = %d, want %d", resp.GetRecoveryWindowSeconds(), int64((7 * 24 * time.Hour).Seconds()))
 	}
 	if resp.GetLlmSampleRate() != 0.15 {
 		t.Errorf("LlmSampleRate = %v, want 0.15", resp.GetLlmSampleRate())
