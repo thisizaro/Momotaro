@@ -773,6 +773,44 @@ Both ids are freshly generated and deliberately never written to Postgres;
 `record_id` is what the Decision Engine's consumer dead-letters within a
 few seconds of the call.
 
+### `GET /v1/help`
+
+**docs/DEMO_READINESS.md Unit AK.** Every route on this page, machine
+readable: method, path, what it needs in the `Authorization` sense, and one
+sentence of what it does. Assembled by hand from this document rather than
+reflected off the router, because a caller needs the wire contract, not a
+description of the Go code that serves it; a route added to this document
+without a matching row in `services/api-gateway/internal/httpapi/help.go`
+is a bug in one of the two.
+
+**Unauthenticated, deliberately**, unlike every other route here: a caller
+who does not already hold an API key needs a way to discover which routes
+require one before it can get one, so this is the one route that must
+answer without `X-API-Key`.
+
+Response:
+```json
+{
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/v1/webhooks/payment-failed",
+      "auth": "X-API-Key header, plus X-Razorpay-Signature (HMAC-SHA256 over the raw body)",
+      "description": "The production entry point: one payment failure event, as it happens."
+    }
+  ]
+}
+```
+
+`method` is `GET`, `POST` or `WS`. `path` is the exact route template,
+`{param}` placeholders included, matching this document's own headings.
+`auth` is a short prose description of what the route requires, not a
+closed enum: the shapes so far are an API key, an API key plus a webhook
+signature, an API key gated on `DEMO_CONTROLS_ENABLED`, the API key as a
+WebSocket subprotocol, or none. Every route on this page appears exactly
+once, in the same order this document lists them, `GET /v1/help` itself
+included.
+
 ## Errors
 
 Standard shape on any non-2xx response:

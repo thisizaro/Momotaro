@@ -161,6 +161,7 @@ func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", h.withAuth(authenticated))
 	mux.HandleFunc("GET /v1/batches/{batch_id}/live", h.liveUpdates)
+	mux.HandleFunc("GET /v1/help", h.help)
 
 	return h.withCORS(h.withRateLimit(mux))
 }
