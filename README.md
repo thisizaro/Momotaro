@@ -206,10 +206,15 @@ batch has no ground truth, so it came from the dashboard button rather than
 ### Fill the Live Event Stream with real production traffic
 
 ```bash
+export API_KEY=momotaro-demo-key      # or whatever API_KEY is in your .env
+
 make loadgen                          # 5 events/s for 5 minutes, default
 make loadgen RATE=10 DURATION=2m      # faster, shorter
 make loadgen RATE=2 EVENTS=200        # a fixed total instead of a time bound
 ```
+
+Needs the api-gateway already running (`make demo-up PROFILE=demo`) and
+`API_KEY` set, otherwise it exits immediately saying which one is missing.
 
 This posts events at `POST /v1/webhooks/payment-failed`, the same public
 route a real payment gateway would call, at a steady rate. It never touches
