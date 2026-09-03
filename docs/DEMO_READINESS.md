@@ -70,7 +70,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 10 | Y | Razorpay payment-downtime webhooks | 5h | **done, scoped down** |
 | 11 | Z | Webhook signature verification, four-field error taxonomy | 6h | **done** |
 | **P3** | | **Polish** | **~6h** | |
-| 12 | AK | `/help` page from the frozen contract | 3h | |
+| 12 | AK | `/help` page from the frozen contract | 3h | **done** |
 | 13 | AL | Misleading labels and the confusion matrix | 2h | |
 | 14 | AM | Read-only config panel | 1h | |
 | 15 | AN | Redesign the record drawer, and show real time against simulated time | 3h | **done** #110 |
@@ -795,8 +795,17 @@ or provider chain. Full reasoning in `docs/DECISIONS.md`.
 ## P3
 
 ### Unit AK: `/help` page
-`docs/API_GATEWAY.md` is already a complete frozen contract with every
-endpoint, shape and closed enum vocabulary. This is assembly, not authorship.
+
+**Resolved 2026-09-03.** `GET /v1/help` assembles the frozen contract into
+one machine-readable list (method, path, auth, one sentence), unauthenticated
+so a caller without a key yet can discover which routes need one. Assembled
+by hand from `docs/API_GATEWAY.md` rather than reflected off the router,
+because the wire contract and the Go routing table are not the same thing to
+describe; a route added to one without the other is now a documented bug in
+whichever was missed. Three tests: no auth required, every documented route
+present with a non-empty description and auth note, and every `/v1/demo/*`
+row's auth note names `DEMO_CONTROLS_ENABLED` rather than presenting demo
+routes as unconditionally available.
 
 ### Unit AL: misleading labels
 - **"In flight / lost (40.2%)"** on the recovery bar while the In Flight tile

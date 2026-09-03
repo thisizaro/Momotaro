@@ -1106,8 +1106,10 @@ ordered by value per hour. Detail for each is in
       payment-downtime webhooks; Unit Z webhook signature verification and
       the four-field error taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`,
       `docs/DEMO_READINESS.md`
-- [ ] **P3, ~6h.** AK `/help` page from the frozen contract; AL misleading
-      labels and the partial confusion matrix; AM read-only config panel
+- [ ] **P3, ~6h.** AK `/help` page from the frozen contract, **done**
+      2026-09-03: `GET /v1/help` assembles docs/API_GATEWAY.md into one
+      unauthenticated JSON list; AL misleading labels and the partial
+      confusion matrix; AM read-only config panel
       → `docs/DEMO_READINESS.md`
 
 ## Phase 6: Load testing & performance validation
