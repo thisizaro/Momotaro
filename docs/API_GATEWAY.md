@@ -802,6 +802,18 @@ Response:
 }
 ```
 
+**Content negotiated.** A browser's `Accept` header lists `text/html`
+first, and gets a rendered page instead: the same fifteen routes grouped
+under this document's own headings, click a row to expand its full
+description and auth requirement, a FastAPI-`/docs`-shaped page rather than
+raw JSON, built with a native `<details>`/`<summary>` accordion so it needs
+no JavaScript. `curl`'s default `Accept: */*`, an explicit
+`Accept: application/json`, or no `Accept` header at all each keep getting
+the JSON above; only an explicit preference for `text/html` renders the
+page. `services/api-gateway/internal/httpapi/help_page.go`'s route grouping
+is built from the same `helpRoutes` slice the JSON response serializes, so
+the two representations cannot drift apart.
+
 `method` is `GET`, `POST` or `WS`. `path` is the exact route template,
 `{param}` placeholders included, matching this document's own headings.
 `auth` is a short prose description of what the route requires, not a
