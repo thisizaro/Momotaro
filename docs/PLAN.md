@@ -995,6 +995,31 @@ ordered by value per hour. Detail for each is in
       that repeats the immediately previous entry's rationale verbatim,
       keeping it when it differs or when the repeat is not consecutive →
       `docs/DEMO_READINESS.md` Unit AO, `docs/DECISIONS.md` 2026-09-02.
+- [x] **[FRONTEND] Unit AP: restore information density to the timeline.**
+      Added 2026-09-03 after the user reviewed Unit AO's shipped per-record
+      Gantt directly and rejected it as the default: "too much scrolling and
+      so gapped... the initial view of the last one was better, it gave a
+      better idea in one view". `HistoryTimeline` now opens on a Compact
+      view, one fixed-height row per bucket with jittered points (Unit AH's
+      original layout, recovered from git history rather than reinvented),
+      so the chart's height never depends on record count and needs no
+      scrolling at typical batch density (80-100 records, 7 buckets). Unit
+      AO's actual fixes are kept, not reverted: the neutral connector
+      colour, the caption contrast fix, click-a-bucket-to-isolate,
+      click-a-legend-outcome-to-filter (composing), hover-to-highlight, and
+      the filter chips. Unit AO's per-record layout survives as an opt-in
+      "Per-record" toggle beside "Compact", reached deliberately rather than
+      shown first, which is what the user suggested directly ("an option to
+      see the gantt chart"). Search was added (record id or amount, both
+      substring-matched against what the drawer and this chart already
+      display), narrowing the view to the match through the same isolate
+      mechanism the other filters use, with an honest empty state naming
+      the query when nothing matches. `amountRadius`
+      (`web/src/lib/timelineGeometry.ts`) gained optional bounds parameters
+      so Compact's taller row and Per-record's thin sub-row each get a
+      marker scale tuned to their own row height rather than sharing one.
+      No backend change was needed. → `docs/DEMO_READINESS.md` Unit AP,
+      `docs/DECISIONS.md` 2026-09-03.
 - [x] **Unit AI: route LLM calls by confidence, keep `LLM_SAMPLE_RATE` as a
       ceiling, and surface quota exhaustion.** Done 2026-09-03. `clients.go`
       now always asks the deterministic rules engine first

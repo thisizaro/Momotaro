@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { HistoryTimeline } from '@/components/HistoryTimeline';
 import { BUCKET_COLORS } from '@/lib/format';
+import { TIMELINE_BUCKETS, TIMELINE_ROW_HEIGHT } from '@/lib/timelineGeometry';
 import type { RecordSummary } from '@/types';
 
 afterEach(cleanup);
@@ -144,28 +145,59 @@ describe('HistoryTimeline', () => {
 });
 
 /**
- * Unit AO (docs/DEMO_READINESS.md): one sub-row per record so a dense
- * bucket's connector lines no longer merge into a solid band, a neutral
- * connector colour so the state colour on the marker is the only
- * meaningful hue, readable legend contrast, and click-to-filter on both
- * the bucket row and the outcome legend, composing together.
+ * Unit AP (docs/DEMO_READINESS.md), after direct user review of Unit AO's
+ * per-record Gantt: "too much scrolling and so gapped... the initial view of
+ * the last one was better, it gave a better idea in one view". The compact,
+ * one-row-per-bucket layout Unit AH originally shipped is the default again.
+ * What Unit AO added stays: the neutral connector colour, the caption
+ * contrast fix, click-to-isolate a bucket, click-to-filter an outcome,
+ * hover-to-highlight, and the filter chips. What changes is that these now
+ * apply to a fixed-height, always-fits, jittered single row per bucket
+ * rather than a per-record sub-row band, and the per-record view (Unit AO's
+ * layout) survives as an opt-in "Per-record" mode, not the default.
  */
-describe('HistoryTimeline: per-record rows, neutral connectors, contrast', () => {
-  it('gives every record in a bucket its own sub-row so overlapping lines do not merge', () => {
-    render(
-      <HistoryTimeline
-        records={[
-          record({ record_id: 'a', bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT', first_action_at: '2026-08-29T14:00:00Z', last_action_at: '2026-08-29T14:10:00Z' }),
-          record({ record_id: 'b', bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT', first_action_at: '2026-08-29T14:01:00Z', last_action_at: '2026-08-29T14:09:00Z' }),
-          record({ record_id: 'c', bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT', first_action_at: '2026-08-29T14:02:00Z', last_action_at: '2026-08-29T14:08:00Z' }),
-        ]}
-        onSelect={vi.fn()}
-      />,
+describe('HistoryTimeline: compact view is the default (Unit AP)', () => {
+  it('opens on the Compact view, not Per-record', () => {
+    render(<HistoryTimeline records={[record()]} onSelect={vi.fn()} />);
+    expect(screen.getByTestId('view-toggle-compact')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('view-toggle-gantt')).toHaveAttribute('aria-selected', 'false');
+  });
+
+  it('gives every bucket exactly one row, at a fixed height that does not grow with record count', () => {
+    const many = Array.from({ length: 90 }, (_, i) =>
+      record({
+        record_id: `rec-${i}`,
+        bucket: TIMELINE_BUCKETS[i % TIMELINE_BUCKETS.length],
+        first_action_at: '2026-08-29T14:00:00Z',
+        last_action_at: '2026-08-29T14:01:00Z',
+      }),
     );
-    const points = screen.getAllByTestId('history-point');
-    expect(points).toHaveLength(3);
-    const cys = points.map((g) => g.querySelector('circle')!.getAttribute('cy'));
-    expect(new Set(cys).size).toBe(3);
+    const { container } = render(<HistoryTimeline records={many} onSelect={vi.fn()} />);
+
+    expect(screen.getAllByTestId('bucket-row')).toHaveLength(TIMELINE_BUCKETS.length);
+    // Every one of the 90 records still draws a point: density is handled by
+    // jitter and opacity, not by hiding records or growing the chart.
+    expect(screen.getAllByTestId('history-point')).toHaveLength(90);
+
+    const recordSvg = container.querySelector('svg[data-testid="history-svg"]')!;
+    // Fixed height: one row per bucket, nothing scales with the 90 records.
+    expect(Number(recordSvg.getAttribute('height'))).toBe(TIMELINE_BUCKETS.length * TIMELINE_ROW_HEIGHT);
+  });
+
+  it('needs no scrolling at typical batch density (80-100 records across 7 buckets)', () => {
+    const many = Array.from({ length: 96 }, (_, i) =>
+      record({
+        record_id: `rec-${i}`,
+        bucket: TIMELINE_BUCKETS[i % TIMELINE_BUCKETS.length],
+      }),
+    );
+    render(<HistoryTimeline records={many} onSelect={vi.fn()} />);
+    const body = screen.getByTestId('history-scroll-body');
+    const recordSvg = body.querySelector('svg[data-testid="history-svg"]')!;
+    const contentHeight = Number(recordSvg.getAttribute('height'));
+    // The scrollable wrapper caps at TIMELINE_MAX_BODY_HEIGHT (480); a
+    // compact view's content must sit well under that regardless of count.
+    expect(contentHeight).toBeLessThan(300);
   });
 
   it('draws the connector in a neutral slate, not the bucket colour, so the marker colour carries the meaning', () => {
@@ -286,6 +318,34 @@ describe('HistoryTimeline: per-record rows, neutral connectors, contrast', () =>
     fireEvent.click(point);
     expect(onSelect).toHaveBeenCalledWith('rec-99');
   });
+});
+
+/**
+ * The per-record Gantt layout Unit AO built is not gone, it is opt-in: Unit
+ * AP's "Per-record" toggle switches HistoryTimeline into exactly that
+ * layout, one sub-row per record, a capped and internally-scrolling record
+ * area for a dense bucket. Reached deliberately, never shown first.
+ */
+describe('HistoryTimeline: per-record Gantt view is opt-in (Unit AP)', () => {
+  it('switches into a per-record sub-row layout when Per-record is selected', () => {
+    render(
+      <HistoryTimeline
+        records={[
+          record({ record_id: 'a', bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT', first_action_at: '2026-08-29T14:00:00Z', last_action_at: '2026-08-29T14:10:00Z' }),
+          record({ record_id: 'b', bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT', first_action_at: '2026-08-29T14:01:00Z', last_action_at: '2026-08-29T14:09:00Z' }),
+          record({ record_id: 'c', bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT', first_action_at: '2026-08-29T14:02:00Z', last_action_at: '2026-08-29T14:08:00Z' }),
+        ]}
+        onSelect={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('view-toggle-gantt'));
+    expect(screen.getByTestId('view-toggle-gantt')).toHaveAttribute('aria-selected', 'true');
+
+    const points = screen.getAllByTestId('history-point');
+    expect(points).toHaveLength(3);
+    const cys = points.map((g) => g.querySelector('circle')!.getAttribute('cy'));
+    expect(new Set(cys).size).toBe(3);
+  });
 
   it('caps the record area height and scrolls internally rather than growing unboundedly', () => {
     const many = Array.from({ length: 40 }, (_, i) =>
@@ -297,8 +357,86 @@ describe('HistoryTimeline: per-record rows, neutral connectors, contrast', () =>
       }),
     );
     render(<HistoryTimeline records={many} onSelect={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('view-toggle-gantt'));
     const body = screen.getByTestId('history-scroll-body');
     expect(body.style.maxHeight).not.toBe('');
     expect(body.style.overflowY).toBe('auto');
+  });
+
+  it('returns to the fixed-height compact layout when Compact is clicked again', () => {
+    const many = Array.from({ length: 40 }, (_, i) =>
+      record({
+        record_id: `r${i}`,
+        bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT',
+      }),
+    );
+    const { container } = render(<HistoryTimeline records={many} onSelect={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('view-toggle-gantt'));
+    fireEvent.click(screen.getByTestId('view-toggle-compact'));
+    expect(screen.getByTestId('view-toggle-compact')).toHaveAttribute('aria-selected', 'true');
+    const recordSvg = container.querySelector('svg[data-testid="history-svg"]')!;
+    expect(Number(recordSvg.getAttribute('height'))).toBe(TIMELINE_BUCKETS.length * TIMELINE_ROW_HEIGHT);
+  });
+});
+
+/**
+ * Search (Unit AP): the user asked for it directly ("we could have added...
+ * or search a specific entry"). Matches a record's id (substring, so a short
+ * prefix like the table's `f43f0a35` works) or its amount in rupees
+ * (substring on the digits, so "1235" finds a ₹1,235 record). Narrows the
+ * view to the match, the same isolate mechanism bucket/outcome filters
+ * already use, and is honest when nothing matches.
+ */
+describe('HistoryTimeline: search (Unit AP)', () => {
+  const searchRecords: RecordSummary[] = [
+    record({ record_id: 'f43f0a35', amount_paise: 123456, bucket: 'ROOT_CAUSE_BUCKET_TRANSIENT_BANK' }),
+    record({ record_id: '9c11bd02', amount_paise: 999900, bucket: 'ROOT_CAUSE_BUCKET_HARD_DECLINE' }),
+    record({ record_id: 'aa22cc33', amount_paise: 50000, bucket: 'ROOT_CAUSE_BUCKET_ABANDONMENT' }),
+  ];
+
+  it('matches on a record id prefix and narrows the view to it', () => {
+    render(<HistoryTimeline records={searchRecords} onSelect={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('timeline-search-input'), { target: { value: 'f43f' } });
+    expect(screen.getAllByTestId('history-point')).toHaveLength(1);
+    expect(screen.getByTestId('history-point')).toHaveAttribute('data-record-id', 'f43f0a35');
+    expect(screen.getByTestId('active-filter-search')).toHaveTextContent('f43f');
+  });
+
+  it('matches on amount (rupees) as well as id', () => {
+    render(<HistoryTimeline records={searchRecords} onSelect={vi.fn()} />);
+    // amount_paise 123456 -> ₹1,235, so "1235" should find it by amount alone.
+    fireEvent.change(screen.getByTestId('timeline-search-input'), { target: { value: '1235' } });
+    expect(screen.getAllByTestId('history-point')).toHaveLength(1);
+    expect(screen.getByTestId('history-point')).toHaveAttribute('data-record-id', 'f43f0a35');
+  });
+
+  it('composes with an active bucket filter', () => {
+    render(<HistoryTimeline records={searchRecords} onSelect={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('timeline-search-input'), { target: { value: 'a' } });
+    // "a" alone would match more than one id; narrow further with a bucket isolate.
+    fireEvent.click(screen.getByText('Abandonment').closest('button')!);
+    expect(screen.getAllByTestId('history-point')).toHaveLength(1);
+    expect(screen.getByTestId('history-point')).toHaveAttribute('data-record-id', 'aa22cc33');
+  });
+
+  it('shows an honest empty state naming the query when nothing matches, and clears via the chip', () => {
+    render(<HistoryTimeline records={searchRecords} onSelect={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('timeline-search-input'), { target: { value: 'zzzz' } });
+    expect(screen.queryAllByTestId('history-point')).toHaveLength(0);
+    expect(screen.getByText(/no records match/i)).toBeTruthy();
+    expect(screen.getByText(/matches "zzzz"/)).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('active-filter-search'));
+    expect((screen.getByTestId('timeline-search-input') as HTMLInputElement).value).toBe('');
+    expect(screen.getAllByTestId('history-point')).toHaveLength(3);
+  });
+
+  it('clears via "Clear filters, show everything" alongside bucket/outcome filters', () => {
+    render(<HistoryTimeline records={searchRecords} onSelect={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('timeline-search-input'), { target: { value: 'f43f' } });
+    expect(screen.getAllByTestId('history-point')).toHaveLength(1);
+    fireEvent.click(screen.getByTestId('clear-filters'));
+    expect((screen.getByTestId('timeline-search-input') as HTMLInputElement).value).toBe('');
+    expect(screen.getAllByTestId('history-point')).toHaveLength(3);
   });
 });
