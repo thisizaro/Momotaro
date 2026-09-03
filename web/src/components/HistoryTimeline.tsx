@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { FilterX, History } from 'lucide-react';
+import { FilterX, History, Search } from 'lucide-react';
 import {
   BUCKET_COLORS,
   BUCKET_LABELS,
@@ -17,10 +17,13 @@ import {
   TIMELINE_BUCKETS,
   TIMELINE_LABEL_WIDTH,
   TIMELINE_MAX_BODY_HEIGHT,
+  TIMELINE_ROW_HEIGHT,
   TIMELINE_SUB_ROW_HEIGHT,
   TIMELINE_TICK_COUNT,
   amountRadius,
+  amountRadiusCompact,
   clamp01,
+  jitter,
 } from '@/lib/timelineGeometry';
 import { EmptyState } from '@/components/EmptyState';
 import type { RecordState, RecordSummary, RootCauseBucket } from '@/types';
@@ -30,10 +33,12 @@ interface Props {
   onSelect: (id: string) => void;
 }
 
-// Neutral connector colour (Unit AO, docs/DEMO_READINESS.md): bucket
-// identity is already carried by the row grouping and its label, so the
-// connector no longer repeats it. Leaves the state colour on the marker as
-// the only meaningful hue in the plot.
+type ViewMode = 'compact' | 'gantt';
+
+// Neutral connector colour (kept from Unit AO, docs/DEMO_READINESS.md):
+// bucket identity is already carried by the row grouping and its label, so
+// the connector no longer repeats it. Leaves the state colour on the marker
+// as the only meaningful hue in the plot, in both view modes.
 const CONNECTOR_COLOR = '#cbd5e1';
 const CONNECTOR_COLOR_HOVER = '#64748b';
 
@@ -45,6 +50,23 @@ function sortRecords(records: RecordSummary[]): RecordSummary[] {
 }
 
 /**
+ * Whether a record matches a search query: on its id (substring, so a short
+ * prefix like the records table's `f43f0a35` works) or on its amount in
+ * rupees (substring on the digits only, so "1235" finds a ₹1,235 record
+ * without the reader having to type the currency symbol or a comma). Amount
+ * is the display unit, not paise, because that is what a person reads off
+ * the chart and the drawer; matching on raw paise would ask them to do
+ * arithmetic first.
+ */
+function matchesQuery(r: RecordSummary, trimmedQuery: string, queryDigits: string): boolean {
+  if (trimmedQuery === '') return true;
+  if (r.record_id.toLowerCase().includes(trimmedQuery)) return true;
+  if (queryDigits === '') return false;
+  const rupees = String(Math.round(r.amount_paise / 100));
+  return rupees.includes(queryDigits);
+}
+
+/**
  * What actually happened: every record the agent has touched at least once,
  * plotted from when it was first classified (first_action_at) to the most
  * recent thing that happened to it (last_action_at). Unlike LiveTimeline,
@@ -52,21 +74,41 @@ function sortRecords(records: RecordSummary[]): RecordSummary[] {
  * exactly what fills last_action_at in for the last records still moving
  * (docs/DEMO_READINESS.md Unit AH).
  *
- * Unit AO gave every record its own sub-row within its bucket band (rather
- * than one shared row per bucket) so a dense bucket's connector lines no
- * longer merge into a solid band, and layered click-to-filter on top:
- * clicking a bucket row isolates it (the other buckets collapse to a
- * one-line summary rather than disappearing, so switching focus stays a
- * single click), clicking an outcome in the legend filters to it, and both
- * compose. Filter state is local and resets whenever this component
- * remounts, which TimelineView already does on a batch switch (keyed on
- * the batch id) and for free every time the Live/History toggle swaps
- * component type.
+ * Unit AP (docs/DEMO_READINESS.md), reversing part of Unit AO after direct
+ * user review: "too much scrolling and so gapped... the initial view of the
+ * last one was better, it gave a better idea in one view". Unit AO's
+ * per-record Gantt layout (one thin sub-row per record) gave per-record
+ * legibility nobody asked for, at the cost of the whole-batch read at a
+ * glance that this panel exists for. So the compact view Unit AH originally
+ * shipped, one fixed-height row per bucket with jittered points, is the
+ * default again: `view` starts at 'compact' and every bucket's row is
+ * TIMELINE_ROW_HEIGHT regardless of how many records land in it, so the
+ * chart's height never depends on batch size and never needs to scroll at
+ * typical density (80-100 records across 7 buckets).
+ *
+ * What Unit AO added is kept, not reverted: the neutral connector colour
+ * (state, not bucket, is the one meaningful hue), the caption contrast fix,
+ * click-a-bucket-to-isolate, click-a-legend-outcome-to-filter (composing
+ * with each other), hover-to-highlight, and the filter chips with a "clear
+ * filters" affordance. Unit AO's per-record layout itself is not gone
+ * either: it is the 'gantt' view, reached through the "Per-record" toggle
+ * next to "Compact", exactly the opt-in the user asked for ("clicking on a
+ * specific entry will open the record drawer and there will be an option to
+ * see the gantt chart"). Both views share the same filter/search state, so
+ * switching views never loses a reader's place.
+ *
+ * Unit AP also adds search, the other thing the user asked for directly
+ * ("or search a specific entry"): a record id or amount narrows the view to
+ * the match, through the same isolate mechanism the bucket and outcome
+ * filters already use, so a match is unambiguous and a non-match is an
+ * honest empty state rather than a silently blank chart.
  */
 export function HistoryTimeline({ records, onSelect }: Props) {
   const [bucketFilter, setBucketFilter] = useState<RootCauseBucket | null>(null);
   const [stateFilter, setStateFilter] = useState<RecordState | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [view, setView] = useState<ViewMode>('compact');
+  const [query, setQuery] = useState('');
 
   // Anything the agent has acted on at least once. RECORD_STATE_NEW records
   // that just landed and haven't been classified yet have no
@@ -77,19 +119,28 @@ export function HistoryTimeline({ records, onSelect }: Props) {
   // The legend always lists every state present anywhere in the run,
   // regardless of the current filters, so it stays a stable reference
   // rather than shifting under the reader as they filter, and so a state
-  // absent from an isolated bucket is still one click away (which is also
-  // how a filtered-empty result becomes reachable at all).
+  // absent from an isolated bucket (or a search match) is still one click
+  // away.
   const statesPresent = useMemo(
     () => STATE_ORDER.filter((s) => acted.some((r) => r.current_state === s)),
     [acted],
   );
 
-  // Bucket counts and drawn records both honour the outcome filter (so a
-  // collapsed bucket's count reflects it too), independent of which bucket
-  // is isolated.
+  const trimmedQuery = query.trim().toLowerCase();
+  const queryDigits = trimmedQuery.replace(/[^0-9]/g, '');
+  const searchActive = trimmedQuery !== '';
+
+  const searchScoped = useMemo(
+    () => (searchActive ? acted.filter((r) => matchesQuery(r, trimmedQuery, queryDigits)) : acted),
+    [acted, searchActive, trimmedQuery, queryDigits],
+  );
+
+  // Bucket counts and drawn records honour search and the outcome filter
+  // (so a collapsed bucket's count reflects both), independent of which
+  // bucket is isolated.
   const stateScoped = useMemo(
-    () => (stateFilter ? acted.filter((r) => r.current_state === stateFilter) : acted),
-    [acted, stateFilter],
+    () => (stateFilter ? searchScoped.filter((r) => r.current_state === stateFilter) : searchScoped),
+    [searchScoped, stateFilter],
   );
 
   const byBucket = useMemo(() => {
@@ -102,8 +153,8 @@ export function HistoryTimeline({ records, onSelect }: Props) {
   }, [stateScoped]);
 
   // What's actually drawn: every record in the isolated bucket if one is
-  // set, otherwise every bucket's records (matching the outcome filter
-  // either way).
+  // set, otherwise every bucket's records (matching search/outcome either
+  // way).
   const visibleRecords = useMemo(() => {
     if (bucketFilter) return byBucket.get(bucketFilter) ?? [];
     return stateScoped;
@@ -122,12 +173,13 @@ export function HistoryTimeline({ records, onSelect }: Props) {
   const clearFilters = () => {
     setBucketFilter(null);
     setStateFilter(null);
+    setQuery('');
   };
 
   // Domain and marker scale come from the full unfiltered run, not the
   // current filter: filtering narrows which records draw, it never
   // rescales the axis or shrinks what "biggest amount" means, so a judge
-  // never loses their bearings switching filters.
+  // never loses their bearings switching filters or views.
   const firstTimes = acted.map((r) => new Date(r.first_action_at).getTime());
   const lastTimes = acted.map((r) => new Date(r.last_action_at || r.first_action_at).getTime());
   const rawStart = Math.min(...firstTimes);
@@ -157,28 +209,38 @@ export function HistoryTimeline({ records, onSelect }: Props) {
     };
   });
 
-  // Band heights: the isolated bucket (or every bucket, when none is
-  // isolated) gets one sub-row per record; every other bucket collapses to
-  // a single compact row, just enough to stay visible and clickable. This
-  // is what keeps "isolate a bucket" from being a one-way door: the other
-  // six buckets never leave the label column, they just get out of the way.
+  const compact = view === 'compact';
+
+  // Band heights: in Compact, every bucket's row is a fixed
+  // TIMELINE_ROW_HEIGHT regardless of record count or filter, which is what
+  // makes "no scrolling at typical batch size" a structural guarantee
+  // rather than a hope. In Per-record (Gantt), the isolated bucket (or
+  // every bucket, when none is isolated) gets one sub-row per record and
+  // every other bucket collapses to a single compact row, matching Unit
+  // AO's original behaviour.
   const bandHeights = TIMELINE_BUCKETS.map((bucket) => {
+    if (compact) return TIMELINE_ROW_HEIGHT;
     const expanded = !bucketFilter || bucketFilter === bucket;
     const count = byBucket.get(bucket)?.length ?? 0;
     return expanded ? Math.max(count, 1) * TIMELINE_SUB_ROW_HEIGHT : TIMELINE_SUB_ROW_HEIGHT;
   });
+  const bandGap = compact ? 0 : TIMELINE_BUCKET_GAP;
 
   const bandOffsets: number[] = [];
   let cursor = 0;
   TIMELINE_BUCKETS.forEach((_, i) => {
     bandOffsets.push(cursor);
-    cursor += bandHeights[i] + (i < TIMELINE_BUCKETS.length - 1 ? TIMELINE_BUCKET_GAP : 0);
+    cursor += bandHeights[i] + (i < TIMELINE_BUCKETS.length - 1 ? bandGap : 0);
   });
   const contentHeight = cursor;
 
   const totalActed = acted.length;
   const visibleCount = visibleRecords.length;
-  const filtersActive = bucketFilter !== null || stateFilter !== null;
+  const filtersActive = bucketFilter !== null || stateFilter !== null || searchActive;
+
+  const noMatchDescription = searchActive
+    ? `No acted-on record's id or amount matches "${query.trim()}". Clear the search to see everything again.`
+    : 'Nothing acted-on falls under this combination of bucket and outcome. Clear the filter above to see everything again.';
 
   return (
     <div>
@@ -191,8 +253,62 @@ export function HistoryTimeline({ records, onSelect }: Props) {
         <p className="text-xs text-slate-500">circle size = amount at risk</p>
       </div>
 
+      <div className="flex items-center justify-between gap-3 mt-2">
+        <div className="relative flex-shrink-0">
+          <Search className="w-3.5 h-3.5 text-slate-300 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            data-testid="timeline-search-input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search id or amount"
+            className="text-xs border border-slate-200 rounded-lg pl-7 pr-2.5 py-1 w-44 focus:outline-none focus:ring-1 focus:ring-slate-300"
+          />
+        </div>
+
+        <div className="inline-flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5" role="tablist" aria-label="Timeline detail">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={compact}
+            data-testid="view-toggle-compact"
+            title="One row per bucket, everything visible at once"
+            onClick={() => setView('compact')}
+            className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
+              compact ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            Compact
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!compact}
+            data-testid="view-toggle-gantt"
+            title="One row per record (Gantt-style), for following a single record's journey"
+            onClick={() => setView('gantt')}
+            className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
+              !compact ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            Per-record
+          </button>
+        </div>
+      </div>
+
       {filtersActive && (
-        <div className="flex flex-wrap items-center gap-2 mt-1.5">
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          {searchActive && (
+            <button
+              type="button"
+              data-testid="active-filter-search"
+              onClick={() => setQuery('')}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 text-white text-[11px] font-medium hover:bg-slate-700 transition-colors"
+            >
+              &quot;{query.trim()}&quot;
+              <span aria-hidden="true">×</span>
+            </button>
+          )}
           {bucketFilter && (
             <button
               type="button"
@@ -228,9 +344,9 @@ export function HistoryTimeline({ records, onSelect }: Props) {
 
       {visibleRecords.length === 0 ? (
         <EmptyState
-          icon={FilterX}
+          icon={searchActive ? Search : FilterX}
           title="No records match this filter"
-          description="Nothing acted-on falls under this combination of bucket and outcome. Clear the filter above to see everything again."
+          description={noMatchDescription}
           size="inline"
         />
       ) : (
@@ -276,40 +392,53 @@ export function HistoryTimeline({ records, onSelect }: Props) {
               </div>
 
               <div className="flex-1 relative min-w-0" style={{ height: contentHeight }}>
-                <svg width="100%" height={contentHeight} className="block overflow-visible">
+                <svg
+                  data-testid="history-svg"
+                  width="100%"
+                  height={contentHeight}
+                  className="block overflow-visible"
+                >
                   {/* Band separators */}
                   {TIMELINE_BUCKETS.slice(0, -1).map((bucket, i) => (
                     <line
                       key={bucket}
                       x1="0"
                       x2="100%"
-                      y1={bandOffsets[i] + bandHeights[i] + TIMELINE_BUCKET_GAP / 2}
-                      y2={bandOffsets[i] + bandHeights[i] + TIMELINE_BUCKET_GAP / 2}
+                      y1={bandOffsets[i] + bandHeights[i] + bandGap / 2}
+                      y2={bandOffsets[i] + bandHeights[i] + bandGap / 2}
                       stroke="#f1f5f9"
                       strokeWidth={1}
                     />
                   ))}
 
-                  {/* Records, one sub-row per record within its bucket band:
-                      a neutral connector from first action to last (Unit AO:
-                      no longer bucket-coloured, so it never competes with
-                      the state colour on the marker), a marker at the last
-                      action, sized by amount, coloured by current
+                  {/* Records: in Compact, every record in a bucket shares
+                      that bucket's one row, jittered vertically so a dense
+                      bucket reads as a cloud of dots rather than a single
+                      overlapping stack. In Per-record (Gantt), each record
+                      gets its own sub-row instead. Either way: a neutral
+                      connector from first action to last, a marker at the
+                      last action, sized by amount, coloured by current
                       state/outcome. Only the isolated bucket (or every
                       bucket, when none is isolated) draws its records; a
                       collapsed bucket draws nothing but its label row. */}
                   {TIMELINE_BUCKETS.map((bucket, i) => {
                     const expanded = !bucketFilter || bucketFilter === bucket;
                     if (!expanded) return null;
-                    const rowRecords = sortRecords(byBucket.get(bucket) ?? []);
                     const bandTop = bandOffsets[i];
+                    const bandHeight = bandHeights[i];
+                    const rawRecords = byBucket.get(bucket) ?? [];
+                    const rowRecords = compact ? rawRecords : sortRecords(rawRecords);
                     return rowRecords.map((r, rowIdx) => {
                       const firstMs = new Date(r.first_action_at).getTime();
                       const lastMs = r.last_action_at ? new Date(r.last_action_at).getTime() : firstMs;
                       const x1 = pctFor(firstMs);
                       const x2 = pctFor(lastMs);
-                      const cy = bandTop + rowIdx * TIMELINE_SUB_ROW_HEIGHT + TIMELINE_SUB_ROW_HEIGHT / 2;
-                      const radius = amountRadius(r.amount_paise, maxAmountPaise);
+                      const cy = compact
+                        ? bandTop + bandHeight / 2 + jitter(r.record_id) * (bandHeight / 2 - 8)
+                        : bandTop + rowIdx * TIMELINE_SUB_ROW_HEIGHT + TIMELINE_SUB_ROW_HEIGHT / 2;
+                      const radius = compact
+                        ? amountRadiusCompact(r.amount_paise, maxAmountPaise)
+                        : amountRadius(r.amount_paise, maxAmountPaise);
                       const isHovered = hoveredId === r.record_id;
                       const isDimmed = hoveredId !== null && !isHovered;
                       const startedLabel = formatTime(r.first_action_at);
@@ -360,8 +489,8 @@ export function HistoryTimeline({ records, onSelect }: Props) {
           </div>
 
           {/* Axis: pinned below the scrollable record area rather than
-              inside it, so the time reference stays on screen while a tall
-              unfiltered view scrolls. */}
+              inside it, so the time reference stays on screen if a Gantt
+              view is tall enough to scroll. */}
           <div className="flex">
             <div className="flex-shrink-0" style={{ width: TIMELINE_LABEL_WIDTH }} />
             <div className="flex-1 relative min-w-0 overflow-hidden" style={{ height: TIMELINE_AXIS_HEIGHT }}>

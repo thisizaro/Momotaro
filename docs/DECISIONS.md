@@ -2366,3 +2366,34 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   Kept deliberately quiet in tone (no exclamation marks, tested for it) per
   the unit's own instruction that this is "a statement about method, not a
   warning".
+- 2026-09-03: **The historical timeline's default layout is the compact,
+  one-row-per-bucket view (Unit AH's original), not the per-record Gantt
+  view Unit AO introduced.** Reversed after the user reviewed Unit AO
+  directly and said, close to verbatim: "it is too much scrolling and so
+  gapped... even if congested the initial view of the last one was better,
+  it gave a better idea in one view... we could have added selection
+  options or switches to select a specific category or search a specific
+  entry... clicking on a specific entry will open the record drawer and
+  there will be an option to see the gantt chart, something like that
+  could have been better... but not a big portion with all those gapped
+  lines". The tradeoff Unit AO made (per-record legibility, purchased with
+  scrolling and lost at-a-glance density) was approved without checking it
+  against what the panel is actually for: a whole-batch read in one view,
+  which is what a compact bucket row gives and a tall per-record Gantt does
+  not. Unit AO's actual fixes (the neutral connector colour so the marker
+  state colour is the only meaningful hue, the caption contrast fix, and
+  the click-to-isolate/click-to-filter/hover-to-highlight interactivity)
+  were not reverted, only the row layout they sit on top of. The per-record
+  Gantt view still exists, reached through a "Per-record" toggle the user
+  explicitly suggested ("an option to see the gantt chart"), so nobody
+  loses that legibility, it is just no longer the first thing anyone sees.
+  Overplotting in the compact view (a dense bucket's dots overlapping) is
+  accepted rather than solved by spreading records out again, per the same
+  feedback ("even if congested... it gave a better idea"); jitter and
+  opacity mitigate it without growing the row. Search (record id or amount,
+  substring match) was added in the same unit since the user asked for it
+  directly and it did not exist. If a future reviewer is tempted to make
+  the per-record view the default again to fix overplotting, read this
+  entry and the direct quote above first: that tradeoff was already tried,
+  reviewed by the person the panel is for, and rejected.
+  `docs/DEMO_READINESS.md` Unit AP.

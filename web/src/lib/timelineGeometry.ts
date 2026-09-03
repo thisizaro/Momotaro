@@ -74,10 +74,27 @@ export function clamp01(n: number): number {
  * a batch never touches its neighbour's row, while the smallest amount
  * still reads as a visible dot rather than a speck.
  */
-export function amountRadius(amountPaise: number, maxAmountPaise: number): number {
-  const minR = 2.5;
-  const maxR = 5.5;
+export function amountRadius(
+  amountPaise: number,
+  maxAmountPaise: number,
+  minR: number = 2.5,
+  maxR: number = 5.5,
+): number {
   if (maxAmountPaise <= 0) return minR;
   const frac = clamp01(amountPaise / maxAmountPaise);
   return minR + Math.sqrt(frac) * (maxR - minR);
+}
+
+/**
+ * Same perceptual scaling as amountRadius, but with bounds tuned to
+ * TIMELINE_ROW_HEIGHT (34px) rather than TIMELINE_SUB_ROW_HEIGHT (13px).
+ * Unit AP (docs/DEMO_READINESS.md) restored HistoryTimeline's compact,
+ * one-row-per-bucket layout (Unit AH's original) as the default, with the
+ * per-record sub-row layout (Unit AO) kept as an opt-in "Per-record" view.
+ * A compact row is 34px tall, so it can carry a bigger marker than a 13px
+ * sub-row without crowding it: these are Unit AH's original bounds
+ * (3.5-9px), restored rather than reinvented.
+ */
+export function amountRadiusCompact(amountPaise: number, maxAmountPaise: number): number {
+  return amountRadius(amountPaise, maxAmountPaise, 3.5, 9);
 }

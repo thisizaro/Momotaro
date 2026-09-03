@@ -27,6 +27,13 @@ Ordered by what decides whether this wins. **P0 first, top to bottom.**
 > dashboard explains rather than blanks the accuracy/baseline panels for a
 > batch with no ground truth. S, AH, AI and AJ are all done. Detail under
 > P1 below.
+>
+> **Unit AP added 2026-09-03, done.** Not in the original list either: the
+> user reviewed Unit AO's shipped per-record Gantt directly and rejected it
+> as the default ("too much scrolling and so gapped"). The compact,
+> one-row-per-bucket view is the default again; Unit AO's per-record layout
+> is now an opt-in "Per-record" toggle, and search was added. Detail after
+> Unit AO below.
 
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
@@ -52,6 +59,8 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 13 | AL | Misleading labels and the confusion matrix | 2h | |
 | 14 | AM | Read-only config panel | 1h | |
 | 15 | AN | Redesign the record drawer, and show real time against simulated time | 3h | **done** #110 |
+| 16 | AO | Timeline overplotting, filtering and interactivity | 4h | **done** #112 |
+| 17 | AP | Restore the compact timeline as the default, add search | 3h | **done** |
 | **Last** | | **Phase 8 rehearsal, non-negotiable** | **~4h** | |
 
 **Explicitly skipped**: Phase 6 load testing, Phase 7 Kubernetes, Unit T
@@ -624,6 +633,99 @@ a non-adjacent earlier entry, still renders.
 No backend change was needed: `RecordSummary` already carried everything
 this unit reads (`first_action_at`, `last_action_at`, `current_state`,
 `bucket`, `amount_paise`).
+
+---
+
+### Unit AP: restore information density to the timeline
+
+**Added 2026-09-03, after the user reviewed Unit AO's shipped per-record
+Gantt directly and rejected it as the default.** Their words, close to
+verbatim: "about the current timeline you did a genuinely great job!! but
+now what we need is a bit of refinement and interactiveness... i dont like
+the current one... it is too much scrolling and so gapped... and I think
+even if congested the initial view of the last one was better it gave a
+better idea in one view... we could have added selection options or
+switches to select a specific category or search a specific entry... or
+clicking on a specific entry will open the record drawer and there will be
+an option to see the gantt chart something like that could have been
+better... but not a big portion with all those gapped lines doesnt look
+good and dont give enough data to the user at one glance".
+
+The tradeoff Unit AO made was the wrong one: per-record legibility nobody
+asked for, purchased with the whole-batch read at a glance that
+`HistoryTimeline` exists to give. A dense bucket's connectors merging into a
+band (the problem Unit AO fixed) is a real cost, but it is a smaller cost
+than needing to scroll past most of a run before seeing all of it.
+
+**Resolved 2026-09-03, not by reverting Unit AO but by changing what sits on
+top of its fixes.** The compact, one-row-per-bucket layout is `HistoryTimeline`'s
+default again, recovered from Unit AH's original implementation in git
+history (`git show <AH commit>:web/src/components/HistoryTimeline.tsx`)
+rather than reinvented from the current file: one fixed-height
+(`TIMELINE_ROW_HEIGHT`, 34px) row per bucket, every acted-on record drawn in
+it and jittered vertically (`jitter()`, `web/src/lib/timelineGeometry.ts`,
+shared with `LiveTimeline`) so a dense bucket reads as a cloud of dots
+rather than one dot hiding the rest. Because a bucket's row height no longer
+depends on how many records are in it, the chart's total height is fixed
+(`TIMELINE_BUCKETS.length * TIMELINE_ROW_HEIGHT`, about 240px, plus the
+axis) regardless of batch size, which is what makes "no scrolling at
+typical batch density" a structural guarantee rather than a hope: a 40 or
+90-record fixture asserts the same rendered SVG height as a 3-record one in
+`HistoryTimeline.test.tsx`.
+
+**What Unit AO built was not thrown away.** Its actual fixes, as opposed to
+its layout, were correct and stay: the connector is still a fixed neutral
+slate (`#cbd5e1`) rather than the bucket colour, so the marker's state
+colour remains the only meaningful hue; the `circle size = amount at risk`
+caption still renders at readable contrast (`text-slate-500`); clicking a
+bucket row still isolates it and clicking again restores every bucket;
+clicking an outcome in the legend still filters to it and composes with an
+active bucket filter; hovering a record still highlights its connector and
+marker while dimming the rest; a filtered-empty combination still renders
+the shared `EmptyState` with the filter chips and a "Clear filters, show
+everything" control staying visible above it. `amountRadius`
+(`web/src/lib/timelineGeometry.ts`) gained optional `minR`/`maxR`
+parameters (defaulting to its existing bounds, so every prior call site is
+unaffected) plus a new `amountRadiusCompact` wrapper that restores Unit
+AH's original 3.5-9px bounds, tuned to the taller 34px compact row rather
+than the 13px sub-row Unit AO's markers were bounded to.
+
+**The per-record Gantt view is not gone, it is opt-in.** A small "Compact /
+Per-record" toggle sits next to the search input, above the chart; clicking
+"Per-record" switches `HistoryTimeline` into exactly Unit AO's original
+layout (one sub-row per record, a bucket's non-isolated siblings collapsed
+to a single row, the record area capped at `TIMELINE_MAX_BODY_HEIGHT` with
+internal scrolling), sharing the same bucket/outcome/search filter state so
+switching views never loses a reader's place. This is the opt-in the user
+suggested directly: "clicking on a specific entry will open the record
+drawer and there will be an option to see the gantt chart, something like
+that could have been better." It defaults to Compact and is never what
+someone sees first.
+
+**Search, the other thing the user asked for directly** ("search a specific
+entry"), matches a record's id (substring, so a short prefix like the
+records table's `f43f0a35` works without typing the whole id) or its amount
+in rupees (substring on the digits, so typing "1235" finds a ₹1,235 record;
+matching in rupees rather than paise because rupees is what a reader sees on
+the chart and in the drawer, not an internal storage unit). A match narrows
+the view to it through the same isolate mechanism the bucket and outcome
+filters already use, composes with them, and renders as a dismissible chip
+alongside the other active filters. A query that matches nothing renders the
+shared `EmptyState` with a description naming the query verbatim
+(`No acted-on record's id or amount matches "<query>". Clear the search to
+see everything again.`), rather than a panel that is silently empty for a
+reason the reader has to guess at.
+
+**Overplotting in the compact view is accepted, not solved by spreading
+records out again**, per the same feedback ("even if congested... it gave a
+better idea in one view"). Jitter and the marker's white stroke keep
+individually dense buckets legible as a cloud rather than a single blob
+without growing the row; a reader who needs to separate two overlapping
+points reaches for the Per-record toggle or search rather than the default
+view trying to do both jobs at once.
+
+No backend change was needed: `RecordSummary` already carried everything
+this unit reads, the same fields Unit AO already read.
 
 ---
 
