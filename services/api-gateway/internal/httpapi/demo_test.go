@@ -58,7 +58,7 @@ func (f *fakeWorldSimulator) InjectPoison(ctx context.Context, in *worldsimv1.In
 }
 
 func newHandlerWithDemo(f *fakeWorldSimulator) *Handler {
-	h := New(&fakeIngestion{}, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0)
+	h := New(&fakeIngestion{}, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0)
 	h.EnableDemoControls(f)
 	return h
 }
@@ -68,7 +68,7 @@ func newHandlerWithDemo(f *fakeWorldSimulator) *Handler {
 // these routes must not exist at all, a 404, not a 401/403. A caller must
 // not be able to tell the surface exists and is merely locked.
 func TestDemoRoutesNotRegisteredWhenDisabled(t *testing.T) {
-	h := New(&fakeIngestion{}, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0).Routes()
+	h := New(&fakeIngestion{}, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0).Routes()
 
 	cases := []struct {
 		method, path string

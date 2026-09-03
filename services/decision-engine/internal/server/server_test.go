@@ -4,17 +4,20 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/thisizaro/Momotaro/internal/platform/logger"
 	commonv1 "github.com/thisizaro/Momotaro/proto/gen/common/v1"
 	decisionenginev1 "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1"
+	"github.com/thisizaro/Momotaro/services/decision-engine/internal/engine"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// fakeResumer stands in for Scheduler.ResumeNudge: this package has no
-// logic of its own beyond request validation and translating that
-// method's result to and from the proto shapes, so a fake is enough here.
+// fakeResumer stands in for Scheduler.ResumeNudge and RecordDowntimeEvent:
+// this package has no logic of its own beyond request validation and
+// translating a result to and from the proto shapes, so a fake is enough
+// here.
 type fakeResumer struct {
 	applied bool
 	state   commonv1.RecordState
@@ -24,11 +27,19 @@ type fakeResumer struct {
 	gotAttemptNumber int
 	gotOutcome       commonv1.Outcome
 	gotFailureCode   string
+
+	downtimeErr error
+	gotDowntime engine.DowntimeEvent
 }
 
 func (f *fakeResumer) ResumeNudge(ctx context.Context, recordID string, attemptNumber int, outcome commonv1.Outcome, failureCode string) (bool, commonv1.RecordState, error) {
 	f.gotRecordID, f.gotAttemptNumber, f.gotOutcome, f.gotFailureCode = recordID, attemptNumber, outcome, failureCode
 	return f.applied, f.state, f.err
+}
+
+func (f *fakeResumer) RecordDowntimeEvent(ctx context.Context, evt engine.DowntimeEvent) error {
+	f.gotDowntime = evt
+	return f.downtimeErr
 }
 
 func TestReportDelayedOutcomeRejectsEmptyRecordID(t *testing.T) {
@@ -130,5 +141,182 @@ func TestReportDelayedOutcomePropagatesResumerError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("ReportDelayedOutcome: want an error, got nil")
+	}
+}
+
+// validDowntimeRequest is Razorpay's own documented payment.downtime.started
+// example (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), already translated into
+// this RPC's flat shape the way the API Gateway would.
+func validDowntimeRequest() *decisionenginev1.ReportDowntimeEventRequest {
+	return &decisionenginev1.ReportDowntimeEventRequest{
+		DowntimeId:    "down_F1Zppa6lcVheSE",
+		Method:        "netbanking",
+		Status:        "started",
+		Scheduled:     false,
+		Severity:      "high",
+		InstrumentKey: "VIJB",
+		BeginUnix:     1591935238,
+		HasEnd:        false,
+	}
+}
+
+func TestReportDowntimeEventRejectsEmptyDowntimeID(t *testing.T) {
+	s := New(&fakeResumer{}, logger.Discard())
+	req := validDowntimeRequest()
+	req.DowntimeId = ""
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("err = %v, want InvalidArgument", err)
+	}
+}
+
+func TestReportDowntimeEventRejectsEmptyMethod(t *testing.T) {
+	s := New(&fakeResumer{}, logger.Discard())
+	req := validDowntimeRequest()
+	req.Method = ""
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("err = %v, want InvalidArgument", err)
+	}
+}
+
+func TestReportDowntimeEventRejectsAnUnrecognisedStatus(t *testing.T) {
+	s := New(&fakeResumer{}, logger.Discard())
+	req := validDowntimeRequest()
+	req.Status = "cancelled" // not one of started/updated/resolved
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("err = %v, want InvalidArgument", err)
+	}
+}
+
+func TestReportDowntimeEventRejectsMissingBegin(t *testing.T) {
+	s := New(&fakeResumer{}, logger.Discard())
+	req := validDowntimeRequest()
+	req.BeginUnix = 0
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("err = %v, want InvalidArgument", err)
+	}
+}
+
+// Accepts every documented severity value without treating the list as
+// exhaustive: an unrecognised one must not be rejected, only passed through
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Y: "do not assume that list is
+// exhaustive; handle an unknown value without crashing").
+func TestReportDowntimeEventAcceptsAnUnrecognisedSeverity(t *testing.T) {
+	fake := &fakeResumer{}
+	s := New(fake, logger.Discard())
+	req := validDowntimeRequest()
+	req.Severity = "critical"
+
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); err != nil {
+		t.Fatalf("ReportDowntimeEvent: %v, want no error for an unrecognised severity", err)
+	}
+	if fake.gotDowntime.Severity != "critical" {
+		t.Errorf("resumer got Severity = %q, want it passed through verbatim", fake.gotDowntime.Severity)
+	}
+}
+
+// begin_unix/end_unix are UNIX SECONDS (docs/PHASE5_5_IMPLEMENTATION.md Unit
+// Y: "getting this wrong is a 1000x error that will look plausible"). This
+// pins the conversion so a future edit that swaps in milliseconds by
+// accident fails loudly here rather than shipping silently.
+func TestReportDowntimeEventConvertsUnixSecondsCorrectly(t *testing.T) {
+	fake := &fakeResumer{}
+	s := New(fake, logger.Discard())
+	req := validDowntimeRequest()
+	req.HasEnd = true
+	req.EndUnix = 1591938838 // one hour after BeginUnix
+
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); err != nil {
+		t.Fatalf("ReportDowntimeEvent: %v", err)
+	}
+	wantBegin := time.Unix(1591935238, 0).UTC()
+	if !fake.gotDowntime.Begin.Equal(wantBegin) {
+		t.Errorf("Begin = %v, want %v", fake.gotDowntime.Begin, wantBegin)
+	}
+	if fake.gotDowntime.End == nil {
+		t.Fatal("End = nil, want a value: HasEnd was true")
+	}
+	wantEnd := time.Unix(1591938838, 0).UTC()
+	if !fake.gotDowntime.End.Equal(wantEnd) {
+		t.Errorf("End = %v, want %v", *fake.gotDowntime.End, wantEnd)
+	}
+	if got, want := fake.gotDowntime.End.Sub(fake.gotDowntime.Begin), time.Hour; got != want {
+		t.Errorf("End - Begin = %v, want exactly %v", got, want)
+	}
+}
+
+// end: null while a downtime is ongoing (docs/PHASE5_5_IMPLEMENTATION.md
+// Unit Y) must become a nil *time.Time, never a zero-value time.Time that
+// looks like a real (and wildly wrong) timestamp.
+func TestReportDowntimeEventLeavesEndNilWhenHasEndIsFalse(t *testing.T) {
+	fake := &fakeResumer{}
+	s := New(fake, logger.Discard())
+
+	if _, err := s.ReportDowntimeEvent(context.Background(), validDowntimeRequest()); err != nil {
+		t.Fatalf("ReportDowntimeEvent: %v", err)
+	}
+	if fake.gotDowntime.End != nil {
+		t.Errorf("End = %v, want nil: this downtime is still ongoing", *fake.gotDowntime.End)
+	}
+}
+
+func TestReportDowntimeEventForwardsEveryFieldToTheResumer(t *testing.T) {
+	fake := &fakeResumer{}
+	s := New(fake, logger.Discard())
+	req := validDowntimeRequest()
+	req.Scheduled = true
+
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); err != nil {
+		t.Fatalf("ReportDowntimeEvent: %v", err)
+	}
+	got := fake.gotDowntime
+	if got.DowntimeID != "down_F1Zppa6lcVheSE" {
+		t.Errorf("DowntimeID = %q", got.DowntimeID)
+	}
+	if got.Method != "netbanking" {
+		t.Errorf("Method = %q", got.Method)
+	}
+	if got.Status != "started" {
+		t.Errorf("Status = %q", got.Status)
+	}
+	if !got.Scheduled {
+		t.Error("Scheduled = false, want true")
+	}
+	if got.Instrument != "VIJB" {
+		t.Errorf("Instrument = %q", got.Instrument)
+	}
+}
+
+func TestReportDowntimeEventReturnsAppliedTrueOnSuccess(t *testing.T) {
+	s := New(&fakeResumer{}, logger.Discard())
+	resp, err := s.ReportDowntimeEvent(context.Background(), validDowntimeRequest())
+	if err != nil {
+		t.Fatalf("ReportDowntimeEvent: %v", err)
+	}
+	if !resp.GetApplied() {
+		t.Error("Applied = false, want true")
+	}
+}
+
+func TestReportDowntimeEventPropagatesResumerError(t *testing.T) {
+	fake := &fakeResumer{downtimeErr: errors.New("postgres unavailable")}
+	s := New(fake, logger.Discard())
+
+	if _, err := s.ReportDowntimeEvent(context.Background(), validDowntimeRequest()); err == nil {
+		t.Fatal("ReportDowntimeEvent: want an error, got nil")
+	}
+}
+
+// A resolved event carries no begin_unix of its own in a minimal payload in
+// principle, but Razorpay's documented shape always sends the full entity,
+// so this pins that ReportDowntimeEvent does not special-case "resolved" on
+// validation: it is still required to look like a real event.
+func TestReportDowntimeEventStillValidatesAResolvedEvent(t *testing.T) {
+	s := New(&fakeResumer{}, logger.Discard())
+	req := validDowntimeRequest()
+	req.Status = "resolved"
+	req.BeginUnix = 0
+
+	if _, err := s.ReportDowntimeEvent(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("err = %v, want InvalidArgument: resolved still needs begin_unix", err)
 	}
 }

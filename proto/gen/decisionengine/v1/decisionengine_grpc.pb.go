@@ -28,6 +28,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	DecisionEngineService_ReportDelayedOutcome_FullMethodName = "/momotaro.decisionengine.v1.DecisionEngineService/ReportDelayedOutcome"
+	DecisionEngineService_ReportDowntimeEvent_FullMethodName  = "/momotaro.decisionengine.v1.DecisionEngineService/ReportDowntimeEvent"
 )
 
 // DecisionEngineServiceClient is the client API for DecisionEngineService service.
@@ -37,6 +38,14 @@ type DecisionEngineServiceClient interface {
 	// Resume a record parked in a waiting state because its outcome resolved
 	// later (a customer acting on a nudge hours after receiving it).
 	ReportDelayedOutcome(ctx context.Context, in *ReportDelayedOutcomeRequest, opts ...grpc.CallOption) (*ReportDelayedOutcomeResponse, error)
+	// Records one Razorpay payment.downtime.started / .updated / .resolved
+	// webhook (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), exactly the kind of
+	// "arrives after the fact, with no request left to answer on" event this
+	// file's header comment describes: a bank outage starting or clearing is
+	// not something the Decision Engine ever asks about, it is told. The API
+	// Gateway (POST /v1/webhooks/payment-downtime) is the only caller, the
+	// same shape as a real Razorpay webhook landing on this RPC in production.
+	ReportDowntimeEvent(ctx context.Context, in *ReportDowntimeEventRequest, opts ...grpc.CallOption) (*ReportDowntimeEventResponse, error)
 }
 
 type decisionEngineServiceClient struct {
@@ -57,6 +66,16 @@ func (c *decisionEngineServiceClient) ReportDelayedOutcome(ctx context.Context, 
 	return out, nil
 }
 
+func (c *decisionEngineServiceClient) ReportDowntimeEvent(ctx context.Context, in *ReportDowntimeEventRequest, opts ...grpc.CallOption) (*ReportDowntimeEventResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportDowntimeEventResponse)
+	err := c.cc.Invoke(ctx, DecisionEngineService_ReportDowntimeEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DecisionEngineServiceServer is the server API for DecisionEngineService service.
 // All implementations must embed UnimplementedDecisionEngineServiceServer
 // for forward compatibility.
@@ -64,6 +83,14 @@ type DecisionEngineServiceServer interface {
 	// Resume a record parked in a waiting state because its outcome resolved
 	// later (a customer acting on a nudge hours after receiving it).
 	ReportDelayedOutcome(context.Context, *ReportDelayedOutcomeRequest) (*ReportDelayedOutcomeResponse, error)
+	// Records one Razorpay payment.downtime.started / .updated / .resolved
+	// webhook (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), exactly the kind of
+	// "arrives after the fact, with no request left to answer on" event this
+	// file's header comment describes: a bank outage starting or clearing is
+	// not something the Decision Engine ever asks about, it is told. The API
+	// Gateway (POST /v1/webhooks/payment-downtime) is the only caller, the
+	// same shape as a real Razorpay webhook landing on this RPC in production.
+	ReportDowntimeEvent(context.Context, *ReportDowntimeEventRequest) (*ReportDowntimeEventResponse, error)
 	mustEmbedUnimplementedDecisionEngineServiceServer()
 }
 
@@ -76,6 +103,9 @@ type UnimplementedDecisionEngineServiceServer struct{}
 
 func (UnimplementedDecisionEngineServiceServer) ReportDelayedOutcome(context.Context, *ReportDelayedOutcomeRequest) (*ReportDelayedOutcomeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReportDelayedOutcome not implemented")
+}
+func (UnimplementedDecisionEngineServiceServer) ReportDowntimeEvent(context.Context, *ReportDowntimeEventRequest) (*ReportDowntimeEventResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportDowntimeEvent not implemented")
 }
 func (UnimplementedDecisionEngineServiceServer) mustEmbedUnimplementedDecisionEngineServiceServer() {}
 func (UnimplementedDecisionEngineServiceServer) testEmbeddedByValue()                               {}
@@ -116,6 +146,24 @@ func _DecisionEngineService_ReportDelayedOutcome_Handler(srv interface{}, ctx co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DecisionEngineService_ReportDowntimeEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportDowntimeEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DecisionEngineServiceServer).ReportDowntimeEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DecisionEngineService_ReportDowntimeEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DecisionEngineServiceServer).ReportDowntimeEvent(ctx, req.(*ReportDowntimeEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DecisionEngineService_ServiceDesc is the grpc.ServiceDesc for DecisionEngineService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -126,6 +174,10 @@ var DecisionEngineService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportDelayedOutcome",
 			Handler:    _DecisionEngineService_ReportDelayedOutcome_Handler,
+		},
+		{
+			MethodName: "ReportDowntimeEvent",
+			Handler:    _DecisionEngineService_ReportDowntimeEvent_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -158,20 +158,44 @@ func directPath(to commonv1.RecordState, reason string) []stateStep {
 //     value (the priors have decayed to beyondListedAttemptsBps past the
 //     deepest modelled attempt): ClosedUneconomic. This is the economics
 //     stop.
-func scoreAndRoute(model *economics.Model, guardrails GuardrailConfig, bucket commonv1.RootCauseBucket, history attemptHistory, amountPaise int64, now time.Time) (state commonv1.RecordState, pendingAction commonv1.ActionType, reason string, score economics.Score, trace DecisionTrace) {
+//
+// downtime is a live payment-downtime signal to weigh against this record's
+// instrument (docs/PHASE5_5_IMPLEMENTATION.md Unit Y), loaded by the caller
+// from PAYMENT_DOWNTIME the same way history is loaded from
+// INTERVENTION_ATTEMPT: this function stays pure, everything I/O-shaped
+// happens before it is called. downtimeStatus{} (its zero value) means "no
+// downtime known for this instrument", the same as every existing call site
+// before this parameter existed.
+func scoreAndRoute(model *economics.Model, guardrails GuardrailConfig, bucket commonv1.RootCauseBucket, history attemptHistory, downtime downtimeStatus, amountPaise int64, now time.Time) (state commonv1.RecordState, pendingAction commonv1.ActionType, reason string, score economics.Score, trace DecisionTrace) {
 	none := commonv1.ActionType_ACTION_TYPE_UNSPECIFIED
 
 	verdict := applyGuardrails(history, guardrails, now)
+	verdict = applyDowntimeGuardrail(verdict, downtime, now)
 	permitted := permittedActions(verdict)
 
-	if len(permitted) == 0 {
+	// A downtime is the one guardrail here that is not a permanent stop: it
+	// removes RETRY from the permitted set the same way every other rule
+	// does, but unlike them it says nothing about whether a retry is worth
+	// running once the outage clears. So when RETRY was excluded ONLY
+	// because of a downtime (retryHeldByDowntime), it is still priced
+	// alongside whatever else is permitted: if it is genuinely the best
+	// candidate, the record is scheduled to retry as normal and simply held
+	// from firing until the downtime lifts (docs/DECISIONS.md); if something
+	// else wins (a nudge is unaffected by a bank outage) or nothing is worth
+	// doing at all, the downtime made no difference to that outcome.
+	scoreActions := permitted
+	if verdict.retryHeldByDowntime {
+		scoreActions = append(append([]commonv1.ActionType{}, permitted...), commonv1.ActionType_ACTION_TYPE_RETRY)
+	}
+
+	if len(scoreActions) == 0 {
 		return commonv1.RecordState_RECORD_STATE_ESCALATED, none,
 			fmt.Sprintf("guardrails permit no action: %s", guardrailRefusalReason(verdict)), economics.Score{},
 			DecisionTrace{Blocked: verdict.blocked}
 	}
 
-	candidates := make([]economics.Candidate, 0, len(permitted))
-	for _, action := range permitted {
+	candidates := make([]economics.Candidate, 0, len(scoreActions))
+	for _, action := range scoreActions {
 		candidates = append(candidates, economics.Candidate{Action: action, AttemptNo: attemptNumberFor(action, history)})
 	}
 
@@ -184,6 +208,14 @@ func scoreAndRoute(model *economics.Model, guardrails GuardrailConfig, bucket co
 	}
 
 	state, pendingAction, _ = decideForAction(best.Action)
+	if best.Action == commonv1.ActionType_ACTION_TYPE_RETRY && verdict.retryHeldByDowntime {
+		// Worth running, just not right now: schedule it exactly like a
+		// normal retry (same state, same pending action, same due_at
+		// computation by the caller), but the reason names the downtime
+		// rather than the economics, since that is the real story for
+		// anyone reading the audit trail.
+		return state, pendingAction, verdict.reason(commonv1.ActionType_ACTION_TYPE_RETRY), best, trace
+	}
 	reason = fmt.Sprintf("best expected value: %s worth %.0f paise (p=%.4f, cost=%d paise, at risk=%d paise)",
 		best.Action, best.EVPaise, best.PRecovery, best.CostPaise, amountPaise)
 	return state, pendingAction, reason, best, trace

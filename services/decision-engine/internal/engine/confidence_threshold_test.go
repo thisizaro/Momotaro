@@ -44,7 +44,7 @@ func TestDecideEscalatesJustBelowConfidenceThreshold(t *testing.T) {
 		Confidence:        0.49,
 	}
 
-	steps, action, score, _ := e.decide(resp, freshHistory(), 10000, time.Now())
+	steps, action, score, _ := e.decide(resp, freshHistory(), downtimeStatus{}, 10000, time.Now())
 
 	if len(steps) != 1 || steps[0].From != commonv1.RecordState_RECORD_STATE_NEW || steps[0].To != commonv1.RecordState_RECORD_STATE_ESCALATED {
 		t.Fatalf("steps = %+v, want a single New -> Escalated transition", steps)
@@ -71,7 +71,7 @@ func TestDecideDoesNotEscalateExactlyAtConfidenceThreshold(t *testing.T) {
 		Confidence:        0.5,
 	}
 
-	steps, _, _, _ := e.decide(resp, freshHistory(), 10000, time.Now())
+	steps, _, _, _ := e.decide(resp, freshHistory(), downtimeStatus{}, 10000, time.Now())
 
 	last := steps[len(steps)-1]
 	if last.Reason == "classification confidence below threshold" {
@@ -87,7 +87,7 @@ func TestDecideDoesNotEscalateJustAboveConfidenceThreshold(t *testing.T) {
 		Confidence:        0.51,
 	}
 
-	steps, _, _, _ := e.decide(resp, freshHistory(), 10000, time.Now())
+	steps, _, _, _ := e.decide(resp, freshHistory(), downtimeStatus{}, 10000, time.Now())
 
 	last := steps[len(steps)-1]
 	if last.Reason == "classification confidence below threshold" {
@@ -106,7 +106,7 @@ func TestDecideEscalatesNothingOnConfidenceAtDefaultThreshold(t *testing.T) {
 			RecommendedAction: commonv1.ActionType_ACTION_TYPE_RETRY,
 			Confidence:        confidence,
 		}
-		steps, _, _, _ := e.decide(resp, freshHistory(), 10000, time.Now())
+		steps, _, _, _ := e.decide(resp, freshHistory(), downtimeStatus{}, 10000, time.Now())
 		last := steps[len(steps)-1]
 		if last.Reason == "classification confidence below threshold" {
 			t.Errorf("confidence=%v: reason = %q at the default threshold 0.0, want no confidence escalation ever", confidence, last.Reason)
@@ -130,7 +130,7 @@ func TestDecideNamesEscalationReasonNotConfidenceForUnknownCodePath(t *testing.T
 		Confidence:        0.0,
 	}
 
-	steps, _, _, _ := e.decide(resp, freshHistory(), 10000, time.Now())
+	steps, _, _, _ := e.decide(resp, freshHistory(), downtimeStatus{}, 10000, time.Now())
 
 	last := steps[len(steps)-1]
 	if last.Reason != "classifier recommended escalation" {
@@ -149,7 +149,7 @@ func TestDecideNamesConfidenceReasonForLowConfidenceNonEscalateRecommendation(t 
 		Confidence:        0.3,
 	}
 
-	steps, _, _, _ := e.decide(resp, freshHistory(), 10000, time.Now())
+	steps, _, _, _ := e.decide(resp, freshHistory(), downtimeStatus{}, 10000, time.Now())
 
 	last := steps[len(steps)-1]
 	if last.Reason != "classification confidence below threshold" {

@@ -156,6 +156,11 @@ type claimedRecord struct {
 	// older row, not "unscored", and is never written by this service.
 	EVScoreAtDecision   float64
 	PRecoveryAtDecision float64
+	// InstrumentRef, needed to re-check payment-downtime status when a
+	// failed attempt is re-scored (docs/PHASE5_5_IMPLEMENTATION.md Unit Y):
+	// scoreAndRoute's downtime guardrail is keyed on it exactly like the New
+	// path's evt.InstrumentRef. "" when the record has none.
+	InstrumentRef string
 }
 
 // claimDue finds up to limit records whose due_at has passed and claims
@@ -169,7 +174,7 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 	var claimed []claimedRecord
 	err := pgxpkg.WithTx(ctx, s.pool, func(ctx context.Context, tx pgxpkg.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision, r.type
+			SELECT rs.record_id, r.batch_id, rs.current_state, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision, r.type, r.instrument_ref
 			FROM record_state rs
 			JOIN record r ON r.id = rs.record_id
 			WHERE rs.due_at IS NOT NULL AND rs.due_at <= $1
@@ -193,11 +198,12 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 			rootCauseBucket                                *string
 			evScoreAtDecision, pRecoveryAtDecision         *float64
 			recordType                                     string
+			instrumentRef                                  *string
 		}
 		var scanned []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise, &r.rootCauseBucket, &r.evScoreAtDecision, &r.pRecoveryAtDecision, &r.recordType); err != nil {
+			if err := rows.Scan(&r.recordID, &r.batchID, &r.currentState, &r.pendingAction, &r.attemptCount, &r.amountPaise, &r.rootCauseBucket, &r.evScoreAtDecision, &r.pRecoveryAtDecision, &r.recordType, &r.instrumentRef); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan due record: %w", err)
 			}
@@ -240,6 +246,10 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 			if r.pRecoveryAtDecision != nil {
 				pRecovery = *r.pRecoveryAtDecision
 			}
+			var instrumentRef string
+			if r.instrumentRef != nil {
+				instrumentRef = *r.instrumentRef
+			}
 			claimed = append(claimed, claimedRecord{
 				RecordID:            r.recordID,
 				BatchID:             r.batchID,
@@ -252,6 +262,7 @@ func (s *store) claimDue(ctx context.Context, now time.Time, limit int) ([]claim
 				Type:                commonv1.RecordType(commonv1.RecordType_value[r.recordType]),
 				EVScoreAtDecision:   evScore,
 				PRecoveryAtDecision: pRecovery,
+				InstrumentRef:       instrumentRef,
 			})
 		}
 		return nil
@@ -376,14 +387,15 @@ func (s *store) loadNudged(ctx context.Context, recordID string) (rec claimedRec
 		evScoreAtDecision, pRecovery *float64
 		batchID                      string
 		recordType                   string
+		instrumentRefCol             *string
 	)
 	err = s.pool.QueryRow(ctx, `
-		SELECT rs.current_state, r.batch_id, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision, r.type
+		SELECT rs.current_state, r.batch_id, rs.pending_action, rs.attempt_count, r.amount_paise, rs.root_cause_bucket, rs.ev_score_at_decision, rs.p_recovery_at_decision, r.type, r.instrument_ref
 		FROM record_state rs
 		JOIN record r ON r.id = rs.record_id
 		WHERE rs.record_id = $1`,
 		recordID,
-	).Scan(&currentState, &batchID, &pendingAction, &attemptCount, &amountPaise, &rootCauseBucket, &evScoreAtDecision, &pRecovery, &recordType)
+	).Scan(&currentState, &batchID, &pendingAction, &attemptCount, &amountPaise, &rootCauseBucket, &evScoreAtDecision, &pRecovery, &recordType, &instrumentRefCol)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return claimedRecord{}, commonv1.RecordState_RECORD_STATE_UNSPECIFIED, false, nil
 	}
@@ -411,6 +423,10 @@ func (s *store) loadNudged(ctx context.Context, recordID string) (rec claimedRec
 	if pendingAction != nil {
 		action = commonv1.ActionType(commonv1.ActionType_value[*pendingAction])
 	}
+	var instrumentRef string
+	if instrumentRefCol != nil {
+		instrumentRef = *instrumentRefCol
+	}
 	rec = claimedRecord{
 		RecordID:            recordID,
 		BatchID:             batchID,
@@ -423,6 +439,7 @@ func (s *store) loadNudged(ctx context.Context, recordID string) (rec claimedRec
 		Type:                commonv1.RecordType(commonv1.RecordType_value[recordType]),
 		EVScoreAtDecision:   evScore,
 		PRecoveryAtDecision: pRecoveryVal,
+		InstrumentRef:       instrumentRef,
 	}
 	return rec, state, true, nil
 }
@@ -570,6 +587,110 @@ func (s *store) loadAttemptHistory(ctx context.Context, recordID string) (attemp
 		return attemptHistory{}, fmt.Errorf("load attempt history for %s: %w", recordID, err)
 	}
 	return h, nil
+}
+
+// loadDowntimeStatus reads the latest UNRESOLVED payment-downtime row for
+// instrumentRef, for the guardrails to weigh (guardrails.go's
+// downtimeBlocksRetry, docs/PHASE5_5_IMPLEMENTATION.md Unit Y). Present is
+// false, with no error, both when instrumentRef is empty (no lookup even
+// attempted; most CHECKOUT/INVOICE-shaped records have none) and when the
+// lookup finds no row at all: this mirrors loadAttemptHistory only reporting
+// a genuine error for something a caller could not have expected, never for
+// the ordinary "no downtime known here" case.
+//
+// resolved_at IS NULL is the entire "is this active" filter at the SQL
+// layer; whether the row found is still within its time window (begin_at,
+// end_at, or the safety-valve cap for an unplanned one) is downtimeBlocksRetry's
+// job, kept in Go so it is one pure, table-driven-testable function rather
+// than duplicated SQL logic.
+func (s *store) loadDowntimeStatus(ctx context.Context, instrumentRef string) (downtimeStatus, error) {
+	if instrumentRef == "" {
+		return downtimeStatus{}, nil
+	}
+	var (
+		id, method, severity string
+		scheduled            bool
+		begin                time.Time
+		end                  *time.Time
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, method, severity, scheduled, begin_at, end_at
+		FROM payment_downtime
+		WHERE instrument_key = $1 AND resolved_at IS NULL
+		ORDER BY updated_at DESC
+		LIMIT 1`,
+		instrumentRef,
+	).Scan(&id, &method, &severity, &scheduled, &begin, &end)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return downtimeStatus{}, nil
+	}
+	if err != nil {
+		return downtimeStatus{}, fmt.Errorf("load payment_downtime for instrument %s: %w", instrumentRef, err)
+	}
+	return downtimeStatus{
+		Present:    true,
+		DowntimeID: id,
+		Method:     method,
+		Instrument: instrumentRef,
+		Severity:   severity,
+		Scheduled:  scheduled,
+		Begin:      begin,
+		End:        end,
+	}, nil
+}
+
+// DowntimeEvent is one Razorpay payment.downtime.* webhook, already
+// translated from the wire shape (services/api-gateway's job) and the gRPC
+// request (services/decision-engine/internal/server's job) into a plain
+// value recordDowntimeEvent can persist without knowing about either.
+type DowntimeEvent struct {
+	DowntimeID string
+	Method     string
+	Status     string // "started" | "updated" | "resolved"
+	Scheduled  bool
+	Severity   string
+	Instrument string
+	Begin      time.Time
+	End        *time.Time
+	Now        time.Time
+}
+
+// recordDowntimeEvent upserts one PAYMENT_DOWNTIME row keyed on
+// evt.DowntimeID, so started -> updated -> resolved for the same Razorpay
+// downtime id collapses to the one row loadDowntimeStatus reads, rather than
+// growing a history nothing needs (docs/PHASE5_5_IMPLEMENTATION.md Unit Y).
+// A "resolved" event sets resolved_at, which is the entire mechanism by
+// which affected records become retryable again: the very next guardrail
+// check on that instrument (a fresh classification, or a failed attempt
+// being re-scored) reads this row fresh and no longer sees it as active.
+//
+// Every field is overwritten from evt on every call, "resolved" included:
+// Razorpay's documented payload carries the full entity on every event, not
+// a diff, so the latest event is always the whole truth, never something to
+// merge with what came before.
+func (s *store) recordDowntimeEvent(ctx context.Context, evt DowntimeEvent) error {
+	var resolvedAt *time.Time
+	if evt.Status == "resolved" {
+		resolvedAt = &evt.Now
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO payment_downtime (id, method, instrument_key, severity, scheduled, begin_at, end_at, resolved_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+		ON CONFLICT (id) DO UPDATE SET
+			method         = EXCLUDED.method,
+			instrument_key = EXCLUDED.instrument_key,
+			severity       = EXCLUDED.severity,
+			scheduled      = EXCLUDED.scheduled,
+			begin_at       = EXCLUDED.begin_at,
+			end_at         = EXCLUDED.end_at,
+			resolved_at    = EXCLUDED.resolved_at,
+			updated_at     = EXCLUDED.updated_at`,
+		evt.DowntimeID, evt.Method, evt.Instrument, evt.Severity, evt.Scheduled, evt.Begin, evt.End, resolvedAt, evt.Now,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert payment_downtime %s: %w", evt.DowntimeID, err)
+	}
+	return nil
 }
 
 // instrumentHistoryLimit caps loadInstrumentHistory: a popular instrument

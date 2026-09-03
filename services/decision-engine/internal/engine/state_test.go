@@ -153,7 +153,7 @@ func TestScoreAndRoutePicksTheHighestEVPermittedAction(t *testing.T) {
 	model := loadEconomicsModel(t)
 	const amountPaise = 500000 // 5000 rupees, big enough that RETRY clearly wins
 
-	state, pendingAction, reason, score, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), amountPaise, testNow)
+	state, pendingAction, reason, score, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), downtimeStatus{}, amountPaise, testNow)
 
 	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
 		t.Errorf("state = %v, want RETRY_SCHEDULED", state)
@@ -178,7 +178,7 @@ func TestScoreAndRouteTraceShowsEveryCandidateAndAgreesWithTheWinner(t *testing.
 	model := loadEconomicsModel(t)
 	const amountPaise = 500000
 
-	_, _, _, score, trace := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), amountPaise, testNow)
+	_, _, _, score, trace := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), downtimeStatus{}, amountPaise, testNow)
 
 	if len(trace.Candidates) != len(spendingActions) {
 		t.Fatalf("trace has %d candidates, want one per spending action (%d)", len(trace.Candidates), len(spendingActions))
@@ -208,7 +208,7 @@ func TestScoreAndRouteTraceCarriesGuardrailRefusalsWhenNothingIsPermitted(t *tes
 	h.Retries = testGuardrails.MaxRetries
 	h.Contacts = testGuardrails.MaxContacts
 
-	_, _, _, _, trace := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+	_, _, _, _, trace := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, downtimeStatus{}, 500000, testNow)
 
 	if len(trace.Candidates) != 0 {
 		t.Errorf("trace.Candidates = %v, want empty: nothing was permitted to score", trace.Candidates)
@@ -231,7 +231,7 @@ func TestScoreAndRouteTraceShowsLosingCandidatesWhenUneconomic(t *testing.T) {
 	h.Retries = 3
 	h.Contacts = 1
 
-	_, _, _, _, trace := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+	_, _, _, _, trace := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, downtimeStatus{}, 500000, testNow)
 
 	if len(trace.Candidates) == 0 {
 		t.Fatal("trace.Candidates is empty, want the scored-but-losing candidate(s) that made this uneconomic")
@@ -254,7 +254,7 @@ func TestScoreAndRouteEscalatesWhenGuardrailsRefuseEveryAction(t *testing.T) {
 	h.Retries = testGuardrails.MaxRetries
 	h.Contacts = testGuardrails.MaxContacts
 
-	state, pendingAction, reason, score, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+	state, pendingAction, reason, score, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, downtimeStatus{}, 500000, testNow)
 
 	if state != commonv1.RecordState_RECORD_STATE_ESCALATED {
 		t.Errorf("state = %v, want ESCALATED", state)
@@ -284,7 +284,7 @@ func TestScoreAndRouteClosesUneconomicWhenPriorsRunOutPastGuardrailReach(t *test
 	h.Retries = 3  // three retries already spent: attempt 4 is unmodelled
 	h.Contacts = 1 // contact cap already reached, so a nudge cannot rescue this
 
-	state, pendingAction, reason, score, _ := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, 500000, testNow)
+	state, pendingAction, reason, score, _ := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, downtimeStatus{}, 500000, testNow)
 
 	if state != commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC {
 		t.Errorf("state = %v, want CLOSED_UNECONOMIC: a retry budget of 10 has not been exhausted, only the modelled priors have", state)
@@ -297,6 +297,89 @@ func TestScoreAndRouteClosesUneconomicWhenPriorsRunOutPastGuardrailReach(t *test
 	}
 	if reason != "no permitted action has positive expected value" {
 		t.Errorf("reason = %q, want the economics-stop reason, not a fallback from some other branch", reason)
+	}
+}
+
+// docs/PHASE5_5_IMPLEMENTATION.md Unit Y: a retry an active downtime holds
+// back is DEFERRED, not escalated, when it is genuinely worth running. Same
+// setup as TestScoreAndRoutePicksTheHighestEVPermittedAction (retry clearly
+// wins on a large amount), with an active downtime layered on: the outcome
+// must still be RETRY_SCHEDULED/RETRY, with a real positive score, but the
+// reason must name the downtime rather than the economics, and it must not
+// be ESCALATED, which is what applying the OLD guardrail pattern (blocked
+// action empties permitted -> escalate) would have produced.
+func TestScoreAndRouteDefersARetryHeldByDowntimeInsteadOfEscalating(t *testing.T) {
+	model := loadEconomicsModel(t)
+	const amountPaise = 500000
+
+	state, pendingAction, reason, score, trace := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, freshHistory(), activeDowntime(), amountPaise, testNow)
+
+	if state != commonv1.RecordState_RECORD_STATE_RETRY_SCHEDULED {
+		t.Errorf("state = %v, want RETRY_SCHEDULED (deferred, not escalated)", state)
+	}
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_RETRY {
+		t.Errorf("pendingAction = %v, want RETRY", pendingAction)
+	}
+	if score.EVPaise <= 0 {
+		t.Errorf("EVPaise = %v, want strictly positive: a claimed RETRY_SCHEDULED record must carry a real score", score.EVPaise)
+	}
+	wantReason := "bank downtime active: netbanking VIJB, severity high"
+	if reason != wantReason {
+		t.Errorf("reason = %q, want %q", reason, wantReason)
+	}
+	if trace.Blocked[commonv1.ActionType_ACTION_TYPE_RETRY] != wantReason {
+		t.Errorf("trace.Blocked[RETRY] = %q, want %q so the decision panel shows it alongside the other guardrail reasons", trace.Blocked[commonv1.ActionType_ACTION_TYPE_RETRY], wantReason)
+	}
+}
+
+// A downtime must not keep a retry alive that was never worth running in the
+// first place: here the retry budget is far from exhausted (so the downtime
+// really is the only guardrail reason RETRY is excluded from `permitted`),
+// but this is the 4th retry, past the deepest modelled attempt, so its own
+// priced EV is 0 regardless of the downtime, and contacts are capped so no
+// nudge can rescue it either. The record must close as uneconomic, not sit
+// deferred forever waiting for an outage that would not have helped it.
+func TestScoreAndRouteDowntimeDoesNotRescueAGenuinelyUneconomicRetry(t *testing.T) {
+	model := loadEconomicsModel(t)
+
+	guardrails := GuardrailConfig{MaxRetries: 10, MaxContacts: 1, ContactCooldown: 24 * time.Hour, RecoveryWindow: 7 * 24 * time.Hour}
+	h := freshHistory()
+	h.Retries = 3
+	h.Contacts = 1
+
+	state, pendingAction, _, score, _ := scoreAndRoute(model, guardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, h, activeDowntime(), 500000, testNow)
+
+	if state != commonv1.RecordState_RECORD_STATE_CLOSED_UNECONOMIC {
+		t.Errorf("state = %v, want CLOSED_UNECONOMIC: the downtime must not keep an EV<=0 retry deferred", state)
+	}
+	if pendingAction != commonv1.ActionType_ACTION_TYPE_UNSPECIFIED {
+		t.Errorf("pendingAction = %v, want UNSPECIFIED", pendingAction)
+	}
+	if score != (economics.Score{}) {
+		t.Errorf("score = %+v, want the zero value", score)
+	}
+}
+
+// Nudges are unaffected by a downtime (docs/PHASE5_5_IMPLEMENTATION.md Unit
+// Y: "a customer can update a payment method while their bank's
+// authorisation path is degraded"). USER_ACTION_NEEDED is the bucket where
+// RETRY is structurally IMPOSSIBLE regardless of downtime (recovery_priors.yaml:
+// "the blocker is not the timing, it is a missing authorisation"), so an
+// active downtime here must make no difference at all: the nudge wins on its
+// own merits, exactly as it would with no downtime present.
+func TestScoreAndRouteNudgeWinsRegardlessOfADowntimeWhenRetryIsStructurallyImpossible(t *testing.T) {
+	model := loadEconomicsModel(t)
+	const amountPaise = 500000
+
+	withDowntime, _, _, scoreWith, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED, freshHistory(), activeDowntime(), amountPaise, testNow)
+	withoutDowntime, _, _, scoreWithout, _ := scoreAndRoute(model, testGuardrails, commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED, freshHistory(), downtimeStatus{}, amountPaise, testNow)
+
+	if withDowntime != commonv1.RecordState_RECORD_STATE_NUDGE_SCHEDULED {
+		t.Errorf("state with downtime = %v, want NUDGE_SCHEDULED", withDowntime)
+	}
+	if withDowntime != withoutDowntime || scoreWith != scoreWithout {
+		t.Errorf("downtime changed the outcome for a bucket where RETRY is impossible either way: with=(%v,%+v) without=(%v,%+v)",
+			withDowntime, scoreWith, withoutDowntime, scoreWithout)
 	}
 }
 

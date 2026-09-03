@@ -2397,3 +2397,107 @@ decisions"; the full reasoning lives in `docs/PRD.md` and
   entry and the direct quote above first: that tradeoff was already tried,
   reviewed by the person the panel is for, and rejected.
   `docs/DEMO_READINESS.md` Unit AP.
+- 2026-09-03: **Payment-downtime state lives in a new Postgres table the
+  Decision Engine owns (`payment_downtime`, migration 00008), read fresh on
+  every guardrail check, never cached in memory.** Three things forced this
+  rather than something simpler:
+  1. `docs/ARCHITECTURE.md` section 10a already says guardrail enforcement
+     is Postgres, not Redis, because a cap enforced by a cache is not
+     enforced (an unreachable cache falls through, and falling through a
+     *cap check* is the stopping-rule violation `docs/PRD.md` section 9
+     calls impossible, `docs/DECISIONS.md` 2026-08-24). A downtime is
+     exactly that kind of guardrail input, so it gets the same treatment as
+     the retry budget and contact cooldown it sits alongside in
+     `guardrails.go`, not a Redis TTL that could silently expire early.
+  2. The unit's own instruction is explicit: "must not strand records
+     permanently if a `resolved` event never arrives" and "consider what
+     happens if the process restarts mid-downtime." An in-memory map dies
+     with the process; a Postgres row does not, and querying it fresh on
+     every check (`store.loadDowntimeStatus`, no in-memory cache layered on
+     top) means a restart mid-outage loses nothing, because there was never
+     anything to lose outside the row itself.
+  3. `decisionengine.proto`'s own header comment already anticipated this
+     shape before this unit existed: "In a real deployment [the caller]
+     would be a bank's async webhook landing on the same RPC." Adding
+     `ReportDowntimeEvent` alongside the existing `ReportDelayedOutcome` on
+     `DecisionEngineService`, rather than inventing a new topic or a new
+     service, follows a precedent the codebase had already set for exactly
+     this shape of event (arrives after the fact, nothing to answer a
+     request with).
+
+  **Guardrail wiring, and why it is not a fourth parameter on
+  `applyGuardrails`.** A new `applyDowntimeGuardrail(verdict, downtime,
+  now)` function layers the downtime rule onto a `guardrailVerdict`
+  `applyGuardrails` already computed, called only from `scoreAndRoute`
+  (`state.go`), rather than threading a `downtimeStatus` parameter through
+  `applyGuardrails` itself. That keeps the existing retry-budget/contact-cap/
+  cooldown/recovery-window rules and every one of their ~15 existing test
+  call sites in `guardrails_test.go` completely untouched; the downtime rule
+  and its tests live in their own `downtime_test.go`/`downtime.go`
+  (guardrails.go's added section) instead. It blocks `ACTION_TYPE_RETRY`
+  only, with reason `bank downtime active: <method> <instrument>, severity
+  <severity>` (severity is an open string, shown whatever it is, never
+  validated against a closed list, per the unit's own instruction not to
+  assume `high`/`medium` is exhaustive); nudges are never touched, matching
+  the unit's framing that a customer can update a payment method while their
+  bank's authorisation path is degraded. If RETRY is already blocked for a
+  permanent reason (the retry budget is spent, or the recovery window has
+  closed), the downtime rule leaves that verdict alone rather than
+  overwriting a permanent reason with a temporary one.
+
+  **Resume, and why nothing "wakes up" a parked record.** Every other
+  guardrail in this file treats "the only permitted action is blocked" as a
+  terminal stop: `permitted` ends up empty and `scoreAndRoute` escalates,
+  full stop, no retry. A downtime does not get that treatment, because
+  unlike a spent budget it is not permanent: `guardrailVerdict.retryHeldByDowntime`
+  marks the specific case where RETRY was excluded *only* because of an
+  active downtime, and when that is true `scoreAndRoute` prices RETRY
+  anyway alongside whatever else is permitted (`economics.BestOf` decides
+  whether it is actually worth running, so a downtime never keeps a
+  genuinely uneconomic retry alive). If RETRY wins, the record is scheduled
+  exactly like a normal retry, `RETRY_SCHEDULED` with its own cause-aware
+  `due_at`, just with the audit reason naming the downtime instead of the
+  economics. **This is the entire resume mechanism**: `RecordDowntimeEvent`
+  on a `.resolved` event does nothing but mark the Postgres row resolved
+  (`resolved_at`); the very next guardrail check for that instrument, a
+  fresh classification or a failed attempt being re-scored, reads the row
+  fresh and simply stops seeing it as active. There is no separate "wake up
+  parked records" job to write or to get wrong, because nothing was ever put
+  to sleep outside its own normal `due_at`.
+
+  **The safety valve.** An unplanned downtime (`scheduled: false`) with no
+  `end` has no natural expiry if `.resolved` never arrives, so
+  `downtimeMaxUnresolvedHold` (6 hours, `guardrails.go`) stops treating it as
+  active once that long has passed since `begin`, independent of any
+  resolved event. A *scheduled* downtime needs no such cap: Razorpay
+  publishes its own `end` up front, and once real time passes it the rule
+  stops blocking on its own, resolved event or not, the same as the
+  safety-valve case but for a reason grounded in the payload rather than an
+  arbitrary constant.
+
+  **Deliberately scoped out, and why.** The one piece of DEMO_READINESS.md's
+  original proposal not built: pre-empting an *already-scheduled* retry's
+  fixed `due_at` at claim time so it never fires into an outage that started
+  after the record was scheduled (would need a downtime-aware `NOT EXISTS`
+  clause on the scheduler's `claimDue` query, its own integration-test
+  surface). Without it, a retry scheduled before a downtime began can still
+  execute once into that outage, most likely fail, and then correctly hold
+  on its next re-score rather than keep spending budget into it; a retry
+  scheduled *during* an active downtime, or re-scored after any failure
+  while one persists, never spends an attempt into it at all. This trades
+  "never wastes a single attempt, ever" for "wastes at most the one attempt
+  already in flight when the outage started," in exchange for not touching
+  the scheduler's claim query or adding a second, harder-to-verify SQL path
+  for the same guardrail. Also scoped out: severity-tiered treatment
+  (`docs/PHASE5_5_IMPLEMENTATION.md`'s proposal of `high` fully blocking
+  while `medium` only delays); every severity blocks uniformly here, with
+  the value shown verbatim in the reason for a human to weigh. Both are
+  small, well-defined follow-ups, not abandoned scope: the demo's actual
+  beat (raise a bank outage from the control panel, watch retries for that
+  method hold with the reason visible in the audit trail, resolve it, watch
+  the held retry fire) works end to end without either. Signature
+  verification and the four-field error taxonomy are explicitly Unit Z's
+  job and were not touched here; this route accepts an unauthenticated body
+  exactly like `payment-failed` does today, with the body size-capped and
+  never logged in full at INFO in the meantime.
+  `docs/PHASE5_5_IMPLEMENTATION.md` Unit Y, `docs/API_GATEWAY.md`.

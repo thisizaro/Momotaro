@@ -51,7 +51,7 @@ func (f *fakeIngestion) ListBatches(ctx context.Context, in *ingestionv1.ListBat
 }
 
 func newHandler(f *fakeIngestion) http.Handler {
-	return New(f, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 0, 0).Routes()
+	return New(f, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 0, 0).Routes()
 }
 
 // fakeAudit implements auditv1.AuditServiceClient. Defined here so both
@@ -327,7 +327,7 @@ func TestWebhookDeduplicated(t *testing.T) {
 
 func TestRateLimitAllowsWithinBurst(t *testing.T) {
 	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "b1", AcceptedCount: 1}}
-	h := New(fake, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 100, 2).Routes()
+	h := New(fake, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 100, 2).Routes()
 
 	body := `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`
 	for i := 0; i < 2; i++ {
@@ -342,7 +342,7 @@ func TestRateLimitRejectsOverBurst(t *testing.T) {
 	fake := &fakeIngestion{resp: &ingestionv1.SubmitBatchResponse{BatchId: "b1", AcceptedCount: 1}}
 	// A tiny sustained rate with a burst of 1: the first request consumes the
 	// only token, the second must be rejected before the bucket refills.
-	h := New(fake, &fakeReporting{}, &fakeAudit{}, testAPIKey, 2*time.Second, 1, 1).Routes()
+	h := New(fake, &fakeReporting{}, &fakeAudit{}, nil, testAPIKey, 2*time.Second, 1, 1).Routes()
 
 	body := `{"records":[{"type":"PAYMENT","amount_paise":1,"failure_code":"X"}]}`
 	rec1 := doRequest(h, http.MethodPost, "/v1/batches", testAPIKey, body)
