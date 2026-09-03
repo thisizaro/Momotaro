@@ -45,7 +45,12 @@ import (
 )
 
 const (
-	apiKey        = "e2e-test-key"
+	apiKey = "e2e-test-key"
+	// webhookSecret signs X-Razorpay-Signature on every webhook call this
+	// suite makes (docs/PHASE5_5_IMPLEMENTATION.md Unit Z); startStack passes
+	// it to the api-gateway subprocess as WEBHOOK_SECRET, now a required
+	// startup value there just like API_KEY.
+	webhookSecret = "e2e-test-webhook-secret"
 	postgresDSN   = "postgres://momotaro:momotaro@localhost:5432/momotaro?sslmode=disable"
 	kafkaBrokers  = "localhost:9092"
 	redisAddr     = "localhost:6379"

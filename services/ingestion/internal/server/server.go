@@ -172,28 +172,38 @@ func (s *Server) ingestOne(ctx context.Context, batchID string, nr *ingestionv1.
 	createdAt := resolveCreatedAt(s.clock, nr)
 
 	if err := s.store.insertRecord(ctx, newRecordParams{
-		ID:             recordID,
-		BatchID:        batchID,
-		Type:           nr.GetType().String(),
-		AmountPaise:    nr.GetAmountPaise(),
-		Currency:       currency,
-		FailureCode:    nr.GetFailureCode(),
-		InstrumentRef:  nr.GetInstrumentRef(),
-		CreatedAt:      createdAt,
-		IdempotencyKey: idempotencyKey,
+		ID:               recordID,
+		BatchID:          batchID,
+		Type:             nr.GetType().String(),
+		AmountPaise:      nr.GetAmountPaise(),
+		Currency:         currency,
+		FailureCode:      nr.GetFailureCode(),
+		InstrumentRef:    nr.GetInstrumentRef(),
+		CreatedAt:        createdAt,
+		IdempotencyKey:   idempotencyKey,
+		ErrorCode:        nr.GetErrorCode(),
+		ErrorDescription: nr.GetErrorDescription(),
+		ErrorSource:      nr.GetErrorSource(),
+		ErrorStep:        nr.GetErrorStep(),
+		ErrorReason:      nr.GetErrorReason(),
 	}); err != nil {
 		return "", err
 	}
 
 	if err := s.publisher.Publish(ctx, RawEvent{
-		RecordID:      recordID,
-		BatchID:       batchID,
-		Type:          nr.GetType().String(),
-		AmountPaise:   nr.GetAmountPaise(),
-		Currency:      currency,
-		FailureCode:   nr.GetFailureCode(),
-		InstrumentRef: nr.GetInstrumentRef(),
-		CreatedAt:     createdAt,
+		RecordID:         recordID,
+		BatchID:          batchID,
+		Type:             nr.GetType().String(),
+		AmountPaise:      nr.GetAmountPaise(),
+		Currency:         currency,
+		FailureCode:      nr.GetFailureCode(),
+		InstrumentRef:    nr.GetInstrumentRef(),
+		CreatedAt:        createdAt,
+		ErrorCode:        nr.GetErrorCode(),
+		ErrorDescription: nr.GetErrorDescription(),
+		ErrorSource:      nr.GetErrorSource(),
+		ErrorStep:        nr.GetErrorStep(),
+		ErrorReason:      nr.GetErrorReason(),
 	}); err != nil {
 		return "", err
 	}

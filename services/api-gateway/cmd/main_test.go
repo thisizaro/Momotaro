@@ -13,6 +13,43 @@ func validEnv(t *testing.T) {
 	t.Setenv("AUDIT_ADDR", "localhost:9090")
 	t.Setenv("DECISION_ENGINE_ADDR", "localhost:9090")
 	t.Setenv("API_KEY", "test-key")
+	t.Setenv("WEBHOOK_SECRET", "test-webhook-secret")
+}
+
+// TestLoadConfigRequiresWebhookSecret is the fail-fast half of the Unit Z
+// decision (docs/DECISIONS.md): WEBHOOK_SECRET is required at startup, the
+// same requiredness as API_KEY, precisely so the Gateway never starts in a
+// configuration where every webhook request is silently doomed to fail
+// closed forever (webhooksig.Verify treats "no secret" as "never verifies",
+// never as "skip verification").
+func TestLoadConfigRequiresWebhookSecret(t *testing.T) {
+	validEnv(t)
+	t.Setenv("WEBHOOK_SECRET", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("loadConfig accepted an empty WEBHOOK_SECRET, want a startup error")
+	}
+}
+
+// TestLoadConfigWebhookSecretPreviousOptional proves the rotation knob is
+// optional: unset, it must not fail startup, and must come back empty.
+func TestLoadConfigWebhookSecretPreviousOptional(t *testing.T) {
+	validEnv(t)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.WebhookSecretPrevious != "" {
+		t.Errorf("WebhookSecretPrevious = %q, want empty when WEBHOOK_SECRET_PREVIOUS is unset", cfg.WebhookSecretPrevious)
+	}
+
+	t.Setenv("WEBHOOK_SECRET_PREVIOUS", "old-webhook-secret")
+	cfg, err = loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.WebhookSecretPrevious != "old-webhook-secret" {
+		t.Errorf("WebhookSecretPrevious = %q, want old-webhook-secret", cfg.WebhookSecretPrevious)
+	}
 }
 
 func TestLoadConfigDemoControlsDefaultFalse(t *testing.T) {

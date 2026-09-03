@@ -257,6 +257,14 @@ incomplete trails across the batch.
 Because money state needs transactions and a single writer, and events need
 fan-out. Mixing them means reconstructing balances from a log.
 
+**"How do you know a webhook actually came from Razorpay?"**
+`X-Razorpay-Signature`, HMAC-SHA256 over the raw request body, verified in
+constant time (`hmac.Equal`) before we ever decode it, matching Razorpay's
+own documented scheme exactly. Fail-closed throughout: a missing header, a
+wrong signature, or the Gateway having no secret configured are all a plain
+401, and an unset secret is a startup failure, not a route that quietly lets
+everything through. `docs/API_GATEWAY.md` "Webhook signature verification".
+
 ---
 
 ## 8. Weak spots to know before someone finds them

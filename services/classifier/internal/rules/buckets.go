@@ -151,6 +151,67 @@ func bucketForCode(normalized string) (commonv1.RootCauseBucket, bool) {
 	return b, ok
 }
 
+// taxonomySourceIndicatesSystemicFailure is the set of error_source values
+// meaning "something on the rail's own side failed", not the customer
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Z, Razorpay's documented values:
+// bank, customer, business, gateway, razorpay, network). Deliberately a
+// small, named set rather than "everything that is not customer": business
+// (a merchant-side misconfiguration) is neither clearly systemic nor
+// clearly the payer's fault, so it is left out on purpose and falls through
+// to ok=false in bucketForErrorTaxonomy, the same safe "we don't actually
+// know" path an unrecognised value takes.
+var taxonomySourceIndicatesSystemicFailure = map[string]bool{
+	"BANK":     true,
+	"GATEWAY":  true,
+	"RAZORPAY": true,
+	"NETWORK":  true,
+	"ISSUER":   true, // not in Razorpay's own top-level list, but appears inside instrument objects (docs/PHASE5_5_IMPLEMENTATION.md Unit Y) and means the same thing here
+}
+
+// bucketForErrorTaxonomy is rules.Classify's fallback signal when
+// failure_code itself is unrecognised (SPEC.md section 4.3 already covers
+// that path with fallbackBucket by record type; this runs BEFORE that,
+// using a second, independent field pair that carries real information a
+// vague failure_code like Razorpay's own "payment_failed" cannot):
+// error_source (who/what failed) and error_step (where in the flow).
+// docs/PHASE5_5_IMPLEMENTATION.md Unit Z's worked example: "source: bank
+// plus step: payment_authorization says systemic-and-not-the-customer's-
+// fault, which is a retry; source: customer plus step:
+// payment_authentication is a failed OTP, which is not."
+//
+// Both inputs are OPEN string vocabularies that vary by payment method
+// (Razorpay's own docs are explicit about this for cards, netbanking,
+// wallets, UPI Intent, Cardless EMI and e-mandate each having their own
+// sets), so this is deliberately NOT a closed map keyed on an exact
+// spelling the way failureCodeToBucket is. It normalises (same
+// normalizeFailureCode as failure_code itself) and matches on whether the
+// normalised step CONTAINS "AUTHENTICATION" or "AUTHORIZATION", so a
+// method-specific step this engine has never seen (e.g. a hypothetical UPI
+// "otp_authentication") still resolves the same way as the documented
+// "payment_authentication" would. A step or source outside both patterns
+// returns ok=false: this function guesses only when the input actually
+// says something, never invents an answer from silence.
+func bucketForErrorTaxonomy(source, step string) (commonv1.RootCauseBucket, bool) {
+	src := normalizeFailureCode(source)
+	stp := normalizeFailureCode(step)
+
+	switch {
+	case strings.Contains(stp, "AUTHENTICATION"):
+		// The customer's own half of the flow (OTP, 3DS, biometric) failed.
+		// A retry cannot succeed without the customer acting again.
+		return commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED, true
+	case strings.Contains(stp, "AUTHORIZATION") && taxonomySourceIndicatesSystemicFailure[src]:
+		// The customer's own step already succeeded; the rail itself
+		// failed past it. Systemic, so a retry is the right call.
+		return commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, true
+	case src == "CUSTOMER":
+		return commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_USER_ACTION_NEEDED, true
+	case taxonomySourceIndicatesSystemicFailure[src]:
+		return commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_TRANSIENT_BANK, true
+	}
+	return commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_UNSPECIFIED, false
+}
+
 // fallbackBucket applies the unknown-code fallback ordering (SPEC.md
 // section 4.3): the record type carries genuine signal about the failure
 // mode when the rail code itself is unrecognised or absent.

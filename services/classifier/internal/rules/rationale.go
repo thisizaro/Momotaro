@@ -60,3 +60,21 @@ func composeRationale(bucket commonv1.RootCauseBucket, action commonv1.ActionTyp
 	}
 	return fmt.Sprintf("failure code %q: %s. Recommending %s.", rawCode, reason, actionLabel(action))
 }
+
+// composeTaxonomyRationale builds the rationale for a record resolved via
+// error_source/error_step rather than failure_code
+// (docs/PHASE5_5_IMPLEMENTATION.md Unit Z, bucketForErrorTaxonomy in
+// buckets.go): failure_code alone was not recognised, but the taxonomy
+// fields let the rules engine make a real distinction the code could not.
+// Named the fields explicitly, the same discipline composeRationale applies
+// to rawCode, so a human reading the audit trail sees exactly which two
+// values drove the answer.
+func composeTaxonomyRationale(bucket commonv1.RootCauseBucket, action commonv1.ActionType, rawCode, source, step string) string {
+	reason := bucketReasoning[bucket]
+	codePart := fmt.Sprintf("failure code %q", rawCode)
+	if rawCode == "" {
+		codePart = "no failure code"
+	}
+	return fmt.Sprintf("%s was not in the classification table, but error_source=%q and error_step=%q were; %s. Recommending %s.",
+		codePart, source, step, reason, actionLabel(action))
+}

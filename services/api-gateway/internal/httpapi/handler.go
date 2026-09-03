@@ -45,6 +45,39 @@ type Handler struct {
 	// coder/websocket's own default, so an operator who does nothing gets
 	// today's behaviour, not a permissive Gateway.
 	wsAllowedOrigins []string
+
+	// webhookSecrets is the ordered list of secrets Razorpay's
+	// X-Razorpay-Signature header is verified against (signature.go, set via
+	// SetWebhookSecrets), current first, then previous if a rotation is in
+	// progress. Nil (the zero value, and the state of a Handler that never
+	// calls SetWebhookSecrets) means every signature check fails: this is
+	// the fail-closed default, not an accident of initialization order, see
+	// webhooksig.Verify's own doc comment.
+	webhookSecrets []string
+}
+
+// SetWebhookSecrets configures webhookSecrets (signature.go,
+// docs/API_GATEWAY.md "Webhook signature verification",
+// docs/PHASE5_5_IMPLEMENTATION.md Unit Z). Call it before Routes(), the same
+// convention as SetWSAllowedOrigins and EnableDemoControls.
+//
+// previous is optional (""), for secret rotation: Razorpay's own documented
+// behaviour is that a webhook retried under a since-rotated secret must
+// still verify, so a caller mid-rotation passes both the new and the old
+// value rather than only the new one. Never calling this at all, or calling
+// it with current == "" (the config loader refuses that at startup, see
+// cmd/main.go, but a test or a future caller might not go through it),
+// leaves every signature check failing: an unset secret is never treated as
+// "skip verification".
+func (h *Handler) SetWebhookSecrets(current, previous string) {
+	secrets := make([]string, 0, 2)
+	if current != "" {
+		secrets = append(secrets, current)
+	}
+	if previous != "" {
+		secrets = append(secrets, previous)
+	}
+	h.webhookSecrets = secrets
 }
 
 // SetWSAllowedOrigins configures which cross-origin WebSocket handshakes
@@ -97,8 +130,14 @@ func New(ingestion ingestionv1.IngestionServiceClient, reporting reportingv1.Rep
 func (h *Handler) Routes() http.Handler {
 	authenticated := http.NewServeMux()
 	authenticated.HandleFunc("POST /v1/batches", h.submitBatch)
-	authenticated.HandleFunc("POST /v1/webhooks/payment-failed", h.submitEvent)
-	authenticated.HandleFunc("POST /v1/webhooks/payment-downtime", h.submitDowntimeEvent)
+	// Both webhook routes require a valid X-Razorpay-Signature in addition
+	// to X-API-Key above (docs/API_GATEWAY.md "Webhook signature
+	// verification", docs/PHASE5_5_IMPLEMENTATION.md Unit Z), verified by
+	// the same shared middleware rather than duplicated per handler, so the
+	// two routes cannot silently diverge on what "verified" means. See
+	// signature.go.
+	authenticated.HandleFunc("POST /v1/webhooks/payment-failed", h.verifyWebhookSignature(h.submitEvent))
+	authenticated.HandleFunc("POST /v1/webhooks/payment-downtime", h.verifyWebhookSignature(h.submitDowntimeEvent))
 	authenticated.HandleFunc("GET /v1/batches", h.listBatches)
 	authenticated.HandleFunc("GET /v1/batches/{batch_id}/report", h.getBatchReport)
 	authenticated.HandleFunc("GET /v1/batches/{batch_id}/records", h.listBatchRecords)
@@ -268,6 +307,20 @@ type submitEventRequest struct {
 	InstrumentRef  string `json:"instrument_ref"`
 	OccurredAt     string `json:"occurred_at"`
 	IdempotencyKey string `json:"idempotency_key"`
+
+	// Razorpay's four-field error taxonomy (docs/PHASE5_5_IMPLEMENTATION.md
+	// Unit Z, docs/API_GATEWAY.md), additive alongside FailureCode above,
+	// never a replacement for it: FailureCode remains required. All five
+	// are optional and are OPEN string vocabularies, never validated
+	// against a closed list here or anywhere downstream -- Razorpay's own
+	// docs say error_source and error_step's possible values vary by
+	// payment method, so this Gateway does not assume it has seen the full
+	// set for either.
+	ErrorCode        string `json:"error_code"`
+	ErrorDescription string `json:"error_description"`
+	ErrorSource      string `json:"error_source"`
+	ErrorStep        string `json:"error_step"`
+	ErrorReason      string `json:"error_reason"`
 }
 
 type submitEventResponse struct {
@@ -291,11 +344,16 @@ func (h *Handler) submitEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	record := &ingestionv1.NewRecord{
-		Type:          recordTypeNames[req.Type],
-		AmountPaise:   req.AmountPaise,
-		Currency:      req.Currency,
-		FailureCode:   req.FailureCode,
-		InstrumentRef: req.InstrumentRef,
+		Type:             recordTypeNames[req.Type],
+		AmountPaise:      req.AmountPaise,
+		Currency:         req.Currency,
+		FailureCode:      req.FailureCode,
+		InstrumentRef:    req.InstrumentRef,
+		ErrorCode:        req.ErrorCode,
+		ErrorDescription: req.ErrorDescription,
+		ErrorSource:      req.ErrorSource,
+		ErrorStep:        req.ErrorStep,
+		ErrorReason:      req.ErrorReason,
 	}
 	if req.OccurredAt != "" {
 		if ts, err := time.Parse(time.RFC3339, req.OccurredAt); err == nil {

@@ -35,6 +35,15 @@ type newRecordParams struct {
 	InstrumentRef  string
 	CreatedAt      time.Time
 	IdempotencyKey string // "" is stored as NULL, see insertRecord.
+
+	// Razorpay's four-field error taxonomy (docs/PHASE5_5_IMPLEMENTATION.md
+	// Unit Z), all optional: "" is stored as SQL NULL, same convention as
+	// IdempotencyKey above, via nullIfEmpty.
+	ErrorCode        string
+	ErrorDescription string
+	ErrorSource      string
+	ErrorStep        string
+	ErrorReason      string
 }
 
 // createBatch inserts a new BATCH row for one SubmitBatch call and returns
@@ -79,9 +88,11 @@ func (s *recordStore) rollingBatchID(ctx context.Context) (string, error) {
 // never collides two keyless records (docs/DECISIONS.md).
 func (s *recordStore) insertRecord(ctx context.Context, p newRecordParams) error {
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO record (id, batch_id, type, amount_paise, currency, failure_code, instrument_ref, created_at, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		INSERT INTO record (id, batch_id, type, amount_paise, currency, failure_code, instrument_ref, created_at, idempotency_key,
+		                     error_code, error_description, error_source, error_step, error_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		p.ID, p.BatchID, p.Type, p.AmountPaise, p.Currency, p.FailureCode, p.InstrumentRef, p.CreatedAt, nullIfEmpty(p.IdempotencyKey),
+		nullIfEmpty(p.ErrorCode), nullIfEmpty(p.ErrorDescription), nullIfEmpty(p.ErrorSource), nullIfEmpty(p.ErrorStep), nullIfEmpty(p.ErrorReason),
 	); err != nil {
 		return fmt.Errorf("insert record %s: %w", p.ID, err)
 	}

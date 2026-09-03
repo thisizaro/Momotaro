@@ -4,12 +4,12 @@
 // Razorpay's real documented payload shape rather than a Gateway-invented
 // flat body, exactly as promised in docs/API_GATEWAY.md.
 //
-// Signature verification is deliberately NOT done here (Unit Z, a separate
-// unit). Until it lands this route accepts an unauthenticated body, so
-// every field below is treated as untrusted input: the request body is
-// size-capped (maxDowntimeBodyBytes), nothing here can panic on a
-// malformed payload (a decode failure is a 400, not a crash), and the raw
-// body is never logged, at INFO or otherwise.
+// Signature verification (Unit Z) now runs before this handler is ever
+// called: Routes() wraps it in verifyWebhookSignature (signature.go), which
+// also owns the body-size cap (maxWebhookBodyBytes) that used to live here.
+// Past that check every field below is still treated as untrusted input:
+// nothing here can panic on a malformed payload (a decode failure is a 400,
+// not a crash), and the raw body is never logged, at INFO or otherwise.
 //
 // Thin proxy onto decisionenginev1.DecisionEngineServiceClient, no business
 // logic beyond translating Razorpay's nested wire shape into the RPC's flat
@@ -28,14 +28,6 @@ import (
 
 	decisionenginev1 "github.com/thisizaro/Momotaro/proto/gen/decisionengine/v1"
 )
-
-// maxDowntimeBodyBytes caps how much of the request body this
-// unauthenticated-by-default route will read (docs/PHASE5_5_IMPLEMENTATION.md
-// Unit Y: "cap the body read"), so a hostile or malformed oversized payload
-// cannot exhaust memory before Unit Z's signature check ever gets a chance
-// to reject it. Razorpay's real payload is a few hundred bytes; this is
-// generous headroom, not a tight fit.
-const maxDowntimeBodyBytes = 64 * 1024
 
 // downtimeStatuses is the closed set entity.status must be one of. Unlike
 // severity (an open string, forwarded whatever it is) this one decides how
@@ -143,8 +135,6 @@ func downtimeInstrumentKey(instrument map[string]string, schema []string) string
 // asynchronous pipeline to hand this off to the way submitEvent hands a
 // record to Ingestion), so unlike that route this responds 200, not 202.
 func (h *Handler) submitDowntimeEvent(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxDowntimeBodyBytes)
-
 	var req downtimeWebhookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "malformed JSON body")

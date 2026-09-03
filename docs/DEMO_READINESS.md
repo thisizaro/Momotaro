@@ -39,6 +39,16 @@ Ordered by what decides whether this wins. **P0 first, top to bottom.**
 > hold a retry back from a known Razorpay-published outage and let it
 > through again once resolved. Signature verification (Unit Z) is not part
 > of this PR. Detail under P2 below and in `docs/DECISIONS.md`.
+>
+> **Unit Z done, 2026-09-03. P2 is now closed, the last planned unit.**
+> `X-Razorpay-Signature` is verified (HMAC-SHA256 over the raw body,
+> constant-time, fail-closed on a missing header, a wrong signature, or an
+> unset secret) on both `payment-failed` and `payment-downtime`, one shared
+> middleware rather than duplicated. The four-field error taxonomy
+> (`error_code`, `error_description`, `error_source`, `error_step`,
+> `error_reason`) is accepted alongside `failure_code` and used by the
+> rules engine as a fallback signal when the failure code alone is
+> unrecognised. Detail under P2 below and in `docs/DECISIONS.md`.
 
 Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 (AC onward) so nothing collides with U to AB.
@@ -58,7 +68,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 9 | AJ | Live production stream (CLI + honest no-baseline) | 2h | **done** |
 | **P2** | | **Differentiators** | **~11h** | |
 | 10 | Y | Razorpay payment-downtime webhooks | 5h | **done, scoped down** |
-| 11 | Z | Real webhook payload, signature, error taxonomy | 6h | |
+| 11 | Z | Webhook signature verification, four-field error taxonomy | 6h | **done** |
 | **P3** | | **Polish** | **~6h** | |
 | 12 | AK | `/help` page from the frozen contract | 3h | |
 | 13 | AL | Misleading labels and the confusion matrix | 2h | |
@@ -751,8 +761,34 @@ escalated, so resuming on `.resolved` needs no separate "wake up" mechanism.
 Signature verification is Unit Z's job, not done here. Full writeup,
 including what was cut for time, in `docs/DECISIONS.md` and `docs/PLAN.md`.
 
-### Unit Z: real webhook payload, signature, error taxonomy
-Unchanged from `docs/PHASE5_5_IMPLEMENTATION.md`.
+### Unit Z: webhook signature verification and the four-field error taxonomy
+
+**Done, 2026-09-03. This closes P2, the last planned unit.** `X-Razorpay-
+Signature` (HMAC-SHA256 over the raw body, verified before decoding,
+constant-time comparison) is now required on both `payment-failed` and
+`payment-downtime`, one shared middleware rather than duplicated per route.
+`WEBHOOK_SECRET` is required at startup, the same requiredness as `API_KEY`:
+an unset secret fails the Gateway's startup rather than silently letting
+every webhook through or quietly rejecting them forever. `scripts/loadgen`
+signs its own traffic, so `make loadgen` keeps working with no bypass on the
+Gateway side.
+
+Razorpay's four additional error fields (`error_code`, `error_description`,
+`error_source`, `error_step`, `error_reason`) are accepted alongside the
+existing `failure_code` and stored on `record` (migration 00009). The
+classifier's rules engine uses `error_source`/`error_step` as a fallback
+signal, exactly the worked example this unit was scoped around: an
+unrecognised, vague code like Razorpay's own `payment_failed` paired with
+`error_step=payment_authorization` and a systemic `error_source` (bank,
+gateway, network) resolves to a retry; paired with
+`error_step=payment_authentication` and `error_source=customer` it does
+not. Both fields stay open string vocabularies (no closed enum), since
+Razorpay's own docs say the possible values vary by payment method.
+
+**Scoped out**: switching `payment-failed` to Razorpay's real nested
+payload shape (kept the flat wire body, additive fields only); surfacing
+the new fields in `web/`, Reporting or Audit; any change to the LLM prompt
+or provider chain. Full reasoning in `docs/DECISIONS.md`.
 
 ---
 

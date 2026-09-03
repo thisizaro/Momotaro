@@ -30,15 +30,21 @@ const gatewayDownThreshold = 3
 // against the wall clock); logger is injected so tests can capture and
 // assert on it instead of scraping stderr.
 type runConfig struct {
-	url        string
-	apiKey     string
-	rate       float64
-	count      int           // total events to send; 0 means duration-bound instead
-	duration   time.Duration // how long to run; 0 means count-bound instead
-	seed       int64
-	httpClient *http.Client
-	clk        clock.Clock
-	logger     *slog.Logger
+	url    string
+	apiKey string
+	// webhookSecret signs every event's body into X-Razorpay-Signature
+	// (docs/PHASE5_5_IMPLEMENTATION.md Unit Z). Required in practice once
+	// the Gateway has WEBHOOK_SECRET configured, the same way apiKey is
+	// required once it has API_KEY configured; main.go fails fast if it is
+	// empty, the same check apiKey already gets.
+	webhookSecret string
+	rate          float64
+	count         int           // total events to send; 0 means duration-bound instead
+	duration      time.Duration // how long to run; 0 means count-bound instead
+	seed          int64
+	httpClient    *http.Client
+	clk           clock.Clock
+	logger        *slog.Logger
 }
 
 // run drives the send loop: paced by a RateLimiter, each event drawn fresh
@@ -109,7 +115,7 @@ func run(ctx context.Context, cfg runConfig) (*Summary, error) {
 		}
 
 		summary.RecordSent()
-		result := sendEvent(ctx, cfg.httpClient, cfg.url, cfg.apiKey, payload)
+		result := sendEvent(ctx, cfg.httpClient, cfg.url, cfg.apiKey, cfg.webhookSecret, payload)
 		if result.accepted {
 			summary.RecordAccepted()
 			consecutiveFailures = 0

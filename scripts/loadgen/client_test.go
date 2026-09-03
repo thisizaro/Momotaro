@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/thisizaro/Momotaro/internal/platform/webhooksig"
 )
 
 func testPayload() WebhookPayload {
@@ -29,7 +32,7 @@ func TestSendEventAcceptedOn202(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	result := sendEvent(context.Background(), client, srv.URL, "super-secret-key", testPayload())
+	result := sendEvent(context.Background(), client, srv.URL, "super-secret-key", "wh-secret", testPayload())
 
 	if !result.accepted {
 		t.Fatalf("result.accepted = false, want true (status %d, err %v)", result.status, result.err)
@@ -42,6 +45,56 @@ func TestSendEventAcceptedOn202(t *testing.T) {
 	}
 }
 
+// TestSendEventSignsBodyWithWebhookSecret proves sendEvent computes
+// X-Razorpay-Signature the same way services/api-gateway verifies it
+// (internal/platform/webhooksig): an HMAC-SHA256 hex digest of the exact
+// marshaled request body, so `make loadgen` keeps working once the Gateway
+// requires a valid signature (docs/PHASE5_5_IMPLEMENTATION.md Unit Z).
+func TestSendEventSignsBodyWithWebhookSecret(t *testing.T) {
+	var gotSig string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSig = r.Header.Get("X-Razorpay-Signature")
+		body := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(body)
+		gotBody = body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	sendEvent(context.Background(), client, srv.URL, "api-key", "wh-secret-xyz", testPayload())
+
+	wantBody, err := json.Marshal(testPayload())
+	if err != nil {
+		t.Fatalf("marshal testPayload: %v", err)
+	}
+	want := webhooksig.Sign("wh-secret-xyz", wantBody)
+	if gotSig != want {
+		t.Errorf("X-Razorpay-Signature = %q, want %q (HMAC-SHA256 of the marshaled body)", gotSig, want)
+	}
+	if string(gotBody) != string(wantBody) {
+		t.Fatalf("server saw body %s, want %s", gotBody, wantBody)
+	}
+}
+
+// TestSendEventNeverLeaksWebhookSecretInError mirrors
+// TestSendEventNeverLeaksAPIKeyInError for the webhook secret: whatever
+// sendEvent returns on failure must never contain it.
+func TestSendEventNeverLeaksWebhookSecretInError(t *testing.T) {
+	const secret = "wh-do-not-log-me-13579"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	result := sendEvent(context.Background(), client, url, "k", secret, testPayload())
+
+	if result.err != nil && strings.Contains(result.err.Error(), secret) {
+		t.Fatalf("error message leaks the webhook secret: %v", result.err)
+	}
+}
+
 func TestSendEventNotAcceptedOnErrorStatus(t *testing.T) {
 	for _, code := range []int{400, 401, 500, 502} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +102,7 @@ func TestSendEventNotAcceptedOnErrorStatus(t *testing.T) {
 			w.Write([]byte(`{"error":{"code":"X","message":"nope"}}`))
 		}))
 		client := &http.Client{Timeout: 2 * time.Second}
-		result := sendEvent(context.Background(), client, srv.URL, "k", testPayload())
+		result := sendEvent(context.Background(), client, srv.URL, "k", "wh-secret", testPayload())
 		srv.Close()
 
 		if result.accepted {
@@ -71,7 +124,7 @@ func TestSendEventGatewayDownIsReportedNotSilent(t *testing.T) {
 	srv.Close() // now nothing is listening
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	result := sendEvent(context.Background(), client, url, "k", testPayload())
+	result := sendEvent(context.Background(), client, url, "k", "wh-secret", testPayload())
 
 	if result.accepted {
 		t.Fatal("result.accepted = true against a closed server, want false")
@@ -91,7 +144,7 @@ func TestSendEventNeverLeaksAPIKeyInError(t *testing.T) {
 	srv.Close()
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	result := sendEvent(context.Background(), client, url, secret, testPayload())
+	result := sendEvent(context.Background(), client, url, secret, "wh-secret", testPayload())
 
 	if result.err != nil && strings.Contains(result.err.Error(), secret) {
 		t.Fatalf("error message leaks the API key: %v", result.err)
@@ -109,7 +162,7 @@ func TestSendEventHonoursContextCancellation(t *testing.T) {
 	cancel()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	result := sendEvent(ctx, client, srv.URL, "k", testPayload())
+	result := sendEvent(ctx, client, srv.URL, "k", "wh-secret", testPayload())
 
 	if result.accepted {
 		t.Fatal("result.accepted = true with an already-cancelled context, want false")
