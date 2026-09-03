@@ -118,10 +118,26 @@ func (s *Server) SimulateOutcome(ctx context.Context, req *worldsimv1.SimulateOu
 
 	rp, err := s.store.loadRecordProfile(ctx, recordID)
 	if err != nil {
-		if errors.Is(err, errNoGroundTruth) {
+		if !errors.Is(err, errNoGroundTruth) {
+			return nil, err
+		}
+		// No sealed profile: this record arrived through the public
+		// webhook API rather than being seeded, so World Simulator
+		// derives one from its failure code and answers as the world
+		// would (unseeded.go). Refusing here used to leave the record in
+		// NUDGED or RETRYING forever, since the Executor had no outcome
+		// to record (docs/INCIDENTS.md 2026-09-03).
+		code, codeErr := s.store.loadUnseededFailureCode(ctx, recordID)
+		if codeErr != nil {
+			// The record genuinely does not exist. That is a real
+			// NotFound, unlike merely unseeded traffic.
 			return nil, status.Errorf(codes.NotFound, "%v", err)
 		}
-		return nil, err
+		profile, ok := unseededProfile(code)
+		if !ok {
+			return nil, status.Errorf(codes.NotFound, "%v", err)
+		}
+		rp = recordProfile{FailureCode: code, Profile: profile}
 	}
 
 	// rp.RollKey is empty only for a GROUND_TRUTH row written before

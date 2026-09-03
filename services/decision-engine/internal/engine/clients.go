@@ -139,6 +139,20 @@ type composedNudge struct {
 func (c *clients) composeNudge(ctx context.Context, record *commonv1.Record, bucket commonv1.RootCauseBucket, action commonv1.ActionType, contactNumber int32) (composedNudge, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.callTimeout)
 	defer cancel()
+
+	// The sampling ceiling covers composition as well as classification.
+	// It did not before, and a live run that nudged 146 records made 479
+	// Groq attempts and held the circuit breaker open for 361 of them,
+	// after which every classification degraded to rules too: an
+	// unbudgeted path spent the budget the budgeted path was protecting
+	// (docs/INCIDENTS.md 2026-09-03). Every nudge is eligible for a live
+	// call, so this is consider(true) unconditionally; when the ceiling is
+	// spent the request is marked template-only and the Classifier's
+	// terminal rung answers, which is a real Hinglish message either way.
+	if !c.llmBudget.consider(true) {
+		return c.composeNudgeTemplateOnly(callCtx, record, bucket, action, contactNumber)
+	}
+
 	resp, err := c.classifier.ComposeNudge(callCtx, &classifierv1.ComposeNudgeRequest{
 		Record:        record,
 		Bucket:        bucket,
@@ -146,6 +160,26 @@ func (c *clients) composeNudge(ctx context.Context, record *commonv1.Record, buc
 		Locale:        nudgeLocale,
 		ContactNumber: contactNumber,
 		MaxChars:      c.nudgeMaxChars,
+	})
+	if err != nil {
+		return composedNudge{}, err
+	}
+	return composedNudge{message: resp.GetMessage(), source: resp.GetSource()}, nil
+}
+
+// composeNudgeTemplateOnly asks for the same wording with the live rungs
+// skipped, used when the sampling ceiling is spent. The Classifier's
+// terminal rung is the static Hinglish template, which does no I/O and
+// cannot fail, so this always produces a message.
+func (c *clients) composeNudgeTemplateOnly(ctx context.Context, record *commonv1.Record, bucket commonv1.RootCauseBucket, action commonv1.ActionType, contactNumber int32) (composedNudge, error) {
+	resp, err := c.classifier.ComposeNudge(ctx, &classifierv1.ComposeNudgeRequest{
+		Record:            record,
+		Bucket:            bucket,
+		ActionType:        action,
+		Locale:            nudgeLocale,
+		ContactNumber:     contactNumber,
+		MaxChars:          c.nudgeMaxChars,
+		ForceTemplateOnly: true,
 	})
 	if err != nil {
 		return composedNudge{}, err

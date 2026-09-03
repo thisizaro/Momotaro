@@ -341,6 +341,31 @@ type BucketProfile struct {
 // bucket deliberately, and it must use the exact same recovery numbers this
 // package's own default distribution uses rather than a second, drifting
 // copy of them.
+// BucketForFailureCode maps a failure code to the bucket that code
+// obviously implies, across every record type's pool, and reports whether
+// the code was recognised at all.
+//
+// This exists for traffic that arrived through the public webhook API
+// rather than being generated here, which therefore has no GROUND_TRUTH
+// row. World Simulator uses it to answer such a record plausibly instead
+// of refusing to roll (demo/world-simulator, docs/INCIDENTS.md
+// 2026-09-03). It deliberately returns the OBVIOUS bucket with no
+// divergence: divergence exists to make classification accuracy a real
+// measurement, and unseeded traffic is never scored for accuracy, so
+// inventing a disagreement here would be noise rather than signal.
+func BucketForFailureCode(code string) (commonv1.RootCauseBucket, bool) {
+	for _, pool := range [][]codeEntry{
+		paymentAndMandateCodes, mandateOnlyCodes, checkoutCodes, invoiceCodes,
+	} {
+		for _, e := range pool {
+			if e.Code == code {
+				return e.ObviousBucket, true
+			}
+		}
+	}
+	return commonv1.RootCauseBucket_ROOT_CAUSE_BUCKET_UNSPECIFIED, false
+}
+
 func ProfileForBucket(bucket commonv1.RootCauseBucket) BucketProfile {
 	p := profileFor(bucket)
 	return BucketProfile{

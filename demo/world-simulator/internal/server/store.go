@@ -50,6 +50,21 @@ type recordProfile struct {
 	RollKey string
 }
 
+// loadUnseededFailureCode reads just the failure code for a record that has
+// no GROUND_TRUTH row, so SimulateOutcome can derive a profile for it
+// (unseeded.go). Returns pgx.ErrNoRows only when the record itself does not
+// exist, which is a genuine NotFound rather than merely unseeded traffic.
+func (s *store) loadUnseededFailureCode(ctx context.Context, recordID string) (string, error) {
+	var code string
+	err := s.pool.QueryRow(ctx,
+		`SELECT failure_code FROM record WHERE id = $1`, recordID,
+	).Scan(&code)
+	if err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
 func (s *store) loadRecordProfile(ctx context.Context, recordID string) (recordProfile, error) {
 	var (
 		rp         recordProfile
