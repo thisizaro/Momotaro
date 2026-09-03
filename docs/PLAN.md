@@ -1106,7 +1106,7 @@ ordered by value per hour. Detail for each is in
       payment-downtime webhooks; Unit Z webhook signature verification and
       the four-field error taxonomy → `docs/PHASE5_5_IMPLEMENTATION.md`,
       `docs/DEMO_READINESS.md`
-- [ ] **P3, ~6h.** AK `/help` page from the frozen contract, **done**
+- [x] **P3, ~6h, done 2026-09-03.** AK `/help` page from the frozen contract
       2026-09-03: GET /v1/help content negotiates, a browser gets a
       rendered FastAPI-/docs-shaped page (native <details> accordion, no
       JavaScript), everything else keeps the JSON, both built from one
