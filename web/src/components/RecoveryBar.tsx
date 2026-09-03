@@ -42,7 +42,15 @@ export function RecoveryBar({ report }: Props) {
         </span>
         <span className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-full bg-slate-200" />
-          <span className="text-slate-600">In flight / lost ({unrecoveredPct.toFixed(1)}%)</span>
+          {/* "In flight / lost" implied active work even on a fully-settled
+              batch (in_flight_count: 0), directly contradicting the IN
+              FLIGHT tile elsewhere on the same screen
+              (docs/DEMO_READINESS.md Unit AL, docs/INCIDENTS.md
+              2026-09-03). This value is escalated + closed uneconomic
+              money, not money still being worked; "Not recovered" is true
+              in every batch state instead of only while records are
+              moving. */}
+          <span className="text-slate-600">Not recovered ({unrecoveredPct.toFixed(1)}%)</span>
         </span>
       </div>
     </div>

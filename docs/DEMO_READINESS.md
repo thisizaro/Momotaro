@@ -81,7 +81,7 @@ Detail per unit below the table. Units continue the Phase 5.5 letter sequence
 | 11 | Z | Webhook signature verification, four-field error taxonomy | 6h | **done** |
 | **P3** | | **Polish** | **~6h** | |
 | 12 | AK | `/help` page from the frozen contract | 3h | **done** |
-| 13 | AL | Misleading labels and the confusion matrix | 2h | |
+| 13 | AL | Misleading labels and the confusion matrix | 2h | **done** |
 | 14 | AM | Read-only config panel | 1h | **done** |
 | 15 | AN | Redesign the record drawer, and show real time against simulated time | 3h | **done** #110 |
 | 16 | AO | Timeline overplotting, filtering and interactivity | 4h | **done** #112 |
@@ -822,13 +822,35 @@ renders the page with every route and the auth vocabulary present, one
 proving `Accept: */*` does not accidentally trip the HTML branch.
 
 ### Unit AL: misleading labels
-- **"In flight / lost (40.2%)"** on the recovery bar while the In Flight tile
-  reads 0. Those records are settled-but-not-recovered, not in flight.
-- **"Escalations 0"** sitting directly under a tile reading **"ESCALATED 13"**.
-  The first counts executed interventions (escalation is not one), the second
-  counts records in that state. Both correct, reads as a contradiction.
-- **Confusion matrix shows 3 of 7 buckets** with no indication whether the rest
-  were perfect or simply never predicted.
+
+**Resolved 2026-09-03, two of three.** Verified live on a real batch before
+touching anything, and again after, not assumed from a static screenshot.
+
+- **"In flight / lost (X%)"** on the recovery bar read as active work even
+  on a fully-settled batch (`in_flight_count: 0`), directly contradicting
+  the IN FLIGHT tile elsewhere on the same screen. That value is escalated
+  plus closed-uneconomic money, not money still being worked. Renamed to
+  **"Not recovered"**, true in every batch state rather than only while
+  records are moving (`RecoveryBar.tsx`).
+- **"Escalations 0"** sat directly under a tile reading **"ESCALATED N"**.
+  Traced to the source rather than assumed: `by_intervention.ACTION_TYPE_
+  ESCALATE?.attempt_count` is structurally always 0, not merely usually 0.
+  `decideForAction` (`state.go`) hands the Executor `ACTION_TYPE_
+  UNSPECIFIED` alongside `RECORD_STATE_ESCALATED`, never `ACTION_TYPE_
+  ESCALATE`; escalation is a direct state transition the Decision Engine
+  writes itself, never a pending action dispatched for execution. No
+  rename could make a permanently-zero stat honest, so the row was removed
+  from `App.tsx` rather than relabelled.
+- **"Confusion matrix shows 3 of 7 buckets"?** Checked and this one is not
+  real. The container is `max-h-[160px] overflow-y-auto`
+  (`ConfusionMatrix.tsx`): genuinely scrollable, and scrolling it reveals
+  all 7 buckets with their real counts. A first pass at this investigation
+  claimed data was hidden with no indication, based on one static
+  screenshot; that was wrong, caught by actually scrolling the container
+  (`scrollHeight: 364` vs `clientHeight: 160`, confirmed programmatically)
+  before writing anything down. Left as-is: a thin scrollbar with no
+  "scroll for more" hint is a minor discoverability nit at most, not a
+  data problem, and not worth a code change on its own.
 
 ### Unit AM: read-only config panel
 Show what the agent is bounded by, on the Demo Controls page, clearly marked

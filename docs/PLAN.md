@@ -1110,8 +1110,13 @@ ordered by value per hour. Detail for each is in
       2026-09-03: GET /v1/help content negotiates, a browser gets a
       rendered FastAPI-/docs-shaped page (native <details> accordion, no
       JavaScript), everything else keeps the JSON, both built from one
-      helpRoutes slice; AL misleading labels and the partial confusion
-      matrix; AM read-only config panel
+      helpRoutes slice; AL misleading labels, **done** 2026-09-03: two of
+      three confirmed live and fixed ("In flight / lost" renamed to "Not
+      recovered", the structurally-always-zero "Escalations" tally
+      removed rather than relabelled), the third (confusion matrix
+      showing only 3 of 7 buckets) checked and found not real, the panel
+      is genuinely scrollable; AM read-only config panel, see its own
+      line below
       → `docs/DEMO_READINESS.md`
 - [x] **AM read-only config panel, done 2026-09-03.** New `GetAgentConfig`
       RPC on the Decision Engine's own gRPC service returns the guardrail

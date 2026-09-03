@@ -404,12 +404,23 @@ function App() {
                         (report.by_intervention.ACTION_TYPE_NUDGE_REMINDER?.attempt_count ?? 0)}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-500">Escalations</span>
-                    <span className="text-sm font-semibold text-slate-700 tabular-nums">
-                      {report.by_intervention.ACTION_TYPE_ESCALATE?.attempt_count ?? 0}
-                    </span>
-                  </div>
+                  {/* An "Escalations" row here used to read
+                      by_intervention.ACTION_TYPE_ESCALATE?.attempt_count,
+                      which is structurally always 0: escalation is a
+                      direct state transition the Decision Engine writes
+                      itself (directPath, engine.go), never a pending
+                      action it hands the Executor to attempt
+                      (decideForAction, state.go, always returns
+                      ACTION_TYPE_UNSPECIFIED alongside RECORD_STATE_
+                      ESCALATED). A permanently-zero stat sitting right
+                      below a real "ESCALATED N" tile elsewhere on the
+                      same screen read as a contradiction rather than
+                      what it actually was, an unreachable code path
+                      (docs/DEMO_READINESS.md Unit AL,
+                      docs/INCIDENTS.md 2026-09-03). Removed rather than
+                      relabelled: there is nothing this row could
+                      honestly say that the real ESCALATED tile does not
+                      already say better. */}
                 </div>
               </div>
             ) : (
