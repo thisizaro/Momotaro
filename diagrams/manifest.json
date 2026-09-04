@@ -1,0 +1,86 @@
+[
+  {
+    "name": "01-overview",
+    "title": "Overview: how a record travels",
+    "source": "README.md #0",
+    "w": 1808,
+    "h": 668
+  },
+  {
+    "name": "02-system-context",
+    "title": "System context: who we exchange data with",
+    "source": "docs/DATA_FLOW.md #0",
+    "w": 1400,
+    "h": 915
+  },
+  {
+    "name": "03-container-view",
+    "title": "Container view: all 9 services, every protocol",
+    "source": "docs/DATA_FLOW.md #1",
+    "w": 2634,
+    "h": 1630
+  },
+  {
+    "name": "04-architecture-full",
+    "title": "Full architecture with prod vs demo boundaries",
+    "source": "docs/ARCHITECTURE.md #0",
+    "w": 4175,
+    "h": 1760
+  },
+  {
+    "name": "05-sequence-immediate",
+    "title": "One record, immediate path",
+    "source": "docs/DATA_FLOW.md #2",
+    "w": 2041,
+    "h": 1326
+  },
+  {
+    "name": "06-sequence-delayed",
+    "title": "Delayed path: the nudge callback",
+    "source": "docs/DATA_FLOW.md #3",
+    "w": 1564,
+    "h": 824
+  },
+  {
+    "name": "07-sequence-detailed",
+    "title": "Detailed lifecycle sequence",
+    "source": "docs/ARCHITECTURE.md #1",
+    "w": 3904,
+    "h": 1575
+  },
+  {
+    "name": "08-state-machine",
+    "title": "Record lifecycle state machine",
+    "source": "docs/DATA_FLOW.md #4",
+    "w": 1400,
+    "h": 784
+  },
+  {
+    "name": "09-state-machine-alt",
+    "title": "State machine (architecture version)",
+    "source": "docs/ARCHITECTURE.md #2",
+    "w": 1400,
+    "h": 673
+  },
+  {
+    "name": "10-kafka-topics",
+    "title": "Kafka topic map",
+    "source": "docs/ARCHITECTURE.md #3",
+    "w": 1400,
+    "h": 285
+  },
+  {
+    "name": "11-er-diagram",
+    "title": "Data at rest: 7 tables",
+    "source": "docs/DATA_FLOW.md #5",
+    "w": 1400,
+    "h": 551
+  },
+  {
+    "name": "12-er-schema",
+    "title": "Schema with columns",
+    "source": "docs/ARCHITECTURE.md #4",
+    "w": 1612,
+    "h": 1128
+  }
+]

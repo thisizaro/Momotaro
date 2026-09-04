@@ -1,0 +1,3 @@
+# Raster copies of the SVGs beside them, regenerated on demand and
+# not worth 4MB in git. The viewer and the docs both use the .svg files.
+*.png

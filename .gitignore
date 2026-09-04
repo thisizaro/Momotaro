@@ -62,3 +62,6 @@ deploy/observability/prometheus.generated.yml
 
 # Logs from `make demo-up` (docs/INCIDENTS.md 2026-08-31)
 .demo-logs/
+
+# Local working notes from the docs audit, deliberately not published.
+AUDIT_FINDINGS.md

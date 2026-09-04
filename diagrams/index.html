@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Momotaro diagrams</title>
+<style>
+  html,body{margin:0;height:100%;font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;background:#fff;color:#111}
+  header{position:fixed;top:0;left:0;right:0;height:54px;display:flex;align-items:center;gap:14px;
+         padding:0 16px;background:#fff;border-bottom:1px solid #e5e7eb;z-index:10}
+  select{font:inherit;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;min-width:420px}
+  button{font:inherit;padding:5px 12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer}
+  button:hover{background:#f3f4f6}
+  .hint{color:#6b7280;font-size:12.5px;margin-left:auto}
+  .src{color:#9ca3af;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  main{position:absolute;top:54px;left:0;right:0;bottom:0;overflow:hidden;cursor:grab;background:#fafafa}
+  main.drag{cursor:grabbing}
+  #pan{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+  #pan img{display:block;image-rendering:auto}
+</style>
+<header>
+  <strong>Momotaro</strong>
+  <select id="pick"><option value="01-overview">01. Overview: how a record travels</option>
+<option value="02-system-context">02. System context: who we exchange data with</option>
+<option value="03-container-view">03. Container view: all 9 services, every protocol</option>
+<option value="04-architecture-full">04. Full architecture with prod vs demo boundaries</option>
+<option value="05-sequence-immediate">05. One record, immediate path</option>
+<option value="06-sequence-delayed">06. Delayed path: the nudge callback</option>
+<option value="07-sequence-detailed">07. Detailed lifecycle sequence</option>
+<option value="08-state-machine">08. Record lifecycle state machine</option>
+<option value="09-state-machine-alt">09. State machine (architecture version)</option>
+<option value="10-kafka-topics">10. Kafka topic map</option>
+<option value="11-er-diagram">11. Data at rest: 7 tables</option>
+<option value="12-er-schema">12. Schema with columns</option></select>
+  <button id="fit">Fit</button>
+  <button id="one">100%</button>
+  <span class="src" id="src"></span>
+  <span class="hint">scroll = zoom &middot; drag = pan &middot; [ ] = prev/next</span>
+</header>
+<main id="stage"><div id="pan"><img id="img" alt=""></div></main>
+<script>
+const NAMES = ["01-overview", "02-system-context", "03-container-view", "04-architecture-full", "05-sequence-immediate", "06-sequence-delayed", "07-sequence-detailed", "08-state-machine", "09-state-machine-alt", "10-kafka-topics", "11-er-diagram", "12-er-schema"], META = {"01-overview": {"title": "Overview: how a record travels", "source": "README.md #0"}, "02-system-context": {"title": "System context: who we exchange data with", "source": "docs/DATA_FLOW.md #0"}, "03-container-view": {"title": "Container view: all 9 services, every protocol", "source": "docs/DATA_FLOW.md #1"}, "04-architecture-full": {"title": "Full architecture with prod vs demo boundaries", "source": "docs/ARCHITECTURE.md #0"}, "05-sequence-immediate": {"title": "One record, immediate path", "source": "docs/DATA_FLOW.md #2"}, "06-sequence-delayed": {"title": "Delayed path: the nudge callback", "source": "docs/DATA_FLOW.md #3"}, "07-sequence-detailed": {"title": "Detailed lifecycle sequence", "source": "docs/ARCHITECTURE.md #1"}, "08-state-machine": {"title": "Record lifecycle state machine", "source": "docs/DATA_FLOW.md #4"}, "09-state-machine-alt": {"title": "State machine (architecture version)", "source": "docs/ARCHITECTURE.md #2"}, "10-kafka-topics": {"title": "Kafka topic map", "source": "docs/ARCHITECTURE.md #3"}, "11-er-diagram": {"title": "Data at rest: 7 tables", "source": "docs/DATA_FLOW.md #5"}, "12-er-schema": {"title": "Schema with columns", "source": "docs/ARCHITECTURE.md #4"}};
+const stage = document.getElementById('stage'), pan = document.getElementById('pan'),
+      img = document.getElementById('img'), pick = document.getElementById('pick');
+let cur = NAMES[0], k = 1, x = 0, y = 0;
+
+const apply = () => pan.style.transform = `translate(${x}px,${y}px) scale(${k})`;
+
+function fit(){
+  if(!img.naturalWidth) return;
+  const w = img.naturalWidth, h = img.naturalHeight;
+  k = Math.min((stage.clientWidth - 48) / w, (stage.clientHeight - 48) / h);
+  x = (stage.clientWidth - w * k) / 2;
+  y = (stage.clientHeight - h * k) / 2;
+  apply();
+}
+function show(n){
+  cur = n; pick.value = n;
+  document.getElementById('src').textContent = META[n].source;
+  img.onload = fit;
+  img.src = n + '.svg';
+}
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = stage.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const f = e.deltaY < 0 ? 1.15 : 1/1.15, nk = Math.max(0.03, Math.min(20, k * f));
+  x = mx - (mx - x) * (nk / k); y = my - (my - y) * (nk / k); k = nk; apply();
+}, {passive:false});
+let down = false, px = 0, py = 0;
+stage.addEventListener('mousedown', e => { down = true; px = e.clientX; py = e.clientY; stage.classList.add('drag'); e.preventDefault(); });
+addEventListener('mouseup', () => { down = false; stage.classList.remove('drag'); });
+addEventListener('mousemove', e => { if(!down) return; x += e.clientX - px; y += e.clientY - py; px = e.clientX; py = e.clientY; apply(); });
+pick.onchange = e => show(e.target.value);
+document.getElementById('fit').onclick = fit;
+document.getElementById('one').onclick = () => { k = 1; x = 0; y = 0; apply(); };
+addEventListener('keydown', e => {
+  const i = NAMES.indexOf(cur);
+  if(e.key === ']') show(NAMES[(i+1) % NAMES.length]);
+  if(e.key === '[') show(NAMES[(i-1+NAMES.length) % NAMES.length]);
+  if(e.key === 'f') fit();
+});
+addEventListener('resize', fit);
+show(cur);
+</script>
+</html>
