@@ -5,26 +5,34 @@ Temporary working file. Delete after the hackathon.
 Every number was measured on 2026-09-04 against the running stack, using the
 two batches this script films: `COUNT=50 SEED=4` and `COUNT=100 SEED=4`.
 
-**Runtime, measured rather than hoped for: about 9:15.** Narration is 1,167
-words, which is 7:56 of speech, plus roughly 80 seconds of pauses and tab
-switching. Batch fill sits outside that since you are fast forwarding it.
+**Runtime, measured: the full script is about 12 minutes.** Narration is
+1,558 words, which is 10:36 of speech, plus roughly 85 seconds of pauses and
+tab switching. Batch fill sits outside that since you are fast forwarding it.
 
-You asked for 7 minutes and then added the full architecture walkthrough, the
-systems depth, and code on screen. Those three are worth about 3 minutes
-between them. Rather than pretend it compresses, here is the honest number and
-a specific way down.
+You asked for 7 and then added the architecture walkthrough, the systems
+depth, code on screen, the time-compression explanation, and the evaluation
+story. Each was the right call and each costs 40 to 100 seconds. **7 minutes
+no longer holds all of it.** Pick a version before you record.
 
-To land near 7:00, cut these three and nothing else:
+**The 8 minute cut.** Everything survives, tightened:
 
-- The two sequence diagrams at 0:58. Keep the container view and the state
-  machine. Saves about 40 seconds.
-- The live run's second half at 4:20. Seed the 50, then cut straight to the
-  settled 100-record numbers. Saves about 20 seconds.
-- Fold "when it declines to act" at 6:22 into the end of the decision panel
-  beat. Saves about 25 seconds.
+- Architecture at 0:58: drop both sequence diagrams, keep the container view
+  and the state machine. Saves 40 seconds.
+- Live run at 4:20: keep the config panel, cut straight from seeding the 50
+  to the settled 100 numbers. Saves 25 seconds.
+- Failure recovery at 7:30: drop the boot-time chain validation sentence.
+  Saves 12 seconds.
+- Evaluation at 8:12: keep the three tiers and the isolation test, drop the
+  crash-safety paragraph and mention it only if asked. Saves 30 seconds.
+- Fold "when it declines to act" into the end of the decision panel beat.
+  Saves 20 seconds.
 
-Do not cut the systems beat at 2:42. That is the one that shows what kind of
-engineer built this, and it is the reason the rest is believable.
+**The 12 minute full version.** Film it as written. Better for a walkthrough
+video or the panel than for a submission with a hard cap.
+
+If you are forced to 7, drop the evaluation beat rather than the systems
+beat, and answer evaluation from Part 5 if a judge asks. The systems beat is
+what makes the rest believable.
 
 The framing throughout is event-driven distributed systems, with the model as
 one bounded component inside it. That is what the code is, and it is what you
@@ -56,8 +64,8 @@ in the same folder if you would rather open one directly.
 | `10-kafka-topics` | the three topics and who reads them | on request |
 | `11-er-diagram` | the seven tables | on request |
 
-`diagrams/` is untracked, so it stays out of the repo judges browse. Say the
-word and I will commit it.
+The SVGs and the viewer are committed, so `git pull` gets them on any
+machine. The PNG copies stay local and are gitignored.
 
 ### Browser tabs
 
@@ -272,11 +280,33 @@ Editor tab 4, `attempt/store.go:27`:
 
 ### 4:20 to 5:22, the live run
 
-Dashboard, Demo Controls. Open the scenario dropdown so the presets show,
-pick normal, count 50, seed 4, seed it. Then switch to the settled
-100-record batch.
+Dashboard, Demo Controls. **Start with the agent config panel further down
+that page**, then scroll up to seed. Open the scenario dropdown so the
+presets show, pick normal, count 50, seed 4, seed it. Then switch to the
+settled 100-record batch.
 
-> "I will seed fifty failed payments from the dashboard. These presets each
+Config panel first, because the next thing on screen is a seven day recovery
+window resolving in seconds and the viewer needs to know why:
+
+> "Before I run anything, this panel. It is not a config file I could have
+> edited, it is the Decision Engine reporting the values it actually loaded
+> and validated at boot, proxied over its own RPC.
+>
+> Time scale three hundred thousand. One real second stands for about three
+> and a half simulated days, so a salary-window retry that would really wait
+> until the first of the month lands in seconds. The retry cap is three, the
+> contact cap is three.
+>
+> Look at the cooldown against the recovery window. The cooldown is a wait we
+> schedule, so it compresses to under a second. The recovery window stays a
+> full seven days, uncompressed, because it is compared against a record's
+> real elapsed age rather than waited out. Scaling that one escalated
+> seventy-three of a hundred records before economics ever priced them. It is
+> in the incident log."
+
+Then seed:
+
+> "Now fifty failed payments, seeded from this page. These presets each
 > concentrate one root cause: a bank outage, salary day, dead cards.
 >
 > Every record carries a hidden answer key, what is really wrong with it and
@@ -351,7 +381,46 @@ A record's audit trail with the provider hop chips. Then editor tab 5.
 > That check runs at boot, so a bad configuration is a failed deploy rather
 > than a pipeline that stalls the first time a provider goes down."
 
-### 8:12 to 8:58, Razorpay depth and where the instinct comes from
+### 8:12 to 9:05, how I know any of this works
+
+On screen: the System Invariants panel on the dashboard, then a terminal
+showing `test/e2e/`, then `test/integrity/ground_truth_isolation_test.go`.
+
+This beat answers "you showed me numbers, why should I believe them."
+
+> "Three questions here. Does the pipeline work, does it stay correct under
+> failure, and is the accuracy number honest.
+>
+> Tests run in three tiers. Unit tests with no infrastructure on every push.
+> Integration tests against a real Postgres, real Kafka, real Redis, because
+> a mocked database drifts from the real one and that drift is the bug you
+> were trying to catch. Then end to end, which builds all nine services,
+> runs them as real processes, and drives a batch through the whole thing.
+>
+> One of those kills the Decision Engine mid-batch and restarts it, then
+> asserts no record was lost and no audit trail has a gap. That is the
+> crash-safety property, tested rather than claimed.
+>
+> On the accuracy number, the risk is circularity: if the decision path could
+> read the answer key, the score would be meaningless. So there is a test
+> that scans the source of all three decision-path services and fails if any
+> of them contains a query path to that table. It runs at the unit tier with
+> no infrastructure, so it runs on every push rather than only when someone
+> starts Docker. And it has its own tests, proving the scanner cannot be
+> fooled by the table name appearing in a comment.
+>
+> And this panel is the invariant checker, running continuously against every
+> batch: zero stopping-rule violations, zero incomplete audit trails, zero
+> impossible transitions. If one of those ever moved off zero, it would be a
+> bug caught in the act."
+
+Optional, if you want a live failure on camera: Demo Controls has an inject
+poison button. It publishes a `raw.events` message for a record id that was
+never inserted. Watch it dead-letter within seconds instead of wedging the
+consumer, and the processing-failure count go to one while the recovery
+numbers stay untouched. Rehearse it once before filming.
+
+### 9:05 to 9:50, Razorpay depth and where the instinct comes from
 
 Tab 1, the error code list. Editor tab 7. Then tab 2, webhook payloads.
 
@@ -369,7 +438,7 @@ Tab 1, the error code list. Editor tab 7. Then tab 2, webhook payloads.
 > a known outage, and verifies webhook signatures with HMAC-SHA256 in
 > constant time."
 
-### 8:58 to 9:15, close
+### 9:50 to 10:05, close
 
 The comparison, agent against naive baseline.
 
