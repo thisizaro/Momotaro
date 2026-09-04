@@ -1,419 +1,306 @@
 # Momotaro
 
 **A payment failure and mandate recovery agent.** It watches payments,
-mandates, checkouts and invoices as they degrade, diagnoses *why* each one is
-failing, and runs the one bounded, auditable intervention that matches that
+mandates, checkouts and invoices as they fail, works out *why* each one
+failed, and runs the one bounded, auditable intervention that matches that
 root cause, instead of a generic retry.
 
-Built for Track 03, AI Revenue Recovery.
+Built for Razorpay's AI Buildathon, Track 03: AI Revenue Recovery.
 
-The point is not that it retries things. It is that a generic retry is the
-wrong answer to most failures: retrying an expired card cannot succeed no
-matter how many times you try, and retrying an insufficient-funds failure
-tomorrow just burns an attempt and an SMS when the money arrives on payday.
-So the agent classifies the failure, picks the intervention that fits, obeys
-hard contact and retry limits, and logs every decision it made and what that
-decision cost, so a finance team gets a number it can actually defend: how
-much revenue came back, out of how much was at risk.
+```mermaid
+flowchart LR
+    RZP["A payment fails\nRazorpay webhook"] --> GW["API Gateway\nthe only door in"]
+    GW --> ING["Ingestion"]
+    ING -->|"raw.events"| DEC
 
-Full product reasoning in [`docs/PRD.md`](docs/PRD.md). System design in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+    DEC["Decision Engine\n1. guardrails filter the options\n2. economics prices what is left\n3. best positive EV wins"]
+
+    DEC -->|"why did this fail?"| CLS["Classifier\nrules first, live model\nonly when unsure"]
+    CLS -.->|"answer + rationale"| DEC
+    DEC -->|"do this, exactly once"| EXE["Executor"]
+    EXE --> WSIM["World Simulator\nplays the bank and the customer\nholds the sealed answer key"]
+    WSIM -.->|"outcome, now or hours later"| DEC
+
+    DEC -->|"state change + why,\none transaction"| PG[("Postgres\nsource of truth")]
+    DEC -->|"audit.events"| REP["Reporting\nrecovered, spend,\naccuracy, baseline"]
+    REP --> DASH["Dashboard\nlive, with the full\naudit trail per record"]
+
+    DEC -.->|"nothing is worth doing"| CLOSED["Closed: uneconomic\nthe agent declines to chase"]
+```
+
+Nine Go services, Postgres as the source of truth, Kafka for events, gRPC
+between services. The diagram above is the story; the complete container map
+with every protocol and edge is in
+[`docs/DATA_FLOW.md`](docs/DATA_FLOW.md#2-container-view).
+
+The full architecture, with every protocol and table-ownership rule, is
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The plain-English data
+journey is [`docs/DATA_FLOW.md`](docs/DATA_FLOW.md).
+
+## The idea, in one paragraph
+
+A generic retry is the wrong answer to most payment failures. Retrying an
+expired card cannot succeed however many times you try it, and retrying an
+insufficient-funds failure tomorrow just burns an attempt and an SMS when
+the money actually arrives on payday. So the agent classifies the failure,
+prices every action it is allowed to take, and takes only the one worth
+taking. When nothing is worth taking, it closes the record as uneconomic and
+says so, which is a different outcome from escalating to a human. Product
+reasoning is in [`docs/PRD.md`](docs/PRD.md).
+
+## Prerequisites
+
+- **Go 1.26+** (`go.mod` pins 1.26.5)
+- **Docker** with Compose
+- **Node 24+** for the dashboard (the lockfile is npm 11's; node 20's npm 10
+  rejects it)
+
+## Quick start
+
+```bash
+cp .env.example .env
+make demo-up PROFILE=demo      # infra, migrations, all 9 services
+cd web && npm install && npm run dev
+```
+
+Open <http://localhost:5173>, then use the **Demo Controls** page to seed a
+batch (scenario `normal`, count 100, seed 7). Watch it fill in.
+
+`PROFILE=demo` is not optional. Without it `DEMO_TIME_SCALE=1`, meaning every
+wall-clock wait is real: a nudge takes up to 24 real hours to come back and
+the batch never finishes. See "Troubleshooting" if numbers look wrong.
 
 ## Running it
 
-You need Go 1.26+ and Docker with Compose.
+### Start
 
-```bash
-cp .env.example .env     # fine for tests; see "Running the demo" before running the product
-make up                  # postgres, redis, kafka, and a kafka UI on :8080
-make migrate-up          # apply the schema
-make test-integration    # build every service, run every test tier
-```
-
-**What runs where.** Docker Compose runs **infrastructure only**: Postgres,
-Redis, Kafka and a Kafka UI. The nine Go services are **not** containerised
-locally; they run as `go run` processes on fixed ports, started by
-`make demo-up`. Dockerfiles exist for every service and CI builds them, but
-running them from source locally means a change is live on the next restart
-with no image rebuild. If you have used Compose elsewhere and expected
-`docker compose up` to start the whole product, that is why it does not.
-
-That last command is the one that proves the thing works. It brings up the
-stack if it is not already running, applies migrations, then runs the unit,
-integration and end-to-end tiers: six real service binaries started as
-subprocesses, a batch posted through the public HTTP API, records driven to
-their terminal states, and the audit trail verified.
-
-**Do not run `make test-integration` against a live demo stack.** Its tests
-publish real messages to `raw.events` and delete the records they seeded in
-cleanup, so a message referencing a now-deleted record is left behind on the
-shared topic. The decision-engine's consumer dead-letters that kind of
-message rather than crashing on it (see `docs/INCIDENTS.md`), but it is
-still noise you did not intend to feed a demo run. If a stack ever does end
-up wedged on a poisoned topic, `make demo-reset` clears the decision-engine
-consumer group without a full `make down-clean`.
-
-To watch it happen:
-
-```bash
-go test -count=1 -tags='integration e2e' -run TestSmokeBatch -v ./test/e2e/
-```
-
-That prints the live logs of every service as seven records flow through:
-the classifier deciding root causes, the scheduler claiming records as they
-come due, the executor recording what each intervention cost.
-
-Other useful targets (`make help` lists them all):
-
-| Command | What it does |
+| Command | What it starts |
 |---|---|
-| `make test` | unit tests only, no infrastructure needed |
-| `make check` | what CI checks: fmt, vet, proto lint, build, unit tests |
-| `make down` / `make down-clean` | stop the stack, optionally deleting its data |
-| `make migrate-status` | which migrations have been applied |
+| `make up` | infra only: Postgres, Redis, Kafka, Kafka UI |
+| `make demo-up PROFILE=demo` | infra + migrations + all 9 services, logs to `.demo-logs/` |
+| `make up-observability` | infra + Prometheus, Alertmanager, Grafana |
+| `cd web && npm run dev` | the dashboard on :5173 |
 
-**One gotcha worth knowing**: a bare `go test ./...` runs neither the
-integration nor the end-to-end tests, because both sit behind build tags. It
-will pass while testing almost nothing about the pipeline. Use
-`make test-integration` when you want the real answer. See
-[`AGENTS.md`](AGENTS.md) for the three test tiers and what each is for.
+`make demo-up` runs `make up` and `make migrate-up` first, so it is the only
+command you need from cold.
 
-## Running the demo (the whole product, with the dashboard)
-
-The commands above prove the system works. They do not *show* it. To watch a
-batch of failing payments get diagnosed, priced, acted on and recovered, with
-the dashboard live, you need the nine services running and a seeded batch.
-
-### Use `PROFILE=demo`, and do not `source` the profile
-
-`.env.example` ships with `DEMO_TIME_SCALE=1`, meaning **every wall-clock wait
-is real**. A nudge takes up to 24 real hours to come back. An
-insufficient-funds retry waits for the actual next salary window, days away.
-So a batch run that way never finishes: records sit in `NUDGED` or
-`RETRY_SCHEDULED` indefinitely, recovered totals stay near zero, and the
-baseline comparison appears to beat the agent purely because the agent was
-never allowed to finish.
-
-`configs/demo.env` fixes that, and it is applied through make's `PROFILE`
-variable:
+To run observability alongside the demo, start it **first**, then bring up
+the services. Both bring up the base stack, so starting them concurrently
+races:
 
 ```bash
+make up-observability HOST_IP=$(hostname -I | awk '{print $1}')
 make demo-up PROFILE=demo
 ```
 
-**Sourcing the file into your shell does nothing**, even though it looks like
-it works. The Makefile's own `include .env` outranks the environment, so a
-sourced value is silently discarded on every target. That cost a full
-misdiagnosis on 2026-08-31; see `docs/INCIDENTS.md`. `PROFILE` layers the
-profile on top of `.env` with a second include, which wins. Verify any time
-with:
+### Stop
 
-```bash
-make --eval='__show:; @echo $(DEMO_TIME_SCALE)' __show PROFILE=demo
-```
-
-The demo profile sets `DEMO_TIME_SCALE=300000` (compressing a 31-day salary
-window to under 9 seconds), turns the live `groq,rules` chain on, and samples
-15% of records for a real model call.
-
-### Bring it up
-
-One command. It starts infrastructure, applies migrations, and runs all nine
-services in dependency order, logging each to `.demo-logs/`:
-
-```bash
-make demo-up PROFILE=demo
-make demo-down                 # stops the services, leaves infra up
-```
-
-The dashboard, in its own shell:
-
-```bash
-cd web
-npm install
-cp .env.example .env.local     # then uncomment VITE_API_BASE_URL
-npm run dev                    # http://localhost:5173
-```
-
-The individual `make run-<service> PROFILE=demo` targets still exist for
-development when you want one service in the foreground with its logs. Every
-port is fixed, so Prometheus can scrape them and so two services never race
-for one port:
-
-| Target | gRPC | Metrics | Notes |
-|---|---|---|---|
-| `make run-ingestion` | 9090 | 9091 | |
-| `make run-classifier` | 9190 | 9191 | |
-| `make run-executor` | 9192 | 9193 | |
-| `make run-audit` | 9194 | 9195 | |
-| `make run-decision-engine` | 9196 | 9197 | owns the state machine |
-| `make run-api-gateway` | 9198 | 9199 | **HTTP on 8090**, the only public port |
-| `make run-reporting` | 9200 | 9201 | |
-| `make run-world-simulator` | 9202 | 9203 | demo only, holds the sealed answer key |
-| `make run-notification-simulator` | 9204 | 9205 | demo only, stands in for SMS and WhatsApp |
-
-Everything the dashboard and `curl` talk to is **http://localhost:8090**. The
-gRPC ports are internal, and the metrics ports exist for Prometheus.
-
-**`VITE_API_BASE_URL=http://localhost:8090` must be set**, or the dashboard
-runs on `src/lib/mockEngine.ts`, its built-in fake backend, and shows
-convincing numbers that never touched any of the services above. The UI shows
-a banner when it is in mock mode; if you see it, that is why.
-
-### Seed a batch and watch
-
-```bash
-make batchgen                       # 100 records, hidden ground truth
-make batchgen COUNT=50 SEED=7       # reproducible
-```
-
-This writes records straight into Postgres along with a sealed `ground_truth`
-row per record, then publishes each to `raw.events` so the pipeline picks them
-up exactly as if real webhooks had arrived. It bypasses the HTTP API on
-purpose: only this tool may write the answer key, so it can never be reachable
-through a public endpoint.
-
-Then watch the dashboard fill in. Records move through diagnosis, pricing and
-execution; nudges resolve after a (compressed) delay; the report shows gross
-and net recovered, cost per rupee, what was deliberately not chased, and
-classification accuracy scored against the sealed answer key.
-
-**The dashboard's "generate batch" button is not the same thing.** It submits
-through the public API, which never writes ground truth, so a batch made that
-way has no accuracy score and no baseline comparison. For a demo, always seed
-with `make batchgen` and select that batch.
-
-### What a healthy run looks like
-
-`make batchgen COUNT=100 SEED=7` on a fresh stack, measured 2026-08-31. Use it
-to tell a working run from a misconfigured one:
-
-```
-               gross         spend           net
-OURS       Rs 536,449        Rs 44     Rs 536,405
-BASELINE   Rs 487,848        Rs 79     Rs 487,769
-
-recovery rate 51.0%     classification accuracy 91.0%
-final states: 51 recovered, 32 closed-uneconomic, 17 escalated
-```
-
-**Expect the agent's own figures to vary run to run, and the baseline's not
-to.** The World Simulator rolls each outcome against the sealed ground truth
-with an unseeded RNG, so the same `SEED=7` batch produces the same records and
-the same answer key but different dice. A second run of exactly the batch
-above gave 43% recovery and Rs 586,240 net: fewer records recovered, but
-higher-value ones among them, and correspondingly more closed as uneconomic
-once their early retries failed and re-scoring found nothing worth doing. That
-is roughly 1.6 sigma on a hundred Bernoulli trials, not a regression.
-
-Three numbers are deterministic and **should match exactly** on any healthy
-run of `SEED=7`. If one of these moves, something really did change:
-
-| Deterministic | Value |
+| Command | What it stops |
 |---|---|
-| baseline gross / spend / net | Rs 487,848 / Rs 79 / Rs 487,769 |
-| classification accuracy | 91.0% |
-| recovery-window escalations | 0 |
+| `make demo-down` | the 9 services, leaves infra running |
+| `make down` | all containers, base stack and observability, keeps data |
 
-The agent recovers more than a blind retry-everything policy while spending
-roughly half as much, and separately declines to chase records that no
-intervention could economically recover. Both figures are
-evaluated against the same sealed ground truth, and both are modelled: the
-claim is that this policy beats a blind one *in our simulated world*, not that
-it recovers real money.
+### Clean
 
-Two symptoms of a misconfigured run, both seen for real: a recovery rate near
-18% with most records `ESCALATED` means the profile did not apply (check
-`DEMO_TIME_SCALE`), and an accuracy score that is absent entirely means the
-batch has no ground truth, so it came from the dashboard button rather than
-`make batchgen`.
-
-### If a service refuses to start naming a variable
-
-`.env` is gitignored, so a PR that adds a newly required variable updates
-`.env.example` and cannot touch your `.env`. Three units in a row have done
-this and broken a stack that had been working.
-
-```bash
-make check-env    # lists keys in .env.example that your .env lacks
-```
-
-It never fails the build: some of those keys are optional with defaults, and
-some are set only by `configs/demo.env` under `PROFILE=demo`. Read
-`.env.example`'s comments before copying one across. Any service that truly
-needs one refuses to start and names it in the error.
-
-### Fill the Live Event Stream with real production traffic
-
-```bash
-export API_KEY=momotaro-demo-key      # or whatever API_KEY is in your .env
-
-make loadgen                          # 5 events/s for 5 minutes, default
-make loadgen RATE=10 DURATION=2m      # faster, shorter
-make loadgen RATE=2 EVENTS=200        # a fixed total instead of a time bound
-```
-
-Needs the api-gateway already running (`make demo-up PROFILE=demo`) and
-`API_KEY` set, otherwise it exits immediately saying which one is missing.
-
-`make loadgen` wraps a Go CLI at `scripts/loadgen`. For anything the three
-forms above do not cover, run it directly:
-
-```bash
-go run ./scripts/loadgen -h        # every flag
-go run ./scripts/loadgen -rate 20 -count 500 -seed 42
-```
-
-`-seed` fixes the traffic shape so two runs send the same events, which is
-useful when comparing behaviour. It never sets a ground truth; webhook
-traffic has no answer key by design, which is the point of this tool.
-
-This posts events at `POST /v1/webhooks/payment-failed`, the same public
-route a real payment gateway would call, at a steady rate. It never touches
-Postgres or Kafka directly and never carries a ground truth: every event
-lands in the same always-on `webhook` batch real production traffic uses
-(`services/ingestion/internal/server/store.go`), which is why the batch it
-fills has no accuracy score or baseline comparison. The dashboard says so
-plainly in both panels rather than showing them empty: that absence is the
-other half of the story `make batchgen` tells, not a bug.
-
-Press Ctrl-C to stop early. Either way, the last line printed is a summary:
-`loadgen summary: sent=N accepted=N failed=N`.
-
-### Optional: metrics
-
-```bash
-make up-observability          # Prometheus, Alertmanager, Grafana
-```
-
-| Where | URL |
+| Command | What it removes |
 |---|---|
-| Prometheus | http://localhost:9900 |
-| Alertmanager | http://localhost:9901 |
-| Grafana | http://localhost:9902 (admin/momotaro, or anonymous viewer) |
-| Kafka UI | http://localhost:8080 |
+| `make down-clean` | all containers **and their volumes**, so Postgres and Kafka start empty next time |
+| `make demo-reset` | just the decision-engine Kafka consumer group, to unwedge a stuck stack without losing data |
 
-Prometheus is on **9900, not its usual 9090**, because 9090 is ingestion's
-gRPC port on this same host. Grafana is on **9902, not 3000**, for the same
-kind of reason. The container-internal ports are unchanged; only the host
-mappings move.
+A full reset from anything is:
 
-**Run it instead of `make demo-up`, not alongside it.** `up-observability`
-brings up the base Compose stack as well, so starting both at once has the
-two racing for the same containers. Bring this up first, then
-`make demo-up PROFILE=demo`.
+```bash
+make demo-down && make down-clean && make demo-up PROFILE=demo
+```
 
-Prometheus scrapes the fixed `run-<service>` metrics ports listed above, from
-inside a container, so it needs a route back to your host. On Docker Desktop
-with WSL2 in NAT mode `host.docker.internal` will not reach them, so pass
-your distro's IP:
+## Using it
+
+### Seed a batch
+
+**From the dashboard** (recommended): the **Demo Controls** page. Pick a
+scenario, a count and a seed. This writes a sealed ground truth, so the batch
+gets a classification accuracy score and a naive-baseline comparison.
+
+Four scenarios, each built to make one behaviour visible:
+
+| Scenario | What it shows |
+|---|---|
+| `normal` | a realistic spread across every root-cause bucket |
+| `bank-outage` | one bank unavailable, so per-bucket reporting shows a systemic spike |
+| `salary-day` | heavy insufficient-funds, so salary-window retry timing is the story |
+| `dead-cards` | expired and blocked cards, so nudge-versus-retry and the uneconomic close are visible |
+
+**From the CLI**, equivalent:
+
+```bash
+make batchgen                     # 100 records
+make batchgen COUNT=50 SEED=7     # reproducible inputs
+```
+
+Both paths write the same sealed `ground_truth` rows and publish to
+`raw.events`. `batchgen` bypasses the Gateway on purpose: only a `demo/` or
+`scripts/` component may ever write the answer key, so there is no public
+endpoint that can.
+
+### Send live webhook traffic
+
+```bash
+export API_KEY=momotaro-demo-key   # or whatever your .env has
+make loadgen                       # 5 events/s for 5 minutes
+make loadgen RATE=10 DURATION=2m
+make loadgen RATE=2 EVENTS=200
+```
+
+This posts to `POST /v1/webhooks/payment-failed`, the same route a real
+payment gateway would call. It carries no ground truth by design, so the
+batch it fills has no accuracy score, and the dashboard says so rather than
+showing an empty panel.
+
+### Talk to the API directly
+
+Everything external is on **<http://localhost:8090>**. Start with the
+self-documenting route list:
+
+```bash
+curl http://localhost:8090/v1/help
+```
+
+Open it in a browser and it renders as a page. The full contract is
+[`docs/API_GATEWAY.md`](docs/API_GATEWAY.md).
+
+## Observability
 
 ```bash
 make up-observability HOST_IP=$(hostname -I | awk '{print $1}')
 ```
 
-Check **Status > Targets** in Prometheus to confirm the scrape is working. If
-every target is down, `HOST_IP` is the reason.
+| Service | URL | Notes |
+|---|---|---|
+| Prometheus | <http://localhost:9900> | 9900, not 9090: 9090 is ingestion's gRPC port |
+| Alertmanager | <http://localhost:9901> | |
+| Grafana | <http://localhost:9902> | `admin` / `momotaro`, or anonymous viewer |
+| Kafka UI | <http://localhost:8080> | comes up with `make up` too |
 
-## How a record moves
+Two dashboards are provisioned automatically (service health, business
+reliability) and five alert rules are loaded: Kafka consumer lag, LLM
+fallback rate, stopping-rule violations, incomplete audit trails, and
+impossible audit transitions.
 
+**`HOST_IP` matters.** Prometheus runs in a container and scrapes the nine
+services running on your host. The default `host.docker.internal` does not
+reach a WSL2 distro under Docker Desktop's NAT networking, which shows up as
+every target `down`. Passing your real IP fixes it. Check **Status >
+Targets** in Prometheus; all nine should be `up`.
+
+## Ports
+
+| What | Port |
+|---|---|
+| **API Gateway (everything external)** | **8090** |
+| Dashboard (Vite dev server) | 5173 |
+| Postgres / Redis / Kafka | 5432 / 6379 / 9092 |
+| Kafka UI | 8080 |
+| Prometheus / Alertmanager / Grafana | 9900 / 9901 / 9902 |
+
+Each service also binds a fixed gRPC and metrics port so all nine can run at
+once and Prometheus has something stable to scrape:
+
+| Service | gRPC | Metrics |
+|---|---|---|
+| ingestion | 9090 | 9091 |
+| classifier | 9190 | 9191 |
+| executor | 9192 | 9193 |
+| audit | 9194 | 9195 |
+| decision-engine | 9196 | 9197 |
+| api-gateway | 9198 | 9199 |
+| reporting | 9200 | 9201 |
+| world-simulator | 9202 | 9203 |
+| notification-simulator | 9204 | 9205 |
+
+## Troubleshooting
+
+**A service refuses to start naming a variable.** `.env` is gitignored, so a
+PR that adds a newly required variable updates `.env.example` and cannot
+touch your `.env`.
+
+```bash
+make check-env     # lists keys in .env.example that your .env lacks
 ```
-POST /v1/batches
-  -> api-gateway      auth, rate limit
-  -> ingestion        creates the batch, publishes to Kafka (raw.events)
-  -> decision-engine  consumes, calls the classifier, owns the state machine
-       -> classifier    root cause + one action from a closed menu + rationale
-       -> executor      performs that action exactly once, records what it cost
-  -> audit            serves the trail, and continuously verifies its own invariants
+
+It never fails the build: some keys are optional, and some are set only by
+`configs/demo.env` under `PROFILE=demo`.
+
+**Most records escalate, recovery is near 18%, spend is tiny.** The demo
+profile did not apply. Confirm it:
+
+```bash
+make --eval='__show:; @echo $(DEMO_TIME_SCALE)' __show PROFILE=demo   # must print 300000
 ```
 
-Postgres is the single source of truth for history. Every state change and its
-audit entry are written in one transaction, so there is no window where a
-record changed state without a record of why. Kafka carries events, never
-truth.
+**Sourcing `configs/demo.env` into your shell does nothing.** The Makefile's
+own `include .env` outranks the environment, so a sourced value is silently
+discarded. Always use `PROFILE=demo`.
+
+**The dashboard shows convincing numbers with no backend running.** That is
+the built-in mock engine. Set `VITE_API_BASE_URL=http://localhost:8090` in
+`web/.env.local`. The UI shows a banner when it is in mock mode.
+
+**No accuracy score or baseline on a batch.** That batch has no ground
+truth, so it came from live webhook traffic rather than a seeded batch. This
+is expected, not a bug.
+
+**The stack is wedged after a bad message.** `make demo-reset` clears the
+decision-engine consumer group without touching Postgres.
+
+**Do not run `make test-integration` against a live demo stack.** Its tests
+publish to the same `raw.events` topic and delete records in cleanup.
+
+## Development
+
+```bash
+make test               # unit tests only, no infrastructure
+make test-integration   # brings up the stack, runs every tier
+make check              # what CI runs: fmt, vet, proto lint, build, unit tests
+make help               # every target
+```
+
+A bare `go test ./...` runs neither the integration nor the end-to-end tier,
+because both sit behind build tags, so it passes while testing almost nothing
+about the pipeline. [`AGENTS.md`](AGENTS.md) explains the three tiers.
+
+To watch one record travel the whole pipeline with every service logging:
+
+```bash
+go test -count=1 -tags='integration e2e' -run TestSmokeBatch -v ./test/e2e/
+```
 
 ## Layout
-
-`scripts/` holds three **compiled Go CLIs**, not shell scripts: `migrate`
-(schema), `batchgen` (a seeded batch with a sealed answer key) and `loadgen`
-(live webhook traffic). Each has `-h`. The `make` targets are thin wrappers
-that pass the usual flags.
-
 
 | Path | What it is |
 |---|---|
 | `services/` | the seven product services, each with `cmd/`, `internal/`, a Dockerfile and its own `AGENTS.md` |
-| `demo/` | hackathon-only stand-ins: the world simulator (how reality responds) and the notification simulator |
-| `internal/platform/` | shared plumbing: clock, config, logger, gRPC interceptors, Kafka and Postgres helpers |
+| `demo/` | hackathon-only stand-ins: the world simulator and the notification simulator |
+| `internal/platform/` | the only shared code: clock, config, logger, gRPC interceptors, Kafka and Postgres helpers |
 | `proto/` | gRPC contracts, and the generated code, which is committed |
 | `migrations/` | schema, applied with goose |
-| `test/e2e/` | the end-to-end tests, which run the real binaries |
-| `web/` | the dashboard (Vite + React + TS) |
-| `docs/` | everything about why the system is shaped the way it is |
+| `scripts/` | three compiled Go CLIs: `migrate`, `batchgen`, `loadgen`. Each has `-h` |
+| `test/e2e/` | end-to-end tests that run the real binaries |
+| `web/` | the dashboard (Vite, React, TypeScript) |
+| `docs/` | why the system is shaped the way it is |
 
-`demo/` is deliberately a separate top level from `services/`, so it is
-obvious from the layout alone which components are the product and which exist
-only to make a demo possible without real banks or real customers. Swapping a
-simulator for a real provider is a config change, not a redesign.
+`demo/` is a separate top level from `services/` on purpose, so it is obvious
+from the layout alone which components are the product and which exist only
+to make a demo possible without a real bank. Swapping a simulator for a real
+provider is a config change, not a redesign.
 
-## Status
+## Docs worth reading, in order
 
-Phases are tracked in [`docs/PLAN.md`](docs/PLAN.md), which is the live
-checklist rather than a plan of record.
-
-- **Phase 0, foundations**: done. Contracts, schema, shared packages, CI, and
-  a walking skeleton proving one record end to end before any depth was built.
-- **Phase 1, core pipeline**: done. API Gateway, Ingestion, Decision Engine
-  (state machine, scheduler worker, dead-letter path), Classifier, Executor
-  (durable idempotency, the two ports), Audit (trail plus a continuous
-  invariant verifier).
-- **Phase 2, durability, safety and economics**: done. Retry budgets, contact
-  caps, cooldowns, the checked-in cost model, and the expected-value scorer
-  that closes a record as `ClosedUneconomic` when chasing it is not worth it.
-  Proven by crash-safety, re-run-safety and idempotency tests.
-- **Phase 3, reasoning layer**: done. Groq wired as the primary rung with
-  guaranteed constrained decoding, Gemini built and tested but held out of the
-  default chain on measured latency, per-provider circuit breakers, and every
-  rung attempted recorded in the audit trail.
-- **Phase 4, observability**: mostly done. Prometheus metrics, Alertmanager
-  rules and Grafana dashboards. OpenTelemetry tracing is deliberately deferred,
-  see [`docs/BACKLOG.md`](docs/BACKLOG.md).
-- **Phase 5, demo realism**: nearly done. World Simulator, Reporting, the
-  Gateway's read routes and WebSocket relay, Hinglish nudge composition,
-  Razorpay's real error codes, TRAI/RBI compliance guardrails, the baseline
-  comparison, and the dashboard wired to the real Gateway.
-- **Phases 6 to 8**: load testing, Kubernetes, and demo rehearsal. Not started.
-
-Two things worth being explicit about, since they change how you read the
-numbers:
-
-- **The LLM is sampled, not universal.** `LLM_SAMPLE_RATE` decides per record
-  whether to spend a live model call, because free-tier rate limits do not fit
-  a 100-record batch. The sample is a deterministic hash of `record_id`, not
-  random, so re-running a batch gives identical results. Records that were not
-  sampled are honestly labelled `SOURCE_RULES_FALLBACK` in the audit trail,
-  and the provider hop list shows exactly which rungs were tried.
-- **Outcomes are simulated, deliberately, and that is the point.** There is no
-  real bank and no real customer here. `demo/world-simulator` plays both,
-  rolling each outcome against a per-record probability that
-  `scripts/batchgen` wrote in advance and sealed. The decision path provably
-  cannot read it (`test/integrity/ground_truth_isolation_test.go`). That is
-  what makes classification accuracy a *measurement* rather than a claim: we
-  can say how often the agent was right, because something wrote down the
-  right answer first. A real bank integration would look more impressive and
-  tell us nothing about whether the agent was correct.
-
-## Working on it
-
-Read [`AGENTS.md`](AGENTS.md) first for ownership boundaries and conventions,
-then [`docs/ENGINEERING.md`](docs/ENGINEERING.md) before writing code. The
-short version: tests first, inject the clock, deadline every outbound call,
-money is always integer paise, and one job per file.
-
-Three documents are append-only logs rather than specifications, and they are
-the fastest way to understand why the code looks the way it does:
-
-- [`docs/DECISIONS.md`](docs/DECISIONS.md), what was chosen and why
-- [`docs/INCIDENTS.md`](docs/INCIDENTS.md), what broke and what changed as a
-  result, which is the honest version of the same story
-- [`docs/PLAN.md`](docs/PLAN.md), what is done and what is next
+| Doc | What it answers |
+|---|---|
+| [`docs/DATA_FLOW.md`](docs/DATA_FLOW.md) | how data moves, start to finish, in plain English |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | the design and why each piece is shaped that way |
+| [`docs/API_GATEWAY.md`](docs/API_GATEWAY.md) | the external contract, every route and payload |
+| [`docs/PRD.md`](docs/PRD.md) | the product reasoning and the economics model |
+| [`docs/CONCEPTS.md`](docs/CONCEPTS.md) | what each pattern is and why this system needs it |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | append-only: what was chosen and why |
+| [`docs/INCIDENTS.md`](docs/INCIDENTS.md) | append-only: what broke and what changed as a result |

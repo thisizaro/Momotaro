@@ -242,17 +242,22 @@ See `docs/ARCHITECTURE.md` section 5a.
 
 ## 6. Scope for the hackathon
 
-Pick 2, at most 3, of these failure classes to actually implement end to end,
-rather than shallow coverage of all of them:
+The original plan was to pick 2, at most 3, of these failure classes and do
+them end to end rather than cover all four shallowly:
 
 1. Payment degradation -> root cause -> retry or method-switch nudge
 2. Failed UPI mandate -> retry sequencer with NPCI-style retry caps
 3. Checkout abandonment -> time-boxed reminder sequence
 4. B2B overdue invoice -> promise-to-pay tracker with escalation tiers
 
-Recommendation: do (1) and (2) together since they share the same retry/backoff
-machinery, then add (3) if time allows. (4) is the most different shape (longer
-time horizon, human promises) and is a good stretch goal, not a core requirement.
+**All four shipped.** Verified 2026-09-04 against
+`proto/common/v1/common.proto`: `RECORD_TYPE_PAYMENT`,
+`RECORD_TYPE_MANDATE`, `RECORD_TYPE_CHECKOUT` and `RECORD_TYPE_INVOICE` are
+all implemented and all four flow through the same pipeline. (4) was
+described here as "a good stretch goal, not a core requirement", and it was
+built anyway. This section is kept as written because the sequencing
+reasoning still explains why (1) and (2) were done first: they share the
+retry and backoff machinery.
 
 ## 7. Core workflow (per record)
 
@@ -400,13 +405,29 @@ describes.
 1. Load a batch of ~50-100 synthetic at-risk records, each seeded with a
    hidden ground-truth recoverability profile in the world simulator (see
    `docs/ARCHITECTURE.md`, "World simulator"), so outcomes are measured
-   against a known answer, not just observed. **This must be a batch seeded
-   with `scripts/batchgen` and selected via `GET /v1/batches`, not one made
-   with the dashboard's own "generate" button.** The button's `count` form
-   (`docs/API_GATEWAY.md`) submits through Ingestion, which never writes
-   `GROUND_TRUTH`, so a batch made that way has no accuracy score and no
-   baseline comparison, i.e. neither of beat 3's headline numbers. Confirm
-   which batch is selected before going on stage.
+   against a known answer, not just observed.
+
+   **Seed it from the dashboard's Demo Controls page, or with
+   `scripts/batchgen`. Both are correct.** Corrected 2026-09-04 after
+   checking the code: this step previously insisted on `batchgen` and warned
+   against "the dashboard's own generate button". That warning described the
+   old "Generate Sample Data" control, which Unit X removed. The Demo
+   Controls page that replaced it calls `POST /v1/demo/batches` into World
+   Simulator's `SeedBatch`, which writes real `GROUND_TRUTH` exactly like
+   `batchgen` does, so a batch seeded there **does** get an accuracy score
+   and a baseline comparison. Verified live: a panel-seeded batch scored 93%
+   accuracy across 100 records with the full baseline present. There is no
+   longer any UI path that submits a batch through Ingestion at all.
+
+   The Demo Controls page also carries four scenario presets (`normal`,
+   `bank-outage`, `salary-day`, `dead-cards`), each concentrating one root
+   cause so a specific behaviour becomes visible. Seeding on camera from the
+   dashboard is usually a better demo than cutting to a terminal.
+
+   What still holds: a batch created from **live webhook traffic**
+   (`scripts/loadgen`, or a real `payment.failed` webhook) carries no answer
+   key, so it has no accuracy score and no baseline. Confirm which batch is
+   selected before going on stage.
 2. Run the batch runner live, watch the dashboard fill in **live** (a real
    WebSocket push from the API Gateway, not polling, see
    `docs/ARCHITECTURE.md` section 6a) as the world simulator resolves each
@@ -482,14 +503,19 @@ Gateway). Ordering, not a downgrade: if it lands, beat 2 is a genuine push.
 
 ## 13. Open questions
 
-- Which LLM provider(s) back the diagnosis call, deliberately deferred, cost
-  and rate limits need real evaluation first. The design already supports
-  this being deferred: the Classifier calls a priority-ordered provider
-  chain (candidate primary/secondary providers, falling back to rules) behind
-  a swappable interface, and the load generator defaults to a synthetic
-  (no real API calls) mode so cost isn't burned during throughput testing.
-  See `docs/ARCHITECTURE.md` section 5. Decide actual provider(s) once
-  cost/rate-limit numbers are in hand.
+- ~~Which LLM provider(s) back the diagnosis call, deliberately deferred,
+  cost and rate limits need real evaluation first.~~
+  **Answered 2026-08-28, see `docs/DECISIONS.md`.** The chain is
+  `groq,rules`. Groq is the primary rung: the only provider evaluated that
+  offers guaranteed constrained decoding (`json_schema` with `strict:true`
+  is token-level, so the model cannot emit a bucket outside the enum) and
+  the fastest inference measured. Gemini is built, unit-tested and proven
+  against the live API, but is deliberately **out** of the default chain on
+  measured latency: Groq p50 ~570ms against Gemini p50 3.01s, and no single
+  `LLM_TIMEOUT` serves both inside the Decision Engine's 5s `CALL_TIMEOUT`.
+  Re-enabling it honestly needs per-rung timeouts, which is tracked in
+  `docs/BACKLOG.md`. The terminal rung is always the deterministic rules
+  engine, which does no I/O and cannot fail.
 - ~~How much of the retry-cap logic should mirror real RBI/NPCI mandate rules
   vs. a simplified stand-in we state explicitly as an assumption?~~
   **Answered 2026-08-29, see §11a.** Two real rules are now cited and

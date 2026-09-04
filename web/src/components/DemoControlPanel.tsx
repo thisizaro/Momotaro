@@ -333,8 +333,8 @@ export function DemoControlPanel({ onBatchSeeded }: Props) {
         </div>
         <div className="text-sm text-slate-600 leading-relaxed space-y-2 max-w-3xl">
           <p>
-            Two different things in this project get loosely called a simulator, and only one of them would be a
-            problem if a judge found it.
+            Two different things in this project get loosely called a simulator. They do very different jobs,
+            and the distinction is worth being precise about.
           </p>
           <p>
             When the agent retries a payment, or waits on a customer to act, something has to eventually say

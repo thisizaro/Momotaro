@@ -241,7 +241,8 @@ docker build services/classifier/
 flowchart TB
     subgraph Upstream["Event sources (outside our system)"]
         RZP["Razorpay platform\npayment.failed / mandate.failed webhooks\nPRODUCTION shape"]
-        LoadGen["Load Generator + batch generator\nscripts/, DEMO shape"]
+        LoadGen["scripts/loadgen\nsigned webhook traffic, DEMO shape"]
+        BatchGen["scripts/batchgen\nseeds a sealed answer key,\nbypasses the Gateway by design"]
     end
 
     subgraph Client["Human users (outside the cluster)"]
@@ -285,18 +286,25 @@ flowchart TB
     end
 
     RZP -->|"webhook, HTTPS (production)"| APIGW
-    LoadGen -->|"POST /v1/batches (demo)"| APIGW
+    LoadGen -->|"POST /v1/webhooks/payment-failed (demo)"| APIGW
     Dash -->|HTTPS / WSS| APIGW
 
     APIGW -->|gRPC| ING
     APIGW -->|gRPC read + server-stream| REP
     APIGW -->|gRPC read| AUD
+    APIGW -->|"gRPC: ReportDowntimeEvent, GetAgentConfig"| DEC
+    APIGW -.->|"gRPC, only if DEMO_CONTROLS_ENABLED"| WSIM
 
     ING -- publish --> K1
+    WSIM -.->|"publish, demo seeding only"| K1
+    BatchGen -.->|"direct write: batch, record, ground_truth"| PG
+    BatchGen -.->|"direct publish"| K1
     K1 -- consume --> DEC
     DEC -.->|"poison record, after N tries"| K3
-    DEC -->|gRPC Classify| CLS
+    DEC -->|gRPC Classify, ComposeNudge| CLS
     DEC -->|gRPC Execute| EXE
+
+    CLS -->|HTTPS, provider chain| LLM["Groq / Gemini\nexternal LLM APIs"]
 
     EXE ==>|"RecoveryActionPort"| WSIM
     EXE ==>|"NotificationPort"| NOTIF
@@ -306,26 +314,50 @@ flowchart TB
     BANK -.->|"real async webhook"| DEC
 
     DEC -- publish --> K2
-    EXE -- publish --> K2
     K2 -- consume --> REP
 
-    DEC <-->|state| PG
-    DEC <-->|retry budget, cooldown| REDIS
-    EXE <-->|idempotency key| REDIS
-    CLS <-->|history lookup| PG
-    WSIM <-->|hidden ground truth| PG
-    WSIM <-->|delayed-outcome queue| REDIS
-    AUD -->|append-only writes| PG
-    REP -->|aggregate reads| PG
-    REP <-->|cached aggregates| REDIS
+    ING -->|"writes batch, record"| PG
+    DEC <-->|"writes record_state, audit_entry, payment_downtime"| PG
+    EXE -->|"writes intervention_attempt"| PG
+    AUD -->|"reads only: trails + invariant scans"| PG
+    REP -->|"aggregate reads + ground_truth for accuracy"| PG
+    WSIM <-->|"hidden ground truth"| PG
+    WSIM <-->|"delayed-outcome queue"| REDIS
 ```
 
-**[RECHECK NEEDED]** The `APIGW -->|gRPC read| AUD` line above was added
-2026-08-30, after this diagram was found missing it despite the Gateway
-having dialed Audit directly since Unit G. Added from a single known
-example, not a full re-verification of every edge in this diagram against
-the current code — worth confirming the rest of this diagram (every other
-edge, not just this one) still matches reality before relying on it.
+**Verified against the code on 2026-09-04**, edge by edge, replacing an
+earlier version of this diagram that had drifted. Six edges were wrong or
+missing and are corrected above. What was wrong, recorded so the same
+claims do not creep back:
+
+- **Redis has exactly one user: World Simulator**, for the delayed-outcome
+  sorted set. The diagram previously showed Redis backing the Decision
+  Engine's retry budget and cooldown, the Executor's idempotency key, and
+  Reporting's cached aggregates. None of those three exist in the code.
+  Guardrail counters come from Postgres (`loadAttemptHistory` in
+  `services/decision-engine/internal/engine/store.go`), the Executor's
+  idempotency is the durable `UNIQUE (record_id, attempt_number)`
+  constraint alone (its Redis `SETNX` fast path was deferred on
+  2026-08-23 and never built, and there is no `SETNX` anywhere in the
+  repo), and Reporting has no cache layer. **Every service still requires
+  `REDIS_ADDR` at startup** via `LoadCommon`, which is why this is easy to
+  get wrong by reading config instead of code.
+- **The Executor publishes nothing to Kafka.** It writes
+  `intervention_attempt` and returns its result over gRPC. The
+  `audit.events` topic has exactly one producer, the Decision Engine.
+- **The Audit service writes nothing.** It has no `INSERT`, `UPDATE` or
+  `DELETE` anywhere; it serves trails and runs the invariant verifier, both
+  read-only. The previous label "append-only writes" was wrong.
+- **The Classifier never touches Postgres.** It is fully stateless: no
+  pgx pool, no `POSTGRES_DSN` use, no history lookup. The record history
+  the guardrails need is loaded by the Decision Engine, not the
+  Classifier.
+- **The Gateway dials five services, not three**: Ingestion, Reporting,
+  Audit, Decision Engine, and (only when `DEMO_CONTROLS_ENABLED=true`)
+  World Simulator.
+- **World Simulator also publishes to `raw.events`**, for demo seeding
+  (`SeedBatch`, `InjectPoison`), which is how `POST /v1/demo/batches`
+  reaches the pipeline.
 
 Reading that diagram: solid thick arrows from the Executor are what runs in
 this repo, dotted arrows are what would replace them in a real deployment.
@@ -362,9 +394,21 @@ routes, request/response shapes, auth header, WebSocket message format, is
 the Gateway's implementer and the dashboard's implementer, so they can never
 drift apart. In system-design terms it owns three jobs and nothing else:
 
-1. **Protocol translation**: HTTP/WebSocket in, gRPC out. It holds gRPC
-   clients to Ingestion and Reporting, nothing else, it does not reach into
-   Decision Engine, Classifier, Executor, or the data layer directly.
+1. **Protocol translation**: HTTP/WebSocket in, gRPC out. **It never touches
+   the data layer**: no Postgres pool, no Redis client, no Kafka client.
+   Verified 2026-09-04, it holds exactly five gRPC clients
+   (`services/api-gateway/cmd/main.go`):
+
+   | Client | What uses it |
+   |---|---|
+   | Ingestion | `POST /v1/batches`, `POST /v1/webhooks/payment-failed` |
+   | Reporting | the report/records read routes, and `StreamBatchUpdates` behind the live WebSocket |
+   | Audit | `GET /v1/records/{id}/audit`, the invariants routes |
+   | Decision Engine | `ReportDowntimeEvent` (`POST /v1/webhooks/payment-downtime`) and `GetAgentConfig` (`GET /v1/demo/config`) |
+   | World Simulator | the `/v1/demo/*` control routes, **only** when `DEMO_CONTROLS_ENABLED=true`; nil otherwise, and the routes 404 rather than erroring |
+
+   It still reaches into no service's internals and holds no Classifier or
+   Executor client: those are reached only through the Decision Engine.
 2. **AuthN**: validates the static shared API key header (section 17 covers
    why this, not real user auth, is the right call for a hackathon judge
    trying the system).
@@ -407,7 +451,6 @@ sequenceDiagram
     participant K as Kafka
     participant DEC as Decision Engine
     participant CLS as Classifier
-    participant Redis as Redis
     participant EXE as Executor
     participant WSIM as World Simulator
     participant PG as Postgres
@@ -420,27 +463,26 @@ sequenceDiagram
     GW-->>LoadGen: {batch_id}
     ING->>K: publish raw.events {batch_id, record_id, code} (one per record)
     K->>DEC: deliver raw.events
+    DEC->>PG: loadAttemptHistory (retries, contacts, last contact)
+    PG-->>DEC: retries=0, contacts=0
     DEC->>CLS: Classify(record, history) [gRPC]
-    CLS->>PG: read prior history for this instrument
-    CLS-->>DEC: {bucket=transient, action=retry, rationale, source=llm}
-    DEC->>Redis: check retry_budget & cooldown
-    Redis-->>DEC: budget_remaining=2, cooldown=expired
+    Note over CLS: stateless: no Postgres,<br/>history arrives in the request
+    CLS-->>DEC: {bucket=transient, action=retry, rationale, source}
+    DEC->>DEC: guardrails, then EV scoring
     DEC->>PG: TX: record_state + audit_entry (new -> retry_scheduled)
     DEC->>EXE: Execute(record_id, action=retry, attempt=1) [gRPC]
-    EXE->>Redis: SETNX idem key (fast path only)
     EXE->>PG: INSERT intervention_attempt (UNIQUE record_id+attempt)
-    Note over EXE,PG: insert-before-execute is the durable<br/>idempotency guarantee, not the Redis key
+    Note over EXE,PG: insert-before-execute IS the idempotency<br/>guarantee: one durable layer, no Redis
     EXE->>WSIM: SimulateOutcome(record_id, action=retry) [gRPC]
     WSIM->>PG: read hidden ground-truth profile
     WSIM-->>EXE: {outcome=success, immediate=true}
-    EXE->>PG: TX: attempt outcome + cost + audit_entry
+    EXE->>PG: UPDATE intervention_attempt (outcome + cost)
     EXE-->>DEC: {outcome=success} [gRPC response]
     DEC->>PG: TX: record_state + audit_entry (retry_scheduled -> recovered)
     Note over DEC,PG: Postgres is the source of truth.<br/>Kafka below is notification only.
     DEC->>K: publish audit.events (notification)
     K->>REP: deliver audit.events
-    REP->>Redis: invalidate cached aggregates
-    REP->>PG: recompute aggregates on next read
+    REP->>PG: recompute aggregates on next read (no cache layer)
     AUD->>PG: continuously verify invariants (separate loop)
 ```
 
@@ -1066,24 +1108,31 @@ diverge.
   Either both land or neither does. There is no window in which a state
   change exists without its audit record.
 - Postgres is the sole source of truth for history. `audit.events` on Kafka
-  is a **notification** stream, not a system of record: it exists to
-  invalidate Reporting's cache and to drive the live dashboard feed.
-- Losing a Kafka message therefore costs a stale cache for one TTL, not a
+  is a **notification** stream, not a system of record: it exists to drive
+  the live dashboard feed.
+- Losing a Kafka message therefore costs a missed live-feed update, not a
   wrong number and not a missing audit entry. This works because Reporting
-  already computes its aggregates by reading Postgres (section 3 diagram),
-  with Redis purely as a cache-aside layer in front. Kafka never feeds
-  numbers directly into a report.
+  computes every aggregate by reading Postgres on demand (section 3
+  diagram). Kafka never feeds numbers directly into a report. **There is no
+  Redis cache in front of Reporting**, so there is also no cache to
+  invalidate and no stale-cache window; verified 2026-09-04, and section 10
+  records why the cache layer this line used to describe was never built.
 
 **Table ownership**, stated explicitly because seven services share one
 database and unmanaged sharing is how that becomes a mess:
 
+Verified against the actual `INSERT`/`UPDATE` statements on 2026-09-04.
+**The Classifier appears in no row of this table**: it is fully stateless
+and never opens a Postgres connection, so the record history it reasons
+about is passed to it in the `Classify` request by the Decision Engine.
+
 | Table | Written by | Read by |
 |---|---|---|
-| `BATCH`, `RECORD` | Ingestion | Decision Engine, Classifier, Reporting, Audit |
+| `BATCH`, `RECORD` | Ingestion (production path); also World Simulator `SeedBatch` and `scripts/batchgen` when seeding a demo batch | Decision Engine, Reporting, Audit |
 | `RECORD_STATE` | Decision Engine (incl. its scheduler worker) | Reporting, Audit |
-| `INTERVENTION_ATTEMPT` | Executor | Decision Engine, Classifier, Reporting, Audit |
-| `AUDIT_ENTRY` | Decision Engine, transactionally with its own `RECORD_STATE` changes, append-only | Audit, Reporting |
-| `GROUND_TRUTH` | batch generator (`scripts/`) | World Simulator, Reporting accuracy scorer **only** |
+| `INTERVENTION_ATTEMPT` | Executor (`INSERT` before acting, `UPDATE` with outcome and cost after) | Decision Engine, Reporting, Audit |
+| `AUDIT_ENTRY` | Decision Engine, transactionally with its own `RECORD_STATE` changes, append-only. **Sole writer**, and the Executor is not one | Audit, Reporting |
+| `GROUND_TRUTH` | `scripts/batchgen` and World Simulator's `SeedBatch` (`POST /v1/demo/batches`), the only two writers, both under `demo/` or `scripts/` by design | World Simulator, Reporting accuracy scorer **only** |
 | `PAYMENT_DOWNTIME` | Decision Engine, via `ReportDowntimeEvent` (`docs/PHASE5_5_IMPLEMENTATION.md` Unit Y) | Decision Engine's own guardrail check only, read fresh on every call, never cached |
 
 No service writes a table it does not own. Cross-service reads go through
@@ -1104,19 +1153,37 @@ That second job is what turns "we claim zero violations" into "a service
 continuously checks, and here is its metric," which is the evidence a judge
 can actually verify.
 
-**Redis (cache + coordination layer)**, three distinct jobs, worth keeping
-distinct in naming and TTL policy even though it is one Redis instance:
+**Redis, as actually built**: one user, one job. Verified 2026-09-04.
 
-1. **Idempotency locks**: `SETNX idem:{record_id}:{attempt_number}`, TTL
-   slightly longer than max processing time. Guarantees the Executor never
-   double-executes an action, whether the trigger was a redelivered Kafka
-   message upstream or a retried gRPC call from the Decision Engine.
-2. **Rate/cooldown enforcement**: `retry_budget:{record_id}` (counter,
-   `INCR`+`EXPIRE`), `cooldown:{record_id}` (existence blocks the next
-   action). Far cheaper than a Postgres round trip on every decision check.
-3. **Dashboard read cache**: Reporting Service aggregates, cache-aside with a
-   short TTL, invalidated on `audit.events` consumption, so the dashboard
-   stays fast under repeated refreshes during the demo.
+`demo/world-simulator` holds the only Redis client in the repo, backing the
+delayed-outcome queue described in section 6: a sorted set
+(`wsim:delayed_outcomes`, `ZADD`/`ZRANGEBYSCORE`/`ZREM`) that parks a
+nudge's answer until its `resolves_at` comes due. That is the whole of
+Redis in this system.
+
+**Three jobs this section used to claim, none of which exist.** They are
+listed here rather than deleted, because each was a reasonable design that
+the build then decided against, and the reasoning is worth keeping:
+
+1. **Idempotency locks** (`SETNX idem:{record_id}:{attempt_number}`) were
+   deferred on 2026-08-23 and never built. There is no `SETNX` anywhere in
+   the repo. The durable `UNIQUE (record_id, attempt_number)` constraint on
+   `INTERVENTION_ATTEMPT` is not the backstop for a Redis fast path, it is
+   the entire mechanism, which is the stronger of the two arrangements
+   anyway (section 11 explains why a TTL'd cache cannot be an idempotency
+   guarantee).
+2. **Rate/cooldown enforcement** in Redis would contradict section 10a's own
+   rule that a cap enforced by a cache is not enforced. Guardrail counters
+   are read from Postgres inside the same transaction as the state change
+   they gate (`loadAttemptHistory`).
+3. **A dashboard read cache** was never needed: Reporting computes
+   aggregates from Postgres on each read, and the dashboard's own 2 second
+   refresh has never been the bottleneck at demo batch sizes.
+
+**Every service still requires `REDIS_ADDR` at startup**, because it is part
+of `LoadCommon` in `internal/platform/config`. Eight of the nine never open
+a connection with it. That is worth knowing before someone concludes from
+the config surface that Redis is load-bearing here.
 
 ## 11. Idempotency and exactly-once semantics
 
@@ -1131,24 +1198,28 @@ distinct in naming and TTL policy even though it is one Redis instance:
 - The audit log is append-only by construction (no `UPDATE`/`DELETE` grants),
   safe to replay for debugging without corrupting history.
 
-**Two-layer idempotency, and why Redis alone is not acceptable here.** Redis
-keys carry a TTL. If a redelivery arrives after that TTL expires (a consumer
-outage longer than the TTL, a partition reassignment hours later, a manual
-offset reset), a Redis-only guard has forgotten the action ever happened and
-will happily execute it twice. For a retry against a real payment rail that
-is a double charge. So:
+**Idempotency is one durable layer, not two.** This section previously
+described a two-layer guard, a Redis `SETNX` fast path in front of a
+Postgres constraint. Verified 2026-09-04: **only the durable layer was
+built.** The Redis fast path was deferred on 2026-08-23 and there is no
+`SETNX` anywhere in the repo.
 
-- **Durable layer, the actual guarantee**: a `UNIQUE (record_id,
-  attempt_number)` constraint on `INTERVENTION_ATTEMPT`. The Executor
-  **inserts the attempt row first** and only performs the side effect if the
-  insert succeeded. A duplicate insert violates the constraint, the Executor
-  recognises that specific error, and returns the previously recorded
-  outcome instead of re-executing. This guarantee has no expiry.
-- **Fast layer, an optimisation only**: the Redis `SETNX` check short
-  circuits the obvious duplicates without a database round trip.
+- **The guarantee**: a `UNIQUE (record_id, attempt_number)` constraint on
+  `INTERVENTION_ATTEMPT`. The Executor **inserts the attempt row first** and
+  only performs the side effect if the insert succeeded. A duplicate insert
+  violates the constraint, the Executor recognises that specific error, and
+  returns the previously recorded outcome instead of re-executing. This
+  guarantee has no expiry.
 
-If the two ever disagree, Postgres wins. An agent implementing the Executor
-must not treat the Redis check as sufficient on its own.
+**Why the missing cache layer is not a gap.** A Redis key carries a TTL. If
+a redelivery arrives after that TTL expires (a consumer outage longer than
+the TTL, a partition reassignment hours later, a manual offset reset), a
+Redis-only guard has forgotten the action ever happened and will happily
+execute it twice, which against a real payment rail is a double charge. So
+Redis could only ever have been an optimisation in front of the constraint,
+never the guarantee itself. Not building it costs one database round trip
+per attempt and removes an entire class of "the two layers disagree" bug.
+If it is ever added, Postgres still wins every disagreement.
 
 ## 12. Scaling, partitioning, and gRPC load balancing
 

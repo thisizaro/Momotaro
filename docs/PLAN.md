@@ -621,7 +621,7 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
 
 > Working breakdown, dependency graph, and a pre-planning audit of what
 > was already built versus still a stub: **`docs/PHASE5_IMPLEMENTATION.md`**
-> (8 units, A to H). Read it before picking up any item here — it found a
+> (8 units, A to H). Read it before picking up any item here, it found a
 > real prerequisite gap this checklist doesn't mention (Decision Engine had
 > no gRPC server at all) and several items far more built than their
 > checklist wording implies (the Hinglish migration already shipped in
@@ -667,14 +667,19 @@ relay, both need Reporting to exist first, so they land in Phase 5 too.
       the `GET /v1/batches` list endpoint (backed by a new `ListBatches` RPC
       on Ingestion, its own proto PR first) → `ARCHITECTURE.md` §6a,
       `docs/API_GATEWAY.md`, `docs/PHASE5_IMPLEMENTATION.md` Unit G
-- [ ] **[FRONTEND]** Dashboard: recovered amount/rate, record table, one
+- [x] **[FRONTEND]** Dashboard: recovered amount/rate, record table, one
       record's audit drill-down, live feed, built only against
       `docs/API_GATEWAY.md`. `web/` is a Phase 0 scaffold, built early
       against the written contract so UI work would not wait on the backend.
       Not the final UI and not precious. This item is rebuilding against the
       frozen contract, not preserving what is there
       → `PRD.md` §1, `web/AGENTS.md`,
-      `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F1/F2
+      `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F1/F2.
+      **Box ticked 2026-09-04**: the work had shipped and the box was never
+      ticked. Verified against code, `web/src/lib/api.ts`'s `USE_MOCK` falls
+      back to mocks only when `VITE_API_BASE_URL` is unset and issues real
+      requests otherwise, and a live browser run against the real Gateway
+      matched the backend's own report response exactly.
 - [x] Hinglish nudge composition: `Classifier.ComposeNudge` reusing the
       existing provider chain and circuit breakers, static Hinglish
       template per bucket as fallback, output length-capped and validated
@@ -753,17 +758,28 @@ ordered by value per hour. Detail for each is in
       times, nudge everything" policy would have recovered against the same
       sealed ground truth, so "measured money recovered" is a result rather
       than a number → `docs/PHASE5_IMPLEMENTATION.md` Unit K
-- [ ] Surface decision provenance the system already stores but never shows:
+- [x] Surface decision provenance the system already stores but never shows:
       provider hop chain, net recovered and cost per rupee, uneconomic-closed
       as its own tile, the classification confusion matrix, and a live
       `VerifyInvariants` result. Backend half is the Gateway routes; the UI
-      half is **[FRONTEND]** F3 → `docs/PHASE5_IMPLEMENTATION.md` Unit L
-- [ ] **[FRONTEND]** Error handling, which does not exist anywhere in `web/`
+      half is **[FRONTEND]** F3 → `docs/PHASE5_IMPLEMENTATION.md` Unit L.
+      **Box ticked 2026-09-04**: shipped under the Phase 5.6 unit letters
+      (S, AH, AL) rather than as "Unit L", which is why this line was left
+      behind. All five named items verified present in code:
+      `web/src/components/ConfusionMatrix.tsx`,
+      `web/src/components/InvariantsPanel.tsx`, provider hop chips in
+      `RecordDrawer.tsx`, and the net-recovered, cost-per-rupee and
+      uneconomic tiles live on the dashboard.
+- [x] **[FRONTEND]** Error handling, which does not exist anywhere in `web/`
       today: no `.catch` on any call, no error boundary, no empty state, and
       a 2 second `setInterval` with no try/catch that will throw an unhandled
       rejection every two seconds behind a blank page if the backend 404s.
       The difference between degrading visibly and dying silently on stage
-      → `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F2
+      → `docs/PHASE5_IMPLEMENTATION.md` "The frontend track" F2.
+      **Box ticked 2026-09-04**: verified in code,
+      `web/src/components/ErrorBoundary.tsx` exists and is wired in
+      `main.tsx`, and `App.tsx`'s fetch paths including the refresh interval
+      are wrapped in `try`/`catch`.
 - [x] Persist the full EV candidate ranking and the per-action guardrail
       refusal reasons, both previously computed and discarded, so the audit
       trail can answer "why not the alternatives". New `audit_entry.decision_trace`
